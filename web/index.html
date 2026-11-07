@@ -1,0 +1,1939 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X-Intel · X 情报监控台</title>
+<style>
+:root{
+  --bg:#eef2f9;--panel:rgba(255,255,255,.86);--panel2:rgba(250,252,255,.78);
+  --line:rgba(15,23,42,.09);--line2:rgba(15,23,42,.18);
+  --text:#1a2333;--mut:#5b6b84;--mut2:#8494ab;
+  --acc:#0e7490;--acc2:#4f46e5;
+  --crit:#e11d48;--high:#ea580c;--med:#ca8a04;--low:#0284c7;--info:#64748b;--ok:#059669;
+  --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg)}
+body{font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  font-size:14.5px;line-height:1.6;color:var(--text);min-height:100vh;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}
+.bg{position:fixed;inset:0;z-index:-1;background:
+  radial-gradient(1100px 560px at 12% -8%,rgba(8,145,178,.07),transparent 60%),
+  radial-gradient(900px 500px at 88% -4%,rgba(99,102,241,.06),transparent 55%),
+  radial-gradient(700px 700px at 50% 115%,rgba(8,145,178,.04),transparent 60%),var(--bg)}
+.bg::after{content:"";position:absolute;inset:0;
+  background-image:linear-gradient(rgba(15,23,42,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,.035) 1px,transparent 1px);
+  background-size:38px 38px;
+  -webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 25%,transparent 72%);
+  mask-image:radial-gradient(ellipse at 50% 0%,#000 25%,transparent 72%)}
+.shell{margin:0;padding:0 22px 28px;margin-left:48px;transition:margin-left .25s}
+body.sb-expanded .shell{margin-left:220px}
+/* 侧边栏：亮色玻璃配色（与面板一致），toggle 置顶，无 hover 强制展开（点击 toggle 才切换） */
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:48px;
+  background:linear-gradient(180deg,#ffffff,var(--panel2));border-right:1px solid var(--line);
+  box-shadow:2px 0 18px rgba(30,41,59,.05);
+  display:flex;flex-direction:column;z-index:50;overflow:hidden;
+  transition:width .25s}
+body.sb-expanded .sidebar{width:220px}
+.sb-top{display:flex;align-items:center;gap:9px;padding:12px 10px 10px;border-bottom:1px solid var(--line);flex:none}
+.sb-toggle{flex:none;width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--line2);border-radius:7px;background:#fff;color:var(--mut);cursor:pointer;
+  font-size:13px;padding:0;transition:color .2s,border-color .2s}
+.sb-toggle span{transition:transform .25s;display:inline-block}
+body.sb-expanded .sb-toggle span{transform:rotate(180deg)}
+.sb-toggle:hover{color:var(--acc);border-color:rgba(8,145,178,.45)}
+.sb-brand{font-size:13.5px;font-weight:700;color:var(--text);white-space:nowrap;opacity:0;transition:opacity .2s;letter-spacing:.5px}
+body.sb-expanded .sb-brand{opacity:1}
+.sb-icons{display:flex;flex-direction:column;gap:2px;padding:10px 8px;flex:1;overflow-y:auto}
+.sb-item{display:flex;align-items:center;gap:10px;padding:9px 10px;background:none;border:none;
+  border-radius:9px;color:var(--mut);cursor:pointer;font-size:13px;font-family:inherit;text-align:left;
+  white-space:nowrap;width:100%;transition:color .15s,background .15s}
+.sb-item:hover{color:var(--text);background:rgba(8,145,178,.08)}
+.sb-item.active{color:var(--acc);background:rgba(8,145,178,.12);font-weight:600}
+.sb-item span{width:16px;text-align:center;flex:none;font-size:14px}
+.sb-item em{font-style:normal;font-size:12.5px;opacity:0;transition:opacity .2s}
+body.sb-expanded .sb-item em{opacity:1}
+.sb-foot{padding:8px;border-top:1px solid var(--line);flex:none}
+/* 二级菜单（日志审计） */
+.sb-group .chev{margin-left:auto;font-size:12px;font-style:normal;color:var(--mut2);
+  transition:transform .2s;opacity:0;flex:none}
+body.sb-expanded .sb-group .chev{opacity:1}
+.sb-group.expanded .chev{transform:rotate(90deg)}
+.sb-sub{max-height:0;overflow:hidden;transition:max-height .25s ease}
+.sb-group.expanded .sb-sub{max-height:132px}
+body:not(.sb-expanded) .sb-sub{display:none}  /* 收起态 48px 不显示二级 */
+.sb-subitem{padding-left:15px}
+.sb-subitem span{width:10px;font-size:11px;color:var(--mut2)}
+.sb-subitem.active{background:rgba(8,145,178,.07)}
+.sb-link{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;color:var(--mut);
+  font-size:12.5px;text-decoration:none;white-space:nowrap;transition:color .15s,background .15s}
+.sb-link:hover{color:var(--acc);background:rgba(8,145,178,.08)}
+.sb-link span{width:16px;text-align:center;flex:none}
+.sb-link em{font-style:normal;opacity:0;transition:opacity .2s}
+body.sb-expanded .sb-link em{opacity:1}
+/* 视图切换：菜单点谁显示谁 */
+.view{display:none}
+.view.on{display:block}
+.main{display:flex;flex-direction:column;gap:13px;align-items:stretch}
+@media(max-width:640px){.sidebar{width:0;border:none;box-shadow:none}.shell{margin-left:0}}
+.glass{background:linear-gradient(180deg,var(--panel),var(--panel2));
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:0 12px 36px -20px rgba(30,41,59,.28)}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:13px 18px;margin:14px 0;border-radius:16px}
+.brand{display:flex;align-items:center;gap:11px}
+.brand svg{width:30px;height:30px;filter:drop-shadow(0 0 8px rgba(34,211,238,.5))}
+.brand .t1{font-size:18px;font-weight:600;letter-spacing:.4px;
+  background:linear-gradient(90deg,#0e7490,#4f46e5);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .t2{font-size:12.5px;color:var(--mut);letter-spacing:1.5px;margin-top:-2px}
+.top-status{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.api{font-size:12.5px;color:#0e7490;background:rgba(8,145,178,.07);border:1px solid rgba(8,145,178,.28);
+  padding:2px 10px;border-radius:999px;font-family:Consolas,monospace}
+.live{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ok)}
+.ldot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:pulse 1.8s ease-out infinite}
+.ldot.err{background:#f87171;animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)}70%{box-shadow:0 0 0 8px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.ringwrap{display:flex;align-items:center;gap:9px}
+.ringwrap svg{transform:rotate(-90deg)}
+.ringwrap .rt{font-size:12.5px;color:var(--mut)}
+.ringwrap .rt b{color:var(--text);font-variant-numeric:tabular-nums;display:block;font-size:13.5px}
+.btn{display:inline-flex;align-items:center;gap:7px;border-radius:10px;cursor:pointer;
+  font-family:inherit;font-size:13.5px;padding:7px 15px;color:#0f172a;
+  background:rgba(8,145,178,.07);border:1px solid rgba(8,145,178,.35);transition:all .2s}
+.btn:hover{background:rgba(8,145,178,.14);box-shadow:0 0 18px -6px rgba(8,145,178,.45)}
+.btn:disabled{opacity:.5;cursor:default;box-shadow:none}
+.btn .ric{display:inline-block;font-size:15px}
+.btn.busy .ric{animation:rot .9s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.btn-xs{font-size:12.5px;padding:3px 11px;border-radius:8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:13px;margin-bottom:13px}
+.kpi{padding:15px 17px;position:relative;overflow:hidden;transition:border-color .3s}
+.kpi:hover{border-color:var(--line2)}
+.kpi .row1{display:flex;align-items:center;gap:9px}
+.kicon{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
+.kicon svg{width:17px;height:17px}
+.kpi .lb{font-size:12.5px;color:var(--mut)}
+.kpi .vl{font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.3px;margin-top:2px}
+.kpi .dl{font-size:12.5px;color:var(--mut)}
+.kpi .dl em{font-style:normal;color:var(--ok)}
+/* 监控源健康行 */
+.srcrow{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:12px;color:var(--mut)}
+.srcrow b{color:var(--text);font-weight:600;flex:none}
+.srcrow .stx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sdot{width:8px;height:8px;border-radius:50%;flex:none;background:#94a3b8}
+.sdot.ok{background:#10b981;box-shadow:0 0 6px rgba(16,185,129,.5)}
+.sdot.bad{background:#f43f5e;box-shadow:0 0 6px rgba(244,63,94,.5)}
+/* 首页仪表盘卡片 */
+.home-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:13px;margin-top:13px}
+.homecard{border:1px solid var(--line);border-radius:var(--r);padding:12px 15px 13px;background:linear-gradient(180deg,var(--panel),var(--panel2))}
+.homecard .hhead{display:flex;align-items:center;margin-bottom:8px}
+.homecard .hmore{margin-left:auto;font-size:12px;color:var(--acc);cursor:pointer;text-decoration:none}
+.homecard .hmore:hover{text-decoration:underline}
+.hrow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--mut);margin:5px 0;flex-wrap:wrap}
+.hrow b{color:var(--text);font-weight:600}
+.hchip{font-size:11.5px;border-radius:6px;padding:1px 8px;border:1px solid var(--line2);background:#fff;color:var(--mut)}
+.hbar{height:7px;border-radius:99px;background:rgba(8,145,178,.12);overflow:hidden;flex:1;min-width:60px}
+.hbar i{display:block;height:100%;background:linear-gradient(90deg,#0891b2,#4f46e5);border-radius:99px}
+.phead{padding:12px 16px 10px;border-bottom:1px solid var(--line)}
+.phead .cnt{font-weight:400;font-size:12.5px;color:var(--mut)}
+.note{margin-left:auto;font-size:12.5px;font-weight:400;color:var(--ok);opacity:0;transition:opacity .4s}
+.note.show{opacity:1}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line)}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;cursor:pointer;
+  padding:3.5px 12px;font-size:12.5px;font-family:inherit;color:var(--mut);
+  background:transparent;border:1px solid var(--line);transition:all .2s}
+.pill .pd{width:7px;height:7px;border-radius:50%}
+.pill:hover{border-color:var(--line2);color:var(--text)}
+.pill[aria-pressed="true"]{background:rgba(8,145,178,.1);border-color:rgba(8,145,178,.5);color:#0e7490;
+  box-shadow:0 0 14px -6px rgba(8,145,178,.4)}
+select,input,textarea{background:#ffffff;border:1px solid var(--line2);border-radius:9px;color:var(--text);
+  padding:5px 10px;font-size:12.5px;font-family:inherit;outline:none;transition:border-color .2s}
+select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
+.q{width:200px}
+/* 推文卡 */
+.tweet{padding:14px 16px;border-bottom:1px solid var(--line);border-radius:10px;margin:0 6px;transition:background .2s}
+.tweet:last-child{border-bottom:none}
+.tweet:hover{background:rgba(8,145,178,.045)}
+.thead{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.avatar{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  background:rgba(15,23,42,.07);color:#1a2333;font-weight:700;font-size:13px;flex:none}
+.tname{font-weight:600;font-size:13.5px}
+.ttime{font-size:12.5px;color:var(--mut)}
+.ttags{display:flex;gap:5px;flex-wrap:wrap}
+.ttag{font-size:11.5px;border-radius:5px;padding:0 6px;background:#ffffff;border:1px solid var(--line2);color:var(--mut)}
+.ttext{font-size:13.5px;margin-top:6px;white-space:pre-wrap;word-break:break-word}
+.tmedia{margin-top:8px;max-width:100%;max-height:360px;border-radius:10px;border:1px solid var(--line2);
+  display:block;cursor:zoom-in}
+.tweet.isread{opacity:.72}
+.tweet.ignored{opacity:.5}
+.iconbtn.star.on{color:#d97706;font-size:16px}
+.cbx{width:15px;height:15px;accent-color:#0891b2;cursor:pointer;flex:none;margin-top:4px}
+.flagbtns{margin-left:auto;display:flex;gap:2px;align-items:center}
+.batchbar{display:none;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--line);
+  background:rgba(8,145,178,.07);flex-wrap:wrap;font-size:12.5px;color:var(--mut)}
+.batchbar.show{display:flex}
+.batchbar b{color:#0e7490}
+/* 报告任务面板 */
+.rtitem{border:1px solid var(--line2);border-radius:11px;padding:10px 13px;margin-bottom:9px;background:#fff}
+.rttop{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rttitle{font-size:13.5px;font-weight:600;color:#0f172a;flex:1;min-width:220px}
+.rtb{font-size:11.5px;border-radius:6px;padding:1px 8px;font-weight:600;border:1px solid;flex:none}
+.rtb-wait{background:#f1f5f9;border-color:#cbd5e1;color:#475569}
+.rtb-writing{background:rgba(2,132,199,.08);border-color:rgba(2,132,199,.4);color:#0369a1}
+.rtb-ready{background:rgba(5,150,105,.08);border-color:rgba(5,150,105,.4);color:#047857}
+.rtb-done{background:rgba(22,101,52,.1);border-color:rgba(21,128,61,.45);color:#166534}
+.rtb-human{background:rgba(234,88,12,.08);border-color:rgba(234,88,12,.4);color:#c2410c}
+.rtmeta{font-size:12px;color:var(--mut);margin-top:5px}
+.rtgate{font-size:12px;margin-top:5px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 通用弹窗 */
+.mwrap{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:60;align-items:center;justify-content:center}
+.mwrap.show{display:flex}
+.mbox{background:#fff;border-radius:14px;padding:18px 20px;width:min(540px,92vw);max-height:86vh;overflow:auto;
+  box-shadow:0 20px 60px rgba(2,6,23,.25);text-align:left}
+.mbox label{display:block;font-size:12.5px;color:var(--mut);margin:10px 0 4px;font-weight:600}
+.mbox input,.mbox textarea,.mbox select{width:100%;border:1px solid var(--line2);border-radius:9px;
+  padding:8px 10px;font-family:inherit;font-size:13px;box-sizing:border;background:#fff;color:var(--text)}
+.mbox .mfoot{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+.mbox pre{white-space:pre-wrap;font-size:12.5px;color:#334155;max-height:50vh;overflow:auto;margin-top:10px}
+.ttext.clamped{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.tmore{border:none;background:none;color:var(--acc);cursor:pointer;font-size:12px;font-family:inherit;padding:2px 0}
+.tsum{font-size:14px;font-weight:600;margin-top:7px;color:#0f172a}
+.geoline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
+.geo{font-size:11.5px;border-radius:6px;padding:1px 8px;background:rgba(5,150,105,.07);
+  border:1px solid rgba(5,150,105,.3);color:#047857}
+.geo.blue{background:rgba(2,132,199,.07);border-color:rgba(2,132,199,.3);color:#0369a1}
+.geo.violet{background:rgba(99,102,241,.07);border-color:rgba(99,102,241,.3);color:#4f46e5}
+.geo.orange{background:rgba(234,88,12,.07);border-color:rgba(234,88,12,.32);color:#c2410c}
+.geo.dim{background:rgba(100,116,139,.06);border-color:rgba(100,116,139,.22);color:#94a3b8}
+.geo[data-filter]{cursor:pointer;transition:transform .06s}
+.geo[data-filter]:hover{transform:translateY(-1px);filter:brightness(.96)}
+.ltags{color:#c2410c;font-size:11.5px;flex:none;max-width:220px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+/* 多值标记输入（下拉选常用值 + 自由输入回车添加，chips 可删） */
+.tkchips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;min-height:22px;align-items:center}
+.tkchip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:7px;
+  background:rgba(234,88,12,.08);border:1px solid rgba(234,88,12,.32);color:#c2410c}
+.tkchip i{font-style:normal;cursor:pointer;font-size:11px;opacity:.65;padding:0 1px}
+.tkchip i:hover{opacity:1;color:#9a3412}
+.tkempty{font-size:12px;color:#94a3b8}
+.tkrow{display:flex;gap:6px}
+.tkrow .tkin{flex:1;min-width:0}
+.tkrow .tkadd{width:auto;flex:none;max-width:46%}
+.tzh{margin-top:8px;padding:8px 12px;border-left:3px solid rgba(99,102,241,.5);border-radius:0 9px 9px 0;
+  background:rgba(99,102,241,.05);font-size:13px;color:#3730a3;white-space:pre-wrap;word-break:break-word}
+.tzh .zhlabel{font-size:11.5px;color:var(--acc2);margin-right:6px;font-weight:600}
+/* AI 研判卡 */
+.aicard{margin-top:9px;border:1px solid rgba(99,102,241,.22);border-radius:11px;overflow:hidden;
+  background:rgba(99,102,241,.04)}
+.aicard .ah{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid rgba(99,102,241,.14)}
+.aicard .ah .t{font-size:12px;font-weight:600;color:#4f46e5;letter-spacing:1px}
+.sevchip{font-size:11.5px;border-radius:6px;padding:1px 8px;font-weight:600}
+.aicard .ab{padding:9px 12px;font-size:12.5px}
+.aicard .arow{margin:3px 0;color:var(--mut)}
+.aicard .arow b{color:var(--text);font-weight:600}
+.aicard .arow .assess{color:#334155}
+.ioc{display:inline-block;background:#ffffff;border:1px solid var(--line2);border-radius:6px;
+  padding:0 7px;font-size:11.5px;color:#0e7490;font-family:Consolas,monospace;margin:2px 4px 2px 0}
+.aerr{margin-top:9px;padding:8px 12px;border-radius:9px;background:rgba(225,29,72,.06);
+  border:1px solid rgba(225,29,72,.3);color:#be123c;font-size:12px}
+.tops{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+.empty{padding:28px;text-align:center;color:var(--mut);font-size:13px}
+/* 侧栏通用 */
+.srow{padding:8.5px 16px;border-bottom:1px solid var(--line)}
+.srow:last-child{border-bottom:none}
+.srow .r1{display:flex;align-items:center;gap:8px;font-size:13px}
+.srow .cnt{margin-left:auto;font-size:12.5px;color:var(--mut);font-variant-numeric:tabular-nums;flex:none}
+.xacc{display:flex;align-items:center;gap:9px;padding:9px 16px;border-bottom:1px solid var(--line)}
+.xacc:last-child{border-bottom:none}
+.xacc .nm2{font-size:13.5px;font-weight:600}
+.xacc .ds{font-size:12px;color:var(--mut2)}
+.xacc .ops{margin-left:auto;display:flex;align-items:center;gap:8px}
+.iconbtn{border:none;background:none;color:var(--mut);cursor:pointer;font-size:15px;padding:2px 5px;font-family:inherit}
+.iconbtn:hover{color:var(--acc)}
+.freqsel{max-width:86px;font-size:11.5px;padding:2px 5px;border-radius:7px}
+.xadd{display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line)}
+.xadd input{flex:1;min-width:0}
+/* 列表视图 */
+.litem{display:flex;align-items:center;gap:9px;padding:7px 16px;border-bottom:1px solid var(--line);font-size:12.5px}
+.litem:last-child{border-bottom:none}
+.litem:hover{background:rgba(8,145,178,.04)}
+.litem .sevdot{width:8px;height:8px;border-radius:50%;flex:none}
+.litem .lt{color:var(--mut);flex:none;font-variant-numeric:tabular-nums}
+.litem .ln{font-weight:600;flex:none}
+.litem .ls{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.litem .lgeo{color:#047857;flex:none;font-size:11.5px}
+.litem a{color:var(--mut);text-decoration:none;flex:none}
+.litem a:hover{color:var(--acc)}
+.viewsw{display:inline-flex;gap:0;margin-left:10px}
+.viewsw .pill{border-radius:0}
+.viewsw .pill:first-child{border-radius:999px 0 0 999px}
+.viewsw .pill:last-child{border-radius:0 999px 999px 0}
+/* AI 设置面板 */
+.aiform{padding:10px 16px 14px;border-bottom:1px solid var(--line)}
+.aiform label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
+.aiform input{width:100%;font-family:Consolas,monospace}
+.aiform .row{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-top:10px}
+.aiform .row .lab{font-size:12.5px;color:var(--mut)}
+.aiform .ops2{display:flex;gap:8px;margin-top:11px;align-items:center}
+.aiform .hint{font-size:11.5px;color:var(--mut2)}
+/* 通道 */
+.chrow{padding:11px 16px;border-bottom:1px solid var(--line)}
+.chrow:last-child{border-bottom:none}
+.chrow .r1{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.badge{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:700;flex:none}
+.chnm{font-size:14px;font-weight:600}
+.chsub{font-size:12px;color:var(--mut2)}
+.chip{font-size:12px;border-radius:6px;padding:1.5px 8px}
+.chip.real{background:rgba(5,150,105,.09);color:#047857}
+.chip.sim{background:rgba(8,145,178,.09);color:#0e7490}
+.chip.offc{background:rgba(100,116,139,.12);color:#64748b}
+.chrow .ops{margin-left:auto;display:flex;align-items:center;gap:9px}
+/* 通道多实例 */
+.chinst{border:1px solid var(--line2);border-radius:10px;padding:8px 11px;margin-top:8px;background:rgba(255,255,255,.6)}
+.chinst .r1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ichip{font-size:12.5px;font-weight:600;color:#0f172a;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chinst .ops{margin-left:auto;display:flex;align-items:center;gap:6px}
+.switch{position:relative;width:34px;height:19px;flex:none;display:inline-block}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;border-radius:999px;background:rgba(15,23,42,.1);
+  border:1px solid var(--line2);transition:.25s;cursor:pointer}
+.slider::before{content:"";position:absolute;width:13px;height:13px;border-radius:50%;top:2px;left:2px;
+  background:#ffffff;border:1px solid rgba(15,23,42,.2);transition:.25s}
+.switch input:checked+.slider{background:rgba(8,145,178,.18);border-color:rgba(8,145,178,.55)}
+.switch input:checked+.slider::before{left:16px;background:#0891b2;box-shadow:0 0 8px rgba(8,145,178,.6)}
+.chrow .r2{font-size:11.5px;color:var(--mut);margin-top:6px}
+.chform{display:none;margin-top:9px;padding:4px 12px 12px;border-top:1px dashed var(--line2)}
+.chform.open{display:block}
+.chform label{display:block;font-size:12px;color:var(--mut);margin:9px 0 3px}
+.chform input{width:100%;font-family:Consolas,monospace}
+.chform .ops2{display:flex;gap:8px;margin-top:11px;align-items:center}
+.chform .hint{font-size:11.5px;color:var(--mut2)}
+/* 推送记录时间轴 */
+.lrow{display:flex;gap:10px;padding:8px 16px 8px 20px;position:relative}
+.lrow::before{content:"";position:absolute;left:6px;top:14px;bottom:-10px;width:1px;background:var(--line)}
+.lrow:last-child::before{display:none}
+.lrow::after{content:"";position:absolute;left:3px;top:13px;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 7px rgba(52,211,153,.7)}
+.lrow.bad::after{background:#f87171;box-shadow:0 0 7px rgba(248,113,113,.7)}
+.lrow .tx{font-size:12.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .tx b{font-weight:600}
+.lrow .ok{color:var(--ok)}
+.lrow .bad{color:#f87171}
+.lrow .tm{margin-left:auto;font-size:12.5px;color:var(--mut2);flex:none;font-variant-numeric:tabular-nums}
+.flrow{padding:7px 16px;border-bottom:1px solid var(--line);font-size:12px}
+.flrow:last-child{border-bottom:none}
+.flrow .f1{display:flex;align-items:center;gap:7px}
+.flrow .fat{font-variant-numeric:tabular-nums;color:var(--mut2)}
+.flrow .ftrig{font-size:10.5px;border-radius:5px;padding:0 6px;background:rgba(8,145,178,.09);color:#0e7490}
+.flrow .ftrig.manual{background:rgba(99,102,241,.1);color:#4f46e5}
+.flrow .fnew{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--mut)}
+.flrow .ftrace{color:var(--mut);word-break:break-all;font-family:Consolas,monospace;font-size:11px;margin-top:2px}
+.flrow.ferr .ftrace{color:#be123c}
+.flrow .fok{color:var(--ok)}
+.snackbar{position:fixed;right:18px;bottom:18px;z-index:99;pointer-events:none;
+  background:rgba(255,255,255,.97);border:1px solid rgba(8,145,178,.4);border-radius:11px;
+  padding:11px 18px;font-size:13.5px;color:#0f172a;max-width:360px;
+  box-shadow:0 10px 34px rgba(30,41,59,.2),0 0 24px -10px rgba(8,145,178,.35);
+  opacity:0;transform:translateY(10px);transition:all .3s}
+.snackbar.show{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<nav class="sidebar" id="sidebar">
+  <div class="sb-top">
+    <button class="sb-toggle" id="sb-toggle-btn" title="展开/折叠侧栏"><span>»</span></button>
+    <div class="sb-brand">X-Intel 控制台</div>
+  </div>
+  <div class="sb-icons">
+    <button class="sb-item" data-view="home-panel" title="首页"><span>⌂</span><em>首页</em></button>
+    <button class="sb-item" data-view="feed-panel" title="推文流"><span>▤</span><em>推文流</em></button>
+    <button class="sb-item" data-view="watchlist-panel" title="监控源配置"><span>◉</span><em>监控源</em></button>
+    <button class="sb-item" data-view="ai-panel" title="AI 设置"><span>✦</span><em>AI 设置</em></button>
+    <button class="sb-item" data-view="task-panel" title="报告任务"><span>▣</span><em>报告任务</em></button>
+    <div class="sb-group" id="sb-ps-group">
+      <button class="sb-item sb-parent" data-view="pf-panel" title="推送设置"><span>⚙</span><em>推送设置</em><i class="chev">›</i></button>
+      <div class="sb-sub">
+        <button class="sb-item sb-subitem" data-view="pf-panel" title="推送过滤"><span>·</span><em>推送过滤</em></button>
+        <button class="sb-item sb-subitem" data-view="chlist-panel" title="推送通道"><span>·</span><em>推送通道</em></button>
+      </div>
+    </div>
+    <div class="sb-group" id="sb-logs-group">
+      <button class="sb-item sb-parent" data-view="logs-panel" title="日志审计"><span>≡</span><em>日志审计</em><i class="chev">›</i></button>
+      <div class="sb-sub">
+        <button class="sb-item sb-subitem" data-logtab="fetch" title="抓取日志"><span>·</span><em>抓取日志</em></button>
+        <button class="sb-item sb-subitem" data-logtab="push" title="推送记录"><span>·</span><em>推送记录</em></button>
+        <button class="sb-item sb-subitem" data-logtab="ai" title="AI 日志"><span>·</span><em>AI 日志</em></button>
+      </div>
+    </div>
+  </div>
+  <div class="sb-foot">
+    <a class="sb-link" href="/help" target="_blank" rel="noopener" title="帮助文档"><span>?</span><em>帮助文档</em></a>
+    <a class="sb-link" href="/arch" target="_blank" rel="noopener" title="系统架构"><span>⌗</span><em>系统架构</em></a>
+  </div>
+</nav>
+<div class="shell">
+
+<div class="view on" id="home-panel">
+<header class="topbar glass">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs><linearGradient id="lg1" x1="0" y1="0" x2="24" y2="24">
+        <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
+      <path d="M4 4l6.5 8.2L4.4 20h2.6l4.8-6 4.7 6H20l-6.6-8.4L19.6 4H17l-4.3 5.4L8.5 4H4z" stroke="url(#lg1)" stroke-width="1.4" stroke-linejoin="round"/>
+    </svg>
+    <div><div class="t1">X-Intel</div><div class="t2">X 情报监控台 · AI 研判</div></div>
+  </div>
+  <div class="top-status">
+    <span class="api" id="apihost">API · 加载中</span>
+    <span class="live"><span class="ldot" id="ldot"></span><span id="livetext">采集中</span></span>
+    <div class="ringwrap">
+      <svg width="34" height="34" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" stroke="rgba(148,163,184,.18)" stroke-width="2.4" fill="none"/>
+        <circle id="ringfg" cx="12" cy="12" r="9" stroke="#0891b2" stroke-width="2.4" fill="none"
+          stroke-linecap="round" stroke-dasharray="56.55" stroke-dashoffset="0"
+          style="filter:drop-shadow(0 0 3px rgba(8,145,178,.5))"/>
+      </svg>
+      <div class="rt">下轮抓取<b id="timer">--:--</b></div>
+    </div>
+    <button class="btn" id="btn-fetch" type="button"><span class="ric">↻</span>立即抓取</button>
+    <a class="btn" href="/arch" target="_blank" rel="noopener">架构</a>
+    <a class="btn" href="/help" target="_blank" rel="noopener">帮助文档</a>
+  </div>
+</header>
+
+<section class="kpis">
+  <div class="kpi glass">
+    <div class="row1"><span class="kicon" style="background:rgba(8,145,178,.1);color:#0e7490">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></span>
+      <span class="lb">今日新增推文</span></div>
+    <div class="vl" id="kpi-today">0</div>
+    <div class="dl" id="kpi-today-dl">累计 0 条</div>
+  </div>
+  <div class="kpi glass">
+    <div class="row1"><span class="kicon" style="background:rgba(99,102,241,.1);color:#4f46e5">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3l1.9 4.6 4.6 1.9-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><circle cx="18.5" cy="16.5" r="2"/></svg></span>
+      <span class="lb">AI 已研判</span></div>
+    <div class="vl" id="kpi-ai" style="color:#a5b4fc">0</div>
+    <div class="dl" id="kpi-ai-dl">今日研判 0 条</div>
+  </div>
+  <div class="kpi glass">
+    <div class="row1"><span class="kicon" style="background:rgba(225,29,72,.08);color:#e11d48">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></span>
+      <span class="lb">监控源</span></div>
+    <div class="vl" id="kpi-acc">0</div>
+    <div class="dl" id="kpi-acc-dl">页面可随时增删</div>
+    <div id="kpi-src-x"></div>
+    <div id="kpi-src-rss"></div>
+  </div>
+  <div class="kpi glass">
+    <div class="row1"><span class="kicon" style="background:rgba(5,150,105,.09);color:#059669">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3 11 21 4l-7 17-3.5-6.5L3 11z"/></svg></span>
+      <span class="lb">推送成功率</span></div>
+    <div class="vl" id="kpi-push" style="color:var(--ok)">--</div>
+    <div class="dl" id="kpi-push-dl">今日已推送 0 次</div>
+  </div>
+</section>
+
+<section class="home-grid" id="home-grid">
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">AI ENGINE</span>
+      <a class="hmore" data-goto="ai-panel">管理 →</a></div>
+    <div id="hc-ai"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">CHANNELS</span>
+      <a class="hmore" data-goto="chlist-panel">管理 →</a></div>
+    <div id="hc-ch"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">PUSH FILTER</span>
+      <a class="hmore" data-goto="pf-panel">管理 →</a></div>
+    <div id="hc-pf"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">TOP CATEGORIES · 全量分布</span></div>
+    <div id="hc-cat"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">TOP TAGS · 关键词标签</span>
+      <a class="hmore" data-goto="feed-panel">管理 →</a></div>
+    <div id="hc-tags"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">REPORT TASKS</span>
+      <a class="hmore" data-goto="task-panel">管理 →</a></div>
+    <div id="hc-rt"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">SYSTEM</span></div>
+    <div id="hc-sys"><div class="empty">加载中…</div></div>
+  </div>
+</section>
+</div><!-- /home-panel -->
+
+<div class="main">
+  <section class="panel glass view" id="feed-panel" aria-label="推文流" style="background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r)">
+    <div class="phead" style="display:flex;align-items:center">
+      <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">X FEED</div>
+      <div style="font-size:14.5px;font-weight:600">推文流 <span class="cnt" id="count"></span></div></div>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)">
+        AI 实时研判/翻译 <label class="switch" style="vertical-align:-3px"><input type="checkbox" id="aiquick" aria-label="AI 实时研判翻译开关"><span class="slider"></span></label>
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)">
+        清理：<select id="cleandays" style="width:auto">
+          <option value="1">保留近 1 天</option><option value="2">保留近 2 天</option>
+          <option value="3">保留近 3 天</option><option value="7" selected>保留近 1 周</option>
+          <option value="30">保留近 30 天</option></select>
+        <button class="btn btn-xs" id="cleanbtn" type="button">一键清理</button>
+      </span>
+      <span class="viewsw" role="group" aria-label="视图切换">
+        <button class="pill" type="button" data-view="card" aria-pressed="true">卡片</button>
+        <button class="pill" type="button" data-view="list" aria-pressed="false">列表</button>
+      </span>
+      <span class="note" id="note" role="status" aria-live="polite"></span>
+    </div>
+    <div class="filters">
+      <button class="pill" type="button" data-sev="all" aria-pressed="true">全部</button>
+      <button class="pill" type="button" data-sev="critical" aria-pressed="false"><span class="pd" style="background:var(--crit)"></span>严重</button>
+      <button class="pill" type="button" data-sev="high" aria-pressed="false"><span class="pd" style="background:var(--high)"></span>高危</button>
+      <button class="pill" type="button" data-sev="medium" aria-pressed="false"><span class="pd" style="background:var(--med)"></span>中危</button>
+      <button class="pill" type="button" data-sev="low" aria-pressed="false"><span class="pd" style="background:var(--low)"></span>低危</button>
+      <button class="pill" type="button" data-sev="info" aria-pressed="false"><span class="pd" style="background:var(--info)"></span>通报</button>
+      <select id="statsel" aria-label="按状态筛选">
+        <option value="all">全部（未忽略）</option>
+        <option value="unread">未读</option>
+        <option value="read">已读</option>
+        <option value="ignored">已忽略</option>
+        <option value="starred">★ 收藏</option>
+      </select>
+      <select id="ctrysel" aria-label="按国家筛选"><option value="all">全部国家</option></select>
+      <select id="catsel" aria-label="按情报分类筛选"><option value="all">全部分类</option></select>
+      <select id="indsel" aria-label="按行业筛选"><option value="all">全部行业</option></select>
+      <select id="tagsel" aria-label="按关键词标签筛选"><option value="all">全部标签</option></select>
+      <select id="accsel" aria-label="按账号筛选"><option value="all">全部账号</option></select>
+      <input class="q" id="q" type="search" placeholder="搜索原文 / 译文 / 研判" aria-label="搜索推文">
+    </div>
+    <div id="batchbar" class="batchbar">
+      已选 <b id="selcount">0</b> 条：
+      <button class="btn btn-xs" type="button" data-bop="read">批量已读</button>
+      <button class="btn btn-xs" type="button" data-bop="ignore">批量忽略</button>
+      <button class="btn btn-xs" type="button" data-bop="ai_translate">批量翻译</button>
+      <button class="btn btn-xs" type="button" data-bop="ai_analyze">批量研判</button>
+      <button class="btn btn-xs" type="button" data-bop="delete" style="border-color:rgba(225,29,72,.4);color:#be123c">批量删除</button>
+      <button class="btn btn-xs" type="button" id="selreport" style="border-color:rgba(99,102,241,.5);color:#4f46e5">生成报告任务</button>
+      <button class="btn btn-xs" type="button" id="selclear">取消选择</button>
+      <span class="hint">批量 AI 每次最多 20 条，逐条串行执行；报告任务最多勾 50 条生成线索包</span>
+    </div>
+    <div id="list"><div class="empty">加载中…</div></div>
+  </section>
+
+    <section class="panel glass view" id="watchlist-panel" aria-label="监控源配置">
+      <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">SOURCES</div>
+      <div style="font-size:14.5px;font-weight:600">监控源配置 <span class="cnt" id="xcount"></span></div></div></div>
+      <div style="padding:11px 16px 4px;font-size:12.5px;font-weight:700;color:var(--mut)">01 · X 账号</div>
+      <div class="xadd">
+        <input id="xnew" placeholder="输入 @用户名，如 DailyDarkWeb" aria-label="添加 X 监控账号">
+        <select id="firstlimit" aria-label="初次抓取条数" title="新账号首次抓取回溯的历史推文条数">
+          <option value="10" selected>首抓 10 条</option>
+          <option value="20">首抓 20 条</option>
+          <option value="30">首抓 30 条</option>
+          <option value="50">首抓 50 条</option>
+        </select>
+        <button class="btn btn-xs" id="xaddbtn" type="button">添加</button>
+      </div>
+      <div id="xaccounts"><div class="empty">加载中…</div></div>
+      <div style="padding:14px 16px 4px;font-size:12.5px;font-weight:700;color:var(--mut);border-top:1px solid var(--line)">02 · RSS 订阅源</div>
+      <div class="xadd">
+        <input id="rname" placeholder="源名称，如 TheHackersNews" style="max-width:150px" aria-label="RSS 源名称">
+        <input id="rurl" placeholder="RSS/Atom 地址，如 https://feeds.feedburner.com/TheHackersNews" aria-label="RSS 地址">
+        <button class="btn btn-xs" id="rtestbtn" type="button">测试</button>
+        <button class="btn btn-xs" id="raddbtn" type="button">添加</button>
+      </div>
+      <div id="rssources"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="ai-panel" aria-label="AI 设置">
+      <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">AI ENGINE</div>
+      <div style="font-size:14.5px;font-weight:600">AI 设置 <span class="cnt" id="aichip"></span></div></div></div>
+      <div class="aiform" id="aiform">加载中…</div>
+    </section>
+
+    <section class="panel glass view" id="task-panel" aria-label="报告任务">
+      <div class="phead" style="display:flex;align-items:center">
+        <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">REPORT TASKS</div>
+        <div style="font-size:14.5px;font-weight:600">报告任务 <span class="cnt" id="rtcounts"></span></div></div>
+        <button class="btn btn-xs" id="rt-new" type="button" style="margin-left:auto">+ 新建任务</button>
+      </div>
+      <div id="rtlist"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="pf-panel" aria-label="推送过滤">
+      <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">PUSH FILTER RULES</div>
+      <div style="font-size:14.5px;font-weight:600">推送过滤 <span class="cnt" id="pfchip"></span></div></div></div>
+      <div style="padding:11px 16px 4px;font-size:12.5px;font-weight:700;color:var(--mut)">默认规则 <span style="font-weight:400;color:var(--mut2)">（未绑定规则的通道实例使用）</span></div>
+      <div class="aiform" id="pfform">加载中…</div>
+      <div style="padding:14px 16px 4px;font-size:12.5px;font-weight:700;color:var(--mut);border-top:1px solid var(--line);display:flex;align-items:center">
+        命名规则库
+        <button class="btn btn-xs" id="pfr-new" type="button" style="margin-left:auto">+ 新建规则</button>
+      </div>
+      <div id="pfrules"><div class="empty">加载中…</div></div>
+      <div class="chform" id="pfrform" style="margin:0 16px 13px"></div>
+    </section>
+
+    <section class="panel glass view" id="chlist-panel" aria-label="推送通道">
+      <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">CHANNELS</div>
+      <div style="font-size:14.5px;font-weight:600">推送通道 <span class="cnt" id="chtotal"></span></div></div></div>
+      <div id="chlist"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="logs-panel" aria-label="日志审计">
+      <div class="phead" style="display:flex;align-items:center">
+        <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">AUDIT LOGS</div>
+        <div style="font-size:14.5px;font-weight:600">日志审计</div></div>
+        <button class="btn btn-xs" id="fltoggle" type="button" style="margin-left:auto">展开</button>
+      </div>
+      <div id="tab-fetch">
+        <div style="padding:8px 16px 0"><span class="cnt" id="flcount"></span></div>
+        <div id="fetchlogs" style="display:none"><div class="empty">未展开</div></div>
+      </div>
+      <div id="tab-push" style="display:none">
+        <div id="logs"><div class="empty">加载中…</div></div>
+      </div>
+      <div id="tab-ai" style="display:none">
+        <div style="padding:9px 16px;font-size:12.5px;color:var(--mut)" id="ailogs-stats">今日调用 -- 次</div>
+        <div id="ailogs"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+</div>
+</div>
+
+<div class="mwrap" id="rtmodal">
+  <div class="mbox">
+    <div style="font-size:15px;font-weight:700">生成报告任务</div>
+    <div class="hint" style="margin-top:6px">选中推文的 AI 研判/译文/地理标签将打包为线索包（data/report_tasks/task_&lt;id&gt;.json），由外部 report-writer Agent 按规范写作；系统复跑配置的机械门禁脚本验收，PASS 后人工确认推送。</div>
+    <label>任务标题</label>
+    <input id="rt-title" placeholder="事件标题（Agent 可在检索阶段修正，先以此统一检索方向）">
+    <label>检索关键词（每行一组，建议 ≥3 组）</label>
+    <textarea id="rt-kw" rows="3" placeholder="如：CVE-2026-XXXX&#10;恶意软件家族名&#10;涉事单位域名"></textarea>
+    <label>报告档位</label>
+    <select id="rt-tier">
+      <option value="速报">速报（≥2 源 ≥3 事实，含官方原文 1 页）</option>
+      <option value="完整">完整（≥3 源 8-22 事实）</option>
+    </select>
+    <label>附加说明（可空）</label>
+    <textarea id="rt-notes" rows="2" placeholder="补充线索、侧重点、禁忌等"></textarea>
+    <div style="display:flex;align-items:center;margin-top:10px">
+      <span style="font-size:12.5px;color:var(--mut)">验收 PASS 后自动推送（默认人工确认）</span>
+      <label class="switch" style="margin-left:auto"><input type="checkbox" id="rt-auto"><span class="slider"></span></label>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-xs" id="rt-cancel" type="button">取消</button>
+      <button class="btn btn-xs" id="rt-submit" type="button" style="border-color:var(--acc);color:var(--acc)">创建任务</button>
+    </div>
+  </div>
+</div>
+<div class="mwrap" id="rtinfo">
+  <div class="mbox">
+    <div style="font-size:14.5px;font-weight:700" id="rtinfo-title"></div>
+    <pre id="rtinfo-body"></pre>
+    <div class="mfoot"><button class="btn btn-xs" id="rtinfo-close" type="button">关闭</button></div>
+  </div>
+</div>
+
+<div class="snackbar" id="snackbar" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  document.getElementById('apihost').textContent='API · '+location.host;
+  var SEV={critical:{c:'#fb7185',n:'严重'},high:{c:'#fdba74',n:'高危'},medium:{c:'#fde047',n:'中危'},
+           low:{c:'#38bdf8',n:'低危'},info:{c:'#94a3b8',n:'通报'}};
+  var CH_META={wecom:{badge:'企',color:'rgba(37,99,235,.1);color:#1d4ed8',sub:'群机器人 · Markdown',real:'真实 Webhook'},
+    dingtalk:{badge:'钉',color:'rgba(2,132,199,.1);color:#0369a1',sub:'自定义机器人 · 加签',real:'真实 · 加签'},
+    pushplus:{badge:'P',color:'rgba(13,148,136,.1);color:#0f766e',sub:'个人微信 · 服务号',real:'真实'},
+    wxpusher:{badge:'W',color:'rgba(234,88,12,.1);color:#c2410c',sub:'个人微信 · 应用推送',real:'真实'}};
+  var CH_FIELDS={wecom:[['webhook','Webhook 地址（群机器人）']],
+    dingtalk:[['webhook','Webhook 地址'],['secret','加签密钥（SEC 开头）']],
+    pushplus:[['token','Token（pushplus.plus 微信扫码获取）']],
+    wxpusher:[['app_token','appToken（wxpusher.zjiecode.com 创建应用）'],['uid','UID（可选，接收者）']]};
+
+  var state={sev:'all',acc:'all',q:'',country:'all',industry:'all',category:'all',tag:'all',status:'all',view:(localStorage.getItem('xintel_view')||'card')};
+  var selected=new Set();
+  var lastItems=[];
+  var busy=false,nextIn=null,intervalSec=900,lastFetchAt=null,lastToday=null,snT=null;
+
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+  function two(n){return (n<10?'0':'')+n;}
+  function snack(msg){var el=document.getElementById('snackbar');el.textContent=msg;el.classList.add('show');
+    clearTimeout(snT);snT=setTimeout(function(){el.classList.remove('show');},3800);}
+  function countUp(el,to){if(lastToday===to){el.textContent=to;return;}lastToday=to;
+    el.textContent=to;}
+  function jget(url){return fetch(url).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});}
+  function shortTime(s){
+    if(!s)return '';
+    /* 库存的是 GMT 裸值（如 '2026-10-30 15:18'），转本地时区再显示 */
+    try{
+      var gmt=new Date(s.replace(' ','T')+'Z');  /* 按 UTC 解析 */
+      if(!isNaN(gmt)){
+        var p=function(n){return (n<10?'0':'')+n;};
+        return (gmt.getMonth()+1)+'-'+p(gmt.getDate())+' '+p(gmt.getHours())+':'+p(gmt.getMinutes());
+      }
+    }catch(e){}
+    return s&&s.length>=16?s.slice(5,16):s;
+  }
+
+  /* ---------- 推文流 ---------- */
+  function tweetHTML(t){
+    var sv=SEV[t.ai_severity]||null;
+    var tags=[];
+    if(t.is_retweet)tags.push('<span class="ttag">转推</span>');
+    if(t.is_reply)tags.push('<span class="ttag">回复</span>');
+    if(t.ignored)tags.push('<span class="ttag">已忽略</span>');
+    // 摘要行：AI 标题优先，否则原文首行
+    var summary=t.title_zh||((t.text||'').split('\n')[0]||'').slice(0,90);
+    // 标签行：基标三件套（国家/分类/行业，恒显示，缺值灰显）+ 涉事单位 + AI 关键词标签（可点击筛选）
+    function chip(cls,html,filter,value){
+      var a=' class="geo '+cls+'"';
+      if(filter&&value)a+=' data-filter="'+filter+'" data-value="'+esc(value)+'" title="点击筛选"';
+      return '<span'+a+'>'+html+'</span>';
+    }
+    var geo=[];
+    var cc=t.geo_country||'';
+    geo.push(chip(cc&&cc!=='未知'?'':'dim',
+      '🌍 '+esc(cc||'未知')+(t.geo_province?' · '+esc(t.geo_province):'')+(t.geo_city?' · '+esc(t.geo_city):''),
+      'country',(cc&&cc!=='未知')?cc:''));
+    var cat=t.category||'';
+    geo.push(chip((cat&&cat!=='其他'&&cat!=='未知')?'blue':'dim','🗂 '+esc(cat||'未知'),
+      'category',(cat&&cat!=='其他'&&cat!=='未知')?cat:''));
+    var ind=t.industry||'';
+    geo.push(chip(ind&&ind!=='未知'?'violet':'dim','🏭 '+esc(ind||'未知'),
+      'industry',(ind&&ind!=='未知')?ind:''));
+    try{var orgs=JSON.parse(t.org||'[]');if(orgs.length)geo.push('<span class="geo blue">🏢 '+esc(orgs.slice(0,2).join('、'))+'</span>');}catch(e){}
+    (t.tags||[]).forEach(function(tg){
+      geo.push(chip('orange','🏷 '+esc(tg),'tag',tg));
+    });
+    var text=(t.text||'');
+    var clamped=text.length>170;
+    var textHtml='<div class="ttext'+(clamped?' clamped':'')+'" id="tt-'+t.id+'">'+esc(text)+'</div>'+
+      (clamped?'<button class="tmore" type="button" onclick="window.__tg('+t.id+',this)">展开全文</button>':'');
+    var media=t.media_url?'<img class="tmedia" loading="lazy" alt="推文截图" src="/api/media?url='+encodeURIComponent(t.media_url)+'" onclick="window.open(\''+esc(t.url)+'\',\'_blank\')">':'';
+    var aiBtns='<div class="tops">'+
+      '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'analyze\',this)">AI 研判</button>'+
+      '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'translate\',this)">翻译</button>'+
+      (t.url?'<a class="btn btn-xs" href="'+esc(t.url)+'" target="_blank" rel="noopener">原文</a>':'')+
+      '<span class="flagbtns">'+
+      '<button class="iconbtn star'+(t.starred?' on':'')+'" type="button" title="收藏" onclick="window.__flag('+t.id+',{starred:'+(t.starred?'false':'true')+'},this)">'+(t.starred?'★':'☆')+'</button>'+
+      '<button class="iconbtn" type="button" title="已读/未读" onclick="window.__flag('+t.id+',{read:'+(t.read?'false':'true')+'},this)">'+(t.read?'📖':'🔵')+'</button>'+
+      '<button class="iconbtn" type="button" title="忽略" onclick="window.__flag('+t.id+',{ignored:'+(t.ignored?'false':'true')+'},this)">🚫</button>'+
+      '</span></div>';
+    var aiHtml='';
+    if(t.ai_status==='ok'){
+      var iocs=(t.ai_iocs||[]).map(function(x){return '<span class="ioc">'+esc(x)+'</span>';}).join('');
+      var recs=(t.ai_recommendations||[]).map(function(x){return '<div class="arow">· '+esc(x)+'</div>';}).join('');
+      aiHtml='<div class="aicard"><div class="ah"><span class="t">AI 研判</span>'+
+        (sv?'<span class="sevchip" style="background:'+sv.c+'22;color:'+sv.c+'">'+sv.n+'</span>':'')+
+        '<span class="ttag">'+esc(t.ai_type||'—')+'</span>'+
+        '<span class="ttag">置信度 '+t.ai_confidence+'%</span>'+
+        (t.ai_model?'<span class="ttag">'+esc(t.ai_model)+'</span>':'')+'</div>'+
+        '<div class="ab"><div class="arow"><span class="assess">'+esc(t.ai_assessment||'')+'</span></div>'+
+        (recs?'<div class="arow"><b>处置建议</b></div>'+recs:'')+
+        (iocs?'<div class="arow"><b>IOC</b><br>'+iocs+'</div>':'')+'</div></div>';
+    }else if(t.ai_status==='error'){
+      aiHtml='<div class="aerr">AI 研判失败：'+esc(t.ai_error||'')+'（可点上方按钮重试）</div>';
+    }
+    var zh=t.text_zh?'<div class="tzh"><span class="zhlabel">AI 译</span>'+esc(t.text_zh)+'</div>':'';
+    return '<div class="tweet'+(t.read?' isread':'')+(t.ignored?' ignored':'')+'">'+
+      '<div class="thead"><input type="checkbox" class="cbx tcbx" data-id="'+t.id+'"'+(selected.has(t.id)?' checked':'')+'>'+
+      '<span class="avatar">'+esc((t.screen_name||'?')[0].toUpperCase())+'</span>'+
+      '<span class="tname">@'+esc(t.screen_name)+'</span>'+
+      '<span class="ttime">'+esc(shortTime(t.published_at||t.created_at))+'</span>'+
+      (sv?'<span class="sevchip" style="background:'+sv.c+'22;color:'+sv.c+'">'+sv.n+'</span>':'')+
+      '<span class="ttags">'+tags.join('')+'</span></div>'+
+      (summary?'<div class="tsum">'+esc(summary)+'</div>':'')+
+      (geo.length?'<div class="geoline">'+geo.join('')+'</div>':'')+
+      textHtml+media+zh+aiHtml+aiBtns+'</div>';
+  }
+  window.__flag=function(id,fields,btn){
+    if(btn)btn.disabled=true;
+    fetch('/api/tweets/'+id+'/flag',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(fields)}).then(function(){
+        if(btn)btn.disabled=false;loadTweets();loadStats();
+    }).catch(function(){if(btn)btn.disabled=false;snack('操作失败');});
+  };
+  window.__tg=function(id,btn){
+    var el=document.getElementById('tt-'+id);
+    var c=el.classList.toggle('clamped');
+    btn.textContent=c?'展开全文':'收起';
+  };
+  /* 列表视图行 */
+  function tweetRowHTML(t){
+    var sv=SEV[t.ai_severity]||SEV.info;
+    var summary=t.title_zh||((t.text||'').split('\n')[0]||'').slice(0,90);
+    var geo=[t.geo_country,t.geo_province,t.geo_city].filter(function(x){return x&&x!=='未知';}).join('·');
+    var kws=(t.tags||[]).slice(0,3).join('、');
+    var time=shortTime(t.published_at||t.created_at);
+    return '<div class="litem"><input type="checkbox" class="cbx tcbx" data-id="'+t.id+'"'+(selected.has(t.id)?' checked':'')+'>'+
+      '<span class="sevdot" style="background:'+sv.c+'"></span>'+
+      '<span class="lt">'+esc(time)+'</span><span class="ln">'+(t.starred?'★ ':'')+'@'+esc(t.screen_name)+'</span>'+
+      '<span class="ls" style="'+(t.read?'':'font-weight:600')+'" title="'+esc(summary)+'">'+esc(summary)+'</span>'+
+      (geo?'<span class="lgeo">🌍 '+esc(geo)+'</span>':'')+
+      (kws?'<span class="ltags" title="'+esc((t.tags||[]).join('、'))+'">🏷 '+esc(kws)+'</span>':'')+
+      (t.url?'<a href="'+esc(t.url)+'" target="_blank" rel="noopener">↗</a>':'')+'</div>';
+  }
+  function updateBatchBar(){
+    document.getElementById('selcount').textContent=selected.size;
+    document.getElementById('batchbar').classList.toggle('show',selected.size>0);
+  }
+  function bindSelection(){
+    document.querySelectorAll('#list .tcbx').forEach(function(cb){
+      var id=parseInt(cb.getAttribute('data-id'),10);
+      cb.addEventListener('change',function(){
+        if(cb.checked)selected.add(id);else selected.delete(id);
+        updateBatchBar();
+      });
+    });
+  }
+  function loadFacets(){
+    /* 计数随筛选联动：带上当前其它筛选条件（后端排除各自维度），
+       下拉数字 = 在当前条件下选它能得到的真实条数 */
+    var p=new URLSearchParams({severity:state.sev,screen_name:state.acc,q:state.q,
+      country:state.country,industry:state.industry,category:state.category,
+      tag:state.tag==='all'?'':state.tag,status:state.status});
+    jget('/api/facets?'+p).then(function(f){
+      function fill(selId,list,label){
+        var sel=document.getElementById(selId),cur=sel.value;
+        var arr=list.slice();
+        /* 当前选中项若在其它条件下计数为 0，保留显示"（0）"，不静默丢选项 */
+        if(cur&&cur!=='all'&&!arr.some(function(x){return x.name===cur;}))
+          arr.push({name:cur,count:0});
+        sel.innerHTML='<option value="all">'+label+'</option>'+arr.map(function(x){
+          return '<option value="'+esc(x.name)+'">'+esc(x.name)+'（'+x.count+'）</option>';}).join('');
+        sel.value=cur;if(sel.value!==cur)sel.value='all';
+      }
+      fill('ctrysel',f.countries||[],'全部国家');
+      fill('indsel',f.industries||[],'全部行业');
+      if(f.categories)fill('catsel',f.categories,'全部分类');
+      if(f.tags)fill('tagsel',f.tags,'全部标签');
+    }).catch(function(){});
+  }
+  function loadTweets(){
+    var p=new URLSearchParams({severity:state.sev,screen_name:state.acc,q:state.q,
+      country:state.country,industry:state.industry,category:state.category,tag:state.tag==='all'?'':state.tag,
+      status:state.status,limit:'30'});
+    jget('/api/tweets?'+p).then(function(d){
+      lastItems=d.items||[];
+      var anyFilter=state.sev!=='all'||state.acc!=='all'||!!state.q||state.country!=='all'||
+        state.industry!=='all'||(state.category&&state.category!=='all')||
+        (state.tag&&state.tag!=='all')||state.status!=='all';
+      var emptyHtml=anyFilter
+        ?'<div class="empty">当前筛选组合无结果 —— 试试放宽 等级 / 分类 / 标签 / 国家 / 账号，或清空搜索词</div>'
+        :'<div class="empty">该状态下暂无推文（可点右上角「立即抓取」）</div>';
+      var html=state.view==='list'
+        ? (d.items.length?'<div style="padding:4px 0">'+d.items.map(tweetRowHTML).join('')+'</div>':emptyHtml)
+        : (d.items.length?d.items.map(tweetHTML).join(''):emptyHtml);
+      document.getElementById('list').innerHTML=html;
+      document.getElementById('count').textContent='· '+d.total+' 条';
+      bindSelection();updateBatchBar();loadFacets();
+    }).catch(function(){document.getElementById('list').innerHTML='<div class="empty">加载失败</div>';});
+  }
+  window.__ai=function(tid,action,btn){
+    var old=btn.textContent;btn.disabled=true;btn.textContent='…';
+    fetch('/api/tweets/'+tid+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:action})})
+      .then(function(r){return r.json();})
+      .then(function(r){
+        if(r.ok){snack(action==='analyze'?'AI 研判完成':'翻译完成');loadTweets();loadStats();}
+        else snack((action==='analyze'?'研判失败：':'翻译失败：')+(r.error||''));
+      })
+      .catch(function(){snack('请求失败');})
+      .finally(function(){btn.disabled=false;btn.textContent=old;});
+  };
+
+  /* ---------- 统计 ---------- */
+  function loadStats(){
+    jget('/api/stats').then(function(s){
+      countUp(document.getElementById('kpi-today'),s.today);
+      document.getElementById('kpi-today-dl').textContent='累计 '+s.total+' 条';
+      document.getElementById('kpi-ai').textContent=s.ai_analyzed;
+      document.getElementById('kpi-ai-dl').textContent='今日研判 '+s.ai_today+' 条 · 已标注地区 '+s.geo_tagged+' 条';
+      document.getElementById('kpi-acc').textContent=(s.accounts_enabled||0)+' / '+(s.sources? s.sources.x.total : s.accounts||0);
+      document.getElementById('kpi-acc-dl').textContent='监控源启用 / 总数（01 X + 02 RSS）';
+      (function(){
+        var src=s.sources; if(!src)return;
+        function rows(boxId, items){
+          var box=document.getElementById(boxId);
+          box.innerHTML=(items&&items.length)?items.map(function(it){
+            var tip=it.name+'：近 24h 入库 '+it.cnt24+' 条 · 最后抓取 '+(it.last||'—')+(it.ok?'':' · 最近一轮有失败');
+            return '<div class="srcrow" title="'+esc(tip)+'">'+
+              '<span class="sdot '+(it.ok?'ok':'bad')+'"></span><b>'+esc(it.name)+'</b>'+
+              '<span class="stx">24h '+it.cnt24+' 条 · '+(it.last||'—')+'</span></div>';
+          }).join(''):'<div class="srcrow"><span class="sdot"></span><span class="stx">无源</span></div>';
+        }
+        rows('kpi-src-x', src.x.items);
+        rows('kpi-src-rss', src.rss.items);
+      })();
+      var rate=s.push_total?(Math.round(s.push_ok/s.push_total*1000)/10)+'%':'--';
+      document.getElementById('kpi-push').textContent=rate;
+      document.getElementById('kpi-push-dl').textContent='今日推送 '+s.push_total+' 次'+(s.push_sim?(' · 含模拟 '+s.push_sim):'');
+      intervalSec=Math.max(60,(s.fetch_interval_minutes||15)*60);
+      if(s.next_run_in!=null&&!busy)nextIn=s.next_run_in;
+      document.getElementById('aiquick').checked=!!s.ai_auto_on;
+      document.getElementById('livetext').textContent=s.fetch_running?'抓取中…':'采集中';
+      document.getElementById('ldot').className='ldot'+(s.fetch_running?' err':'');
+      var at=s.last_fetch&&s.last_fetch.at;
+        if(at&&lastFetchAt&&at!==lastFetchAt){
+          var n=s.last_fetch.new;
+          snack(s.last_fetch.error?('抓取异常：'+s.last_fetch.error)
+            :('抓取完成：新增 '+n+' 条推文'+(s.last_fetch.ai?('，AI 已研判 '+s.last_fetch.ai+' 条'):'')));
+          loadTweets();loadLogs();loadAiConfig();loadFacets();
+          if(flOpen)loadFetchLogs();
+        }
+      lastFetchAt=at||lastFetchAt;
+      if(s.fetch_running&&!busy){busy=true;setBusy(true);}
+      if(!s.fetch_running&&busy){busy=false;setBusy(false);loadTweets();loadLogs();}
+    }).catch(function(){document.getElementById('livetext').textContent='离线';document.getElementById('ldot').className='ldot err';});
+  }
+  function setBusy(b){var btn=document.getElementById('btn-fetch');btn.disabled=b;btn.classList.toggle('busy',b);}
+
+  /* ---------- X 账号 ---------- */
+  function loadAccounts(){
+    jget('/api/x/accounts').then(function(d){
+      var items=d.items||[];
+      document.getElementById('xcount').textContent=items.length+' 个';
+      var sel=document.getElementById('accsel'),cur=state.acc;
+      var rssNames=[];
+      try{jget('/api/rss/sources').then(function(rd){
+        (rd.items||[]).forEach(function(s){rssNames.push('RSS:'+s.name);});
+      }).catch(function(){});}catch(e){}
+      var accOpts=items.map(function(a){
+        return '<option value="'+esc(a.screen_name)+'">@'+esc(a.screen_name)+'</option>';});
+      /* RSS 源条目（RSS: 前缀）也进筛选下拉 */
+      setTimeout(function(){
+        rssNames.forEach(function(n){
+          var o=document.createElement('option');
+          o.value=n;o.textContent=n.slice(4)+'（RSS）';
+          sel.appendChild(o);
+        });
+        sel.value=cur;if(sel.value!==cur){sel.value='all';state.acc='all';}
+      },400);
+      sel.innerHTML='<option value="all">全部账号</option>'+accOpts.join('');
+      sel.value=cur;if(sel.value!==cur){sel.value='all';state.acc='all';}
+      document.getElementById('xaccounts').innerHTML=items.length?items.map(function(a){
+        var freq=a.fetch_minutes||0;
+        var freqTxt=freq===0?'全局':(freq<60?freq+' 分钟':(freq/60)+' 小时');
+        return '<div class="xacc"><div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
+          '<span class="nm2">@'+esc(a.screen_name)+'</span>'+
+          (a.display&&a.display!==a.screen_name?' <span class="ds">'+esc(a.display)+'</span>':'')+
+          '<br><span class="ds">频率：'+freqTxt+'</span></div>'+
+          '<span class="ops"><select class="freqsel" data-id="'+a.id+'" aria-label="监控频率">'+
+          [[0,'跟随全局'],[5,'5 分钟'],[10,'10 分钟'],[15,'15 分钟'],[30,'30 分钟'],[60,'1 小时'],[120,'2 小时']].map(function(o){
+            return '<option value="'+o[0]+'"'+(freq===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select>'+
+          '<label class="switch"><input type="checkbox" class="xsw" data-id="'+a.id+'"'+(a.enabled?' checked':'')+'><span class="slider"></span></label>'+
+          '<button class="iconbtn xedit" type="button" data-id="'+a.id+'" data-name="'+esc(a.screen_name)+'">✎</button>'+
+          '<button class="iconbtn xdel" type="button" data-id="'+a.id+'">✕</button></span></div>';
+      }).join(''):'<div class="empty">暂无账号，请在上方添加</div>';
+      document.querySelectorAll('#xaccounts .freqsel').forEach(function(sel){
+        sel.addEventListener('change',function(){
+          fetch('/api/x/accounts/'+sel.getAttribute('data-id'),{method:'PUT',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({fetch_minutes:parseInt(sel.value,10)})})
+            .then(function(){snack('监控频率已更新');loadAccounts();});
+        });
+      });
+      document.querySelectorAll('#xaccounts .xsw').forEach(function(sw){
+        sw.addEventListener('change',function(){
+          fetch('/api/x/accounts/'+sw.getAttribute('data-id')+'/toggle',{method:'POST',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:sw.checked})})
+            .then(function(){snack(sw.checked?'账号已启用，下轮抓取生效':'账号已停用');loadAccounts();loadStats();});
+        });
+      });
+      document.querySelectorAll('#xaccounts .xdel').forEach(function(b){
+        b.addEventListener('click',function(){
+          fetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'DELETE'})
+            .then(function(){snack('已删除监控账号');loadAccounts();loadStats();});
+        });
+      });
+      document.querySelectorAll('#xaccounts .xedit').forEach(function(b){
+        b.addEventListener('click',function(){
+          var nn=window.prompt('修改用户名（不含 @）：',b.getAttribute('data-name'));
+          if(!nn)return;
+          fetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'PUT',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({screen_name:nn.trim(),display:nn.trim()})})
+            .then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
+            .then(function(res){snack(res.ok?('已更新为 @'+nn.trim()):('修改失败：'+((res.d&&res.d.detail)||'')));loadAccounts();});
+        });
+      });
+    }).catch(function(){document.getElementById('xaccounts').innerHTML='<div class="empty">加载失败</div>';});
+  }
+  document.getElementById('xaddbtn').addEventListener('click',function(){
+    var v=document.getElementById('xnew').value.trim();if(!v)return;
+    fetch('/api/x/accounts',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({screen_name:v})})
+      .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+      .then(function(res){
+        if(res.ok){snack('已添加 @'+res.d.screen_name+'，首次抓取 '+document.getElementById('firstlimit').value+' 条');document.getElementById('xnew').value='';}
+        else snack('添加失败：'+((res.d&&res.d.detail)||''));
+        loadAccounts();loadStats();});
+  });
+  /* ---------- RSS 源（监控源 02） ---------- */
+  function loadRss(){
+    jget('/api/rss/sources').then(function(d){
+      var items=d.items||[];
+      var box=document.getElementById('rssources');
+      if(!items.length){box.innerHTML='<div class="empty">暂无 RSS 源——点「测试」验证地址后添加（如 TheHackersNews）</div>';return;}
+      box.innerHTML=items.map(function(s){
+        return '<div class="xacc"><div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+          +'<b>'+esc(s.name)+'</b> <span class="ttag">'+esc(s.url.replace(/^https?:\/\//,'').slice(0,42))+'</span></div>'
+          +'<span class="ops"><select class="freqsel" data-rss="'+s.id+'" aria-label="抓取频率">'
+          +'<option value="0"'+(!s.fetch_minutes?' selected':'')+'>跟随全局</option>'
+          +[5,10,15,30,60,120].map(function(m){return '<option value="'+m+'"'+(s.fetch_minutes===m?' selected':'')+'>'+m+' 分钟</option>';}).join('')
+          +'</select>'
+          +'<label class="switch"><input type="checkbox" class="rssw" data-id="'+s.id+'"'+(s.enabled?' checked':'')+'><span class="slider"></span></label>'
+          +'<button class="iconbtn rssdel" type="button" data-id="'+s.id+'">✕</button></span></div>';
+      }).join('');
+    }).catch(function(){});
+  }
+  document.getElementById('rtestbtn').addEventListener('click',function(){
+    var b=this,u=document.getElementById('rurl').value.trim();
+    if(!u){snack('请先填 RSS 地址');return;}
+    b.disabled=true;b.textContent='…';
+    fetch('/api/rss/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})})
+      .then(function(r){return r.json();})
+      .then(function(r){
+        b.disabled=false;b.textContent='测试';
+        if(r.ok)snack('连通正常：'+(r.title||'')+' · '+r.entries+' 条目 ｜ '+((r.sample||[])[0]||''));
+        else snack('测试失败：'+(r.error||''));
+      }).catch(function(){b.disabled=false;b.textContent='测试';snack('请求失败');});
+  });
+  document.getElementById('raddbtn').addEventListener('click',function(){
+    var u=document.getElementById('rurl').value.trim();
+    if(!u){snack('请先填 RSS 地址（可先点「测试」）');return;}
+    fetch('/api/rss/sources',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:document.getElementById('rname').value.trim(),url:u})})
+      .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+      .then(function(res){
+        if(res.ok){snack('RSS 源已添加：'+res.d.name+'（下轮抓取生效）');
+          document.getElementById('rname').value='';document.getElementById('rurl').value='';}
+        else snack('添加失败：'+((res.d&&res.d.detail)||''));
+        loadRss();
+      });
+  });
+  document.getElementById('rssources').addEventListener('change',function(e){
+    var w=e.target.closest('.rssw');
+    if(w){fetch('/api/rss/sources/'+w.getAttribute('data-id')+'/toggle',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:w.checked})})
+      .then(function(){snack(w.checked?'源已启用':'源已停用');});return;}
+    var fs=e.target.closest('.freqsel');
+    if(fs){fetch('/api/rss/sources/'+fs.getAttribute('data-rss'),{method:'PUT',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({fetch_minutes:parseInt(fs.value,10)})})
+      .then(function(){snack('抓取频率已保存');});}
+  });
+  document.getElementById('rssources').addEventListener('click',function(e){
+    var d=e.target.closest('.rssdel');
+    if(d){if(!confirm('删除该 RSS 源？'))return;
+      fetch('/api/rss/sources/'+d.getAttribute('data-id'),{method:'DELETE'})
+        .then(function(r){return r.json();})
+        .then(function(r){snack(r.ok?'源已删除':'删除失败');loadRss();});}
+  });
+  loadRss();
+  /* 初次抓取条数（全局设置，持久化） */
+  jget('/api/x/settings').then(function(d){
+    var v=(d.values||{}).first_fetch_limit;
+    if(v)document.getElementById('firstlimit').value=String(v);
+  }).catch(function(){});
+  document.getElementById('firstlimit').addEventListener('change',function(){
+    var val=parseInt(this.value,10);
+    fetch('/api/x/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({values:{first_fetch_limit:val}})})
+      .then(function(r){return r.json();})
+      .then(function(res){snack(res.ok?('初次抓取条数已设为 '+val+' 条（新账号生效）'):'保存失败');});
+  });
+
+  /* ---------- AI 设置 ---------- */
+  var AI_PRESETS=[["DeepSeek","https://api.deepseek.com/v1","deepseek-chat"],
+    ["智谱 GLM","https://open.bigmodel.cn/api/paas/v4","glm-4-flash"],
+    ["Kimi 月之暗面","https://api.moonshot.cn/v1","moonshot-v1-8k"],
+    ["阿里通义 Qwen","https://dashscope.aliyuncs.com/compatible-mode/v1","qwen-plus"],
+    ["OpenAI","https://api.openai.com/v1","gpt-4o-mini"],
+    ["本地 Ollama","http://127.0.0.1:11434/v1","qwen2.5:7b"],
+    ["自定义（手动填写）","",""]];
+  function loadAiConfig(){
+    jget('/api/ai/config').then(function(d){
+      var v=d.values||{};
+      aiMaster={enabled:!!v.enabled,has_key:!!v.has_key};
+      document.getElementById('aichip').textContent=(v.enabled?'已启用':'未启用')+(v.has_key?' · 已配 Key':' · 无 Key');
+      var matched=AI_PRESETS.findIndex(function(p){return p[1]&&p[1]===v.base_url;});
+      if(matched<0)matched=AI_PRESETS.length-1; // 未匹配任何预设 → 自定义
+      var f=document.getElementById('aiform');
+      f.innerHTML=
+        '<label>厂商预设</label><select id="ai-preset" style="width:100%">'+
+        AI_PRESETS.map(function(p,i){return '<option value="'+i+'"'+(i===matched?' selected':'')+'>'+esc(p[0])+'</option>';}).join('')+'</select>'+
+        '<label>接口地址 base_url（OpenAI 兼容，自动补 /v1）</label><input id="ai-url" value="'+esc(v.base_url||'')+'" placeholder="https://api.deepseek.com/v1">'+
+        '<label>API Key</label><input id="ai-key" value="'+esc(v.api_key||'')+'" placeholder="sk-…（脱敏显示，重填即覆盖）">'+
+        '<label>模型 model</label><input id="ai-model" list="ai-model-list" value="'+esc(v.model||'')+'" placeholder="deepseek-chat（可点「拉取模型」下拉选择）"><datalist id="ai-model-list"></datalist>'+
+        '<div class="row"><span class="lab">AI 功能启用</span><label class="switch"><input type="checkbox" id="ai-enabled"'+(v.enabled?' checked':'')+'><span class="slider"></span></label></div>'+
+        '<div class="row"><span class="lab">新推文自动研判+翻译</span><label class="switch"><input type="checkbox" id="ai-auto"'+(v.auto_analyze?' checked':'')+'><span class="slider"></span></label></div>'+
+        '<div class="ops2"><button class="btn btn-xs" id="ai-save" type="button">保存</button>'+
+        '<button class="btn btn-xs" id="ai-test" type="button">测试连通</button>'+
+        '<button class="btn btn-xs" id="ai-fetch-models" type="button">拉取模型</button>'+
+        '<button class="btn btn-xs" id="ai-backfill" type="button">补齐地区标签</button>'+
+        '<button class="btn btn-xs" id="ai-classify" type="button">AI 分类</button></div>'+
+        '<div class="hint" style="margin-top:7px">「AI 分类」按 16 类情报标准为近期 200 条推文打分类标签（脚本规则优先+AI 兜底）</div>'+
+        '<div class="hint" style="margin-top:7px">预设切换自动填地址与模型；「补齐地区标签」为旧推文批量补跑 AI 打标（每批 10 条）</div>';
+      document.getElementById('ai-preset').addEventListener('change',function(){
+        var p=AI_PRESETS[this.value];
+        if(p&&p[1]){document.getElementById('ai-url').value=p[1];document.getElementById('ai-model').value=p[2];}
+      });
+      document.getElementById('ai-fetch-models').addEventListener('click',function(){
+        var b=document.getElementById('ai-fetch-models');b.disabled=true;b.textContent='…';
+        var values={
+          base_url:document.getElementById('ai-url').value.trim(),
+          model:document.getElementById('ai-model').value.trim(),
+          enabled:document.getElementById('ai-enabled').checked,
+          auto_analyze:document.getElementById('ai-auto').checked};
+        var key=document.getElementById('ai-key').value.trim();
+        if(key&&key.indexOf('****')<0)values.api_key=key;
+        // 先保存（保证服务端用最新地址/Key 拉取），再取 /models
+        fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({values:values})})
+          .then(function(r){return r.json();})
+          .then(function(){return fetch('/api/ai/models').then(function(r){return r.json();});})
+          .then(function(r){
+            b.disabled=false;b.textContent='拉取模型';
+            var dl=document.getElementById('ai-model-list');
+            if(r.ok&&r.models&&r.models.length){
+              dl.innerHTML=r.models.map(function(m){return '<option value="'+esc(m)+'">';}).join('');
+              snack('拉取到 '+r.models.length+' 个模型，双击 model 输入框从下拉选择');
+            }else{
+              dl.innerHTML='';
+              snack('拉取失败：'+(r.error||'厂商未提供 /models 端点，可手输模型名'));
+            }
+          }).catch(function(){b.disabled=false;b.textContent='拉取模型';snack('请求失败');});
+      });
+      document.getElementById('ai-save').addEventListener('click',function(){
+        var values={
+          base_url:document.getElementById('ai-url').value.trim(),
+          model:document.getElementById('ai-model').value.trim(),
+          enabled:document.getElementById('ai-enabled').checked,
+          auto_analyze:document.getElementById('ai-auto').checked};
+        var key=document.getElementById('ai-key').value.trim();
+        if(key&&key.indexOf('****')<0)values.api_key=key;
+        fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({values:values})})
+          .then(function(r){return r.json();})
+          .then(function(res){snack(res.ok?'AI 设置已保存':'保存失败');loadAiConfig();});
+      });
+      document.getElementById('ai-test').addEventListener('click',function(){
+        var b=document.getElementById('ai-test');b.disabled=true;b.textContent='…';
+        fetch('/api/ai/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+          b.disabled=false;b.textContent='测试连通';
+          snack(r.ok?('AI 连通正常（'+r.model+'）：'+r.reply):('AI 连通失败：'+(r.error||'')));
+        }).catch(function(){b.disabled=false;b.textContent='测试连通';snack('请求失败');});
+      });
+      document.getElementById('ai-classify').addEventListener('click',function(){
+        var b=document.getElementById('ai-classify');b.disabled=true;b.textContent='…';
+        fetch('/api/ai/classify?limit=200',{method:'POST'}).then(function(r){return r.json();}).then(function(res){
+          b.disabled=false;b.textContent='AI 分类';
+          if(res.ok){snack('分类任务已启动（后台执行，200 条约 3-6 分钟），完成后自动按分类更新');}
+          else snack('启动失败');
+        }).catch(function(){b.disabled=false;b.textContent='AI 分类';});
+      });
+      document.getElementById('ai-backfill').addEventListener('click',function(){
+        var b=document.getElementById('ai-backfill');b.disabled=true;b.textContent='…';
+        fetch('/api/ai/backfill?limit=10',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+          b.disabled=false;b.textContent='补齐地区标签';
+          if(r.ok){snack('补标任务已启动（后台执行，每批 10 条），稍后刷新查看');setTimeout(loadTweets,8000);}
+          else snack('启动失败');
+        }).catch(function(){b.disabled=false;b.textContent='补齐地区标签';});
+      });
+    }).catch(function(){document.getElementById('aiform').textContent='加载失败';});
+  }
+
+  /* ---------- 推送过滤 ---------- */
+  /* ---------- 多值标记输入（推送过滤白名单通用） ---------- */
+  var TK={};   /* id -> tokens 数组 */
+  var pfFacets=null;
+  function tokenFieldHtml(id,opts,saved,ph){
+    TK[id]=(saved||'').split(/[、,，/|]/).map(function(x){return x.trim();}).filter(Boolean);
+    return '<div class="tkfield" id="'+id+'">'+
+      '<div class="tkchips" id="'+id+'-chips"></div>'+
+      '<div class="tkrow">'+
+      '<input class="tkin" id="'+id+'-in" placeholder="'+esc(ph||'输入自定义值后回车添加')+'">'+
+      '<select class="tkadd" id="'+id+'-add"><option value="">＋ 常用值</option>'+
+      (opts||[]).map(function(o){return '<option value="'+esc(o.name)+'">'+esc(o.name)+'（'+o.count+'）</option>';}).join('')+
+      '</select></div></div>';
+  }
+  function tkRender(id){
+    var box=document.getElementById(id+'-chips');
+    if(!box)return;
+    box.innerHTML=(TK[id]&&TK[id].length)
+      ? TK[id].map(function(t,i){return '<span class="tkchip">'+esc(t)+'<i data-i="'+i+'" title="移除">✕</i></span>';}).join('')
+      : '<span class="tkempty">未设置（全部）</span>';
+  }
+  function tkAdd(id,v){
+    v=(v||'').trim();
+    if(!v||TK[id].some(function(x){return x===v;}))return;
+    TK[id].push(v);tkRender(id);
+  }
+  function bindTokenField(id){
+    tkRender(id);
+    document.getElementById(id+'-add').addEventListener('change',function(){
+      if(this.value)tkAdd(id,this.value);
+      this.value='';
+    });
+    document.getElementById(id+'-in').addEventListener('keydown',function(e){
+      if(e.key==='Enter'){e.preventDefault();tkAdd(id,this.value);this.value='';}
+    });
+    document.getElementById(id+'-chips').addEventListener('click',function(e){
+      var i=e.target&&e.target.getAttribute?e.target.getAttribute('data-i'):null;
+      if(i!==null&&i!==undefined){TK[id].splice(Number(i),1);tkRender(id);}
+    });
+  }
+  function tkGet(id){return (TK[id]||[]).join('、');}
+
+  function loadPushFilters(){
+    Promise.all([jget('/api/push/filters'),
+                 jget('/api/facets').catch(function(){return {};})])
+      .then(function(rs){
+        var v=rs[0].values||{};
+        pfFacets=rs[1]||{};
+        var active=[v.min_severity,v.categories,v.countries,v.industries,v.tags,v.keywords].filter(Boolean).length;
+        document.getElementById('pfchip').textContent=active?active+' 项生效':'未设置（全部推送）';
+        var f=document.getElementById('pfform');
+        f.innerHTML=
+          '<label>最低推送等级（AI 建议等级，低于此等级不推送）</label>'+
+          '<select id="pf-sev" style="width:100%">'+
+          [['','全部等级'],['critical','仅严重'],['high','高危及以上'],['medium','中危及以上'],['low','低危及以上']].
+          map(function(o){return '<option value="'+o[0]+'"'+(v.min_severity===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select>'+
+          '<label>条件组合方式（各白名单之间）</label>'+
+          '<select id="pf-mode" style="width:100%">'+
+          [['and','且 —— 全部满足才推送'],['or','或 —— 任一满足即推送']].
+          map(function(o){return '<option value="'+o[0]+'"'+((v.mode||'and')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select>'+
+          '<label>情报分类白名单（下拉选常用值 · 自定义直接输入回车 · 精确匹配 · 留空=全部）</label>'+
+          tokenFieldHtml('pf-cat',pfFacets.categories||[],v.categories,'如：数据泄露线索、木马攻击线索')+
+          '<label>国家白名单（下拉选常用值 · 自定义输入回车 · 留空=全部）</label>'+
+          tokenFieldHtml('pf-ctry',pfFacets.countries||[],v.countries,'如：美国、新加坡、日本')+
+          '<label>行业白名单（下拉选常用值 · 自定义输入回车 · 留空=全部）</label>'+
+          tokenFieldHtml('pf-ind',pfFacets.industries||[],v.industries,'如：医疗、金融、政府')+
+          '<label>关键词标签白名单（下拉选常用值 · 自定义输入回车 · 须与卡片橙标完全一致 · 留空=不限）</label>'+
+          tokenFieldHtml('pf-tags',pfFacets.tags||[],v.tags,'如：勒索软件、供应链攻击、C2（命令与控制服务器）')+
+          '<label>关键词白名单（任一命中即推送；自由输入，留空=不限）</label>'+
+          '<input id="pf-kw" value="'+esc(v.keywords||'')+'" placeholder="ransomware、CVE、勒索">'+
+          '<div class="ops2"><button class="btn btn-xs" id="pf-save" type="button">保存默认规则</button>'+
+          '<span class="hint">对摘要与即时推送同时生效；命名规则供通道实例按需绑定</span></div>';
+        ['pf-cat','pf-ctry','pf-ind','pf-tags'].forEach(bindTokenField);
+        document.getElementById('pf-save').addEventListener('click',function(){
+          fetch('/api/push/filters',{method:'PUT',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({values:{
+              mode:document.getElementById('pf-mode').value,
+              min_severity:document.getElementById('pf-sev').value,
+              categories:tkGet('pf-cat'),
+              countries:tkGet('pf-ctry'),
+              industries:tkGet('pf-ind'),
+              tags:tkGet('pf-tags'),
+              keywords:document.getElementById('pf-kw').value.trim()}})})
+            .then(function(r){return r.json();})
+            .then(function(res){snack(res.ok?'默认规则已保存':'保存失败');loadPushFilters();loadHome();});
+        });
+      }).catch(function(){document.getElementById('pfform').textContent='加载失败';});
+  }
+
+  /* ---------- 命名推送规则库 ---------- */
+  var pfRules=[];
+  function filterSummary(f){
+    var parts=[];
+    if(f.min_severity)parts.push('≥'+((SEV[f.min_severity]||{}).n||f.min_severity));
+    if(f.categories)parts.push('分类:'+f.categories);
+    if(f.countries)parts.push('国家:'+f.countries);
+    if(f.industries)parts.push('行业:'+f.industries);
+    if(f.tags)parts.push('标签:'+f.tags);
+    if(f.keywords)parts.push('关键词:'+f.keywords);
+    if(!parts.length)return '不限（全部推送）';
+    return ((f.mode||'and')==='or'?'或·任一满足 ｜ ':'且·全部满足 ｜ ')+parts.join(' · ');
+  }
+  function loadPushRules(){
+    jget('/api/push/rules').then(function(d){
+      pfRules=d.items||[];
+      document.getElementById('pfchip').textContent='默认规则 + '+pfRules.length+' 条命名规则';
+      var box=document.getElementById('pfrules');
+      if(!pfRules.length){
+        box.innerHTML='<div class="empty" style="margin:8px 16px 13px">暂无命名规则——点「+ 新建规则」创建（供通道实例按需绑定）</div>';
+        return;
+      }
+      box.innerHTML=pfRules.map(function(r){
+        return '<div class="chinst" style="margin:8px 16px 0"><div class="r1">'+
+          '<span class="ichip">'+esc(r.name)+'</span>'+
+          (r.refs?'<span class="hchip">'+r.refs+' 个实例绑定</span>':'<span class="hchip" style="color:#94a3b8">未绑定</span>')+
+          '<span class="ops"><button class="btn btn-xs pfredit" type="button" data-id="'+r.id+'">编辑</button>'+
+          '<button class="btn btn-xs pfrdel" type="button" data-id="'+r.id+'" style="border-color:rgba(225,29,72,.4);color:#be123c">删除</button></span></div>'+
+          '<div class="r2" style="font-size:12px;color:var(--mut);margin-top:4px">'+esc(filterSummary(r))+'</div></div>';
+      }).join('');
+      box.querySelectorAll('.pfredit').forEach(function(b){
+        b.addEventListener('click',function(){
+          var r=pfRules.find(function(x){return x.id===b.getAttribute('data-id');});
+          openPfRuleForm(r);
+        });
+      });
+      box.querySelectorAll('.pfrdel').forEach(function(b){
+        b.addEventListener('click',function(){
+          if(!confirm('删除该规则？绑定的实例将回退默认规则。'))return;
+          fetch('/api/push/rules/'+b.getAttribute('data-id'),{method:'DELETE'})
+            .then(function(r){return r.json();})
+            .then(function(r){snack(r.ok?'规则已删除（'+(r.unbound||0)+' 个实例回退默认）':'删除失败');loadPushRules();loadChannels();});
+        });
+      });
+    }).catch(function(){});
+  }
+  function ruleFormHtml(r){
+    var v=r||{name:'',min_severity:'',categories:'',countries:'',industries:'',tags:'',keywords:''};
+    var F=pfFacets||{};
+    return '<label>规则名称</label><input id="pfr-name" value="'+esc(v.name)+'" placeholder="如：仅高危以上 / 医疗行业重点">'
+      +'<label>最低推送等级</label><select id="pfr-sev">'
+      +[['','全部等级'],['critical','仅严重'],['high','高危及以上'],['medium','中危及以上'],['low','低危及以上']]
+      .map(function(o){return '<option value="'+o[0]+'"'+(v.min_severity===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select>'
+      +'<label>条件组合方式（各白名单之间）</label><select id="pfr-mode">'
+      +[['and','且 —— 全部满足才推送'],['or','或 —— 任一满足即推送']]
+      .map(function(o){return '<option value="'+o[0]+'"'+((v.mode||'and')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select>'
+      +'<label>情报分类白名单（下拉选常用值 · 自定义输入回车 · 精确匹配 · 留空=全部）</label>'
+      +tokenFieldHtml('pfr-cat',F.categories||[],v.categories,'如：数据泄露线索、木马攻击线索')
+      +'<label>国家白名单（下拉选常用值 · 自定义输入回车 · 留空=全部）</label>'
+      +tokenFieldHtml('pfr-ctry',F.countries||[],v.countries,'如：美国、新加坡')
+      +'<label>行业白名单（下拉选常用值 · 自定义输入回车 · 留空=全部）</label>'
+      +tokenFieldHtml('pfr-ind',F.industries||[],v.industries,'如：医疗、金融')
+      +'<label>关键词标签白名单（下拉选常用值 · 自定义输入回车 · 须与卡片橙标完全一致 · 留空=不限）</label>'
+      +tokenFieldHtml('pfr-tags',F.tags||[],v.tags,'如：勒索软件、供应链攻击')
+      +'<label>关键词白名单（任一命中；自由输入，留空=不限）</label><input id="pfr-kw" value="'+esc(v.keywords)+'" placeholder="ransomware、CVE">'
+      +'<div class="ops2"><button class="btn btn-xs" id="pfr-save" type="button">保存规则</button>'
+      +'<span class="hint">保存后在「推送通道」实例编辑里选择此规则</span></div>';
+  }
+  function openPfRuleForm(r){
+    var form=document.getElementById('pfrform');
+    form.classList.add('open');
+    form.innerHTML=ruleFormHtml(r);
+    ['pfr-cat','pfr-ctry','pfr-ind','pfr-tags'].forEach(bindTokenField);
+    form.scrollIntoView({behavior:'smooth',block:'nearest'});
+    document.getElementById('pfr-save').addEventListener('click',function(){
+      var body={name:document.getElementById('pfr-name').value.trim(),
+        mode:document.getElementById('pfr-mode').value,
+        min_severity:document.getElementById('pfr-sev').value,
+        categories:tkGet('pfr-cat'),
+        countries:tkGet('pfr-ctry'),
+        industries:tkGet('pfr-ind'),
+        tags:tkGet('pfr-tags'),
+        keywords:document.getElementById('pfr-kw').value.trim()};
+      if(!body.name){snack('请填写规则名称');return;}
+      var url=r?('/api/push/rules/'+r.id):'/api/push/rules';
+      fetch(url,{method:r?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(function(res){return res.json().then(function(d){return {ok:res.ok,d:d};});})
+        .then(function(res){
+          if(res.ok){snack(r?'规则已更新':'规则已创建');form.classList.remove('open');form.innerHTML='';loadPushRules();loadChannels();}
+          else snack('保存失败：'+((res.d&&res.d.detail)||''));
+        });
+    });
+  }
+  document.getElementById('pfr-new').addEventListener('click',function(){openPfRuleForm(null);});
+
+  /* ---------- 推送通道 ---------- */
+  function loadChannels(){
+    Promise.all([jget('/api/channels'), jget('/api/push/rules').then(function(d){pfRules=d.items||[];}).catch(function(){})])
+      .then(function(rs){
+      var d=rs[0];
+      var total=0;
+      d.items.forEach(function(c){total+=(c.instances||[]).filter(function(i){return i.enabled;}).length;});
+      document.getElementById('chtotal').textContent=total+' 实例启用';
+      document.getElementById('chlist').innerHTML=d.items.map(function(c){
+        var m=CH_META[c.key]||{badge:'·',color:'rgba(148,163,184,.16);color:#94a3b8',sub:'',real:'真实'};
+        var insts=(c.instances||[]).map(function(i,idx){
+          var chip=i.enabled?(i.simulated?'<span class="chip sim">模拟</span>':'<span class="chip real">'+esc(m.real)+'</span>')
+                            :'<span class="chip offc">停用</span>';
+          var boundRule=null;
+          pfRules.forEach(function(r){if(r.id===i.filter_rule)boundRule=r;});
+          var fl=boundRule?['规则:'+boundRule.name+'（'+filterSummary(boundRule)+'）']:[];
+          return '<div class="chinst"><div class="r1"><span class="ichip">'+esc(i.name)+'</span>'+chip+
+            '<span class="ops"><label class="switch"><input type="checkbox" class="chisw" data-key="'+c.key+'" data-idx="'+idx+'"'+(i.enabled?' checked':'')+'><span class="slider"></span></label>'+
+            '<button class="btn btn-xs chiedit" type="button" data-key="'+c.key+'" data-idx="'+idx+'">编辑</button>'+
+            '<button class="btn btn-xs chitest" type="button" data-key="'+c.key+'" data-idx="'+idx+'">测试</button>'+
+            '<button class="btn btn-xs chidel" type="button" data-key="'+c.key+'" data-idx="'+idx+'" style="border-color:rgba(225,29,72,.4);color:#be123c">删</button></span></div>'+
+            (fl.length?'<div class="r2">'+esc(fl[0])+'</div>':'<div class="r2" style="color:#94a3b8">默认规则</div>')+
+            '<div class="chform" id="chinst-'+c.key+'-'+idx+'"></div></div>';
+        }).join('');
+        return '<div class="chrow"><div class="r1"><span class="badge" style="background:'+m.color+'">'+esc(m.badge)+'</span>'+
+          '<span><span class="chnm">'+esc(c.name)+'</span><br><span class="chsub">'+esc(m.sub)+' · '+((c.instances||[]).length)+' 个实例</span></span>'+
+          '<span class="ops"><button class="btn btn-xs chiadd" type="button" data-key="'+c.key+'" style="border-color:rgba(8,145,178,.45);color:var(--acc)">+ 添加实例</button></span></div>'+
+          (insts||'<div class="r2">暂无实例——点「+ 添加实例」配置第一个推送目标（如第 1 个企微群机器人）</div>')+
+          '<div class="chform" id="chaddform-'+c.key+'"></div></div>';
+      }).join('');
+      document.querySelectorAll('#chlist .chisw').forEach(function(sw){
+        sw.addEventListener('change',function(){
+          jget('/api/channels/'+sw.getAttribute('data-key')+'/instances/'+sw.getAttribute('data-idx')+'/config')
+            .then(function(d2){
+              var v=d2.values||{};
+              fetch('/api/channels/'+sw.getAttribute('data-key')+'/instances/'+sw.getAttribute('data-idx'),
+                {method:'PUT',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({name:v.name||'',enabled:sw.checked,values:{},filter_rule:v.filter_rule||''})})
+                .then(function(){loadChannels();});
+            });
+        });
+      });
+      document.querySelectorAll('#chlist .chitest').forEach(function(b){
+        b.addEventListener('click',function(){
+          var key=b.getAttribute('data-key'),idx=b.getAttribute('data-idx');
+          if(b.disabled)return;b.disabled=true;b.textContent='…';
+          fetch('/api/channels/'+key+'/instances/'+idx+'/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+            b.disabled=false;b.textContent='测试';
+            snack((r.simulated?'[模拟] ':'')+'实例测试推送'+(r.ok?'成功':'失败')+(r.detail?'：'+r.detail.slice(0,80):''));
+            loadLogs();
+          }).catch(function(){b.disabled=false;b.textContent='测试';snack('测试请求失败');});
+        });
+      });
+      document.querySelectorAll('#chlist .chidel').forEach(function(b){
+        b.addEventListener('click',function(){
+          if(!confirm('删除该推送实例？'))return;
+          fetch('/api/channels/'+b.getAttribute('data-key')+'/instances/'+b.getAttribute('data-idx'),{method:'DELETE'})
+            .then(function(){snack('实例已删除');loadChannels();});
+        });
+      });
+      document.querySelectorAll('#chlist .chiadd').forEach(function(b){
+        b.addEventListener('click',function(){toggleChInstForm(b.getAttribute('data-key'),-1);});
+      });
+      document.querySelectorAll('#chlist .chiedit').forEach(function(b){
+        b.addEventListener('click',function(){toggleChInstForm(b.getAttribute('data-key'),parseInt(b.getAttribute('data-idx'),10));});
+      });
+    }).catch(function(){document.getElementById('chlist').innerHTML='<div class="empty">加载失败</div>';});
+  }
+  function instFormHtml(key,vals,ruleId,forAdd){
+    var cred=(CH_FIELDS[key]||[]).map(function(f){
+      var has=!!(vals[f[0]]||'');  // 已配置（回显为掩码）→ 输入框留空，杜绝掩码被误当新值
+      return '<label>'+esc(f[1])+'</label><input data-field="'+f[0]+'" value="" placeholder="'+
+        (has?'已配置 · 留空保持不变，粘贴完整新地址即更换':(forAdd?'粘贴凭据，留空=模拟模式':'粘贴凭据'))+'">';
+    }).join('');
+    var ruleOpts='<option value=""'+(!ruleId?' selected':'')+'>默认规则（推送过滤面板设置）</option>'+
+      pfRules.map(function(r){
+        return '<option value="'+esc(r.id)+'"'+(ruleId===r.id?' selected':'')+'>'+esc(r.name)+' — '+esc(filterSummary(r))+'</option>';
+      }).join('');
+    return '<label>实例名称</label><input data-field="name" value="'+esc(vals.name||'')+'" placeholder="如：SOC 值班群 / 安全通告群">'
+      +cred
+      +'<label style="margin-top:8px;font-weight:600">推送规则（在「推送过滤」面板维护）</label>'
+      +'<select data-rule id="inst-rule">'+ruleOpts+'</select>'
+      +'<div class="ops2"><button class="btn btn-xs chinssave" type="button">保存</button>'
+      +'<span class="hint">'+(forAdd?'可添加多个实例同时推送，各绑不同规则':'留空凭据保持不变；规则在「推送过滤」面板新建维护')+'</span></div>';
+  }
+  function toggleChInstForm(key,idx){
+    var fid=idx<0?('chaddform-'+key):('chinst-'+key+'-'+idx);
+    var form=document.getElementById(fid);
+    if(!form)return;
+    var open=form.classList.toggle('open');
+    if(!open)return;
+    // 规则列表先就绪（下拉选项需要），再取实例配置
+    var loadRules=pfRules.length?Promise.resolve():jget('/api/push/rules').then(function(d){pfRules=d.items||[];}).catch(function(){});
+    var load=idx<0?Promise.resolve({values:{},filter_rule:''})
+      :jget('/api/channels/'+key+'/instances/'+idx+'/config').then(function(d){return {values:d.values||{},filter_rule:(d.values||{}).filter_rule||''};});
+    Promise.all([load, loadRules]).then(function(rs){
+      var d=rs[0];
+      form.innerHTML=instFormHtml(key,d.values,d.filter_rule,idx<0);
+      form.querySelector('.chinssave').addEventListener('click',function(){
+        var values={},name='',filterRule='';
+        form.querySelectorAll('input[data-field],select[data-field]').forEach(function(inp){
+          var f=inp.getAttribute('data-field');
+          if(f==='name')name=inp.value.trim();
+          else if(inp.value.trim())values[f]=inp.value.trim();
+        });
+        var rs2=form.querySelector('[data-rule]');
+        if(rs2)filterRule=rs2.value;
+        var url=idx<0?('/api/channels/'+key+'/instances'):('/api/channels/'+key+'/instances/'+idx);
+        var method=idx<0?'POST':'PUT';
+        fetch(url,{method:method,headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:name,enabled:idx<0?true:(form.dataset.enabled!=='0'),values:values,filter_rule:filterRule})})
+          .then(function(r){return r.json();})
+          .then(function(res){
+            if(res.ok){snack(idx<0?'实例已添加':'实例已保存');form.classList.remove('open');loadChannels();}
+            else snack('保存失败：'+((res.detail&&res.detail.slice(0,80))||''));
+          }).catch(function(){snack('请求失败');});
+      });
+    }).catch(function(){snack('加载实例配置失败');});
+  }
+
+  /* ---------- 日志审计：一级菜单展开 + 侧栏二级子项 ---------- */
+  var flOpen=false;
+  document.getElementById('fltoggle').addEventListener('click',function(){
+    flOpen=!flOpen;
+    document.getElementById('fetchlogs').style.display=flOpen?'block':'none';
+    document.getElementById('fltoggle').textContent=flOpen?'收起':'展开';
+    if(flOpen)loadFetchLogs();
+  });
+  var curLogTab=localStorage.getItem('xintel_logtab')||'fetch';
+  var logsGroup=document.getElementById('sb-logs-group');
+  function setGroupExpanded(group, on){
+    group.classList.toggle('expanded', on);
+    localStorage.setItem('xintel_sb_' + group.id, on?'expanded':'collapsed');
+  }
+  function expandLogsGroup(on){ setGroupExpanded(logsGroup, on); }
+  function showLogTab(tab){
+    curLogTab=tab;
+    localStorage.setItem('xintel_logtab',tab);
+    // 侧栏二级子项高亮（面板内已无页签）
+    document.querySelectorAll('.sb-subitem').forEach(function(p){
+      p.classList.toggle('active',p.getAttribute('data-logtab')===tab);
+    });
+    document.getElementById('tab-fetch').style.display=tab==='fetch'?'block':'none';
+    document.getElementById('tab-push').style.display=tab==='push'?'block':'none';
+    document.getElementById('tab-ai').style.display=tab==='ai'?'block':'none';
+    document.getElementById('fltoggle').style.display=tab==='fetch'?'inline-flex':'none';
+    if(tab==='fetch'&&flOpen)loadFetchLogs();
+    if(tab==='push')loadLogs();
+    if(tab==='ai')loadAiLogs();
+  }
+  document.querySelectorAll('.sb-subitem').forEach(function(p){
+    p.addEventListener('click',function(){
+      setGroupExpanded(p.closest('.sb-group'), true);
+      showView(p.getAttribute('data-view') || 'logs-panel');
+      if(p.getAttribute('data-logtab')) showLogTab(p.getAttribute('data-logtab'));
+    });
+  });
+  /* 一级菜单：切视图 + 切换二级展开（日志审计/推送设置两组通用） */
+  document.querySelectorAll('.sb-parent').forEach(function(b){
+    b.addEventListener('click',function(){
+      var g=b.closest('.sb-group');
+      setGroupExpanded(g, !g.classList.contains('expanded'));
+    });
+  });
+  ['sb-logs-group','sb-ps-group'].forEach(function(gid){
+    var g=document.getElementById(gid);
+    if(g && localStorage.getItem('xintel_sb_' + gid) !== 'collapsed') g.classList.add('expanded');
+  });
+  showLogTab(curLogTab);
+  function loadAiLogs(){
+    jget('/api/ai/logs?limit=60').then(function(d){
+      var st=d.stats||{};
+      document.getElementById('ailogs-stats').textContent=
+        '今日调用 '+st.calls+' 次 · 成功 '+st.ok+' · 失败 '+st.error+' · 平均 '+(st.avg_ms||0)+'ms（留存最近 500 条）';
+      document.getElementById('ailogs').innerHTML=(d.items||[]).length?d.items.map(function(l){
+        var bad=l.status!=='ok';
+        return '<div class="lrow'+(bad?' bad':'')+'"><span class="tx"><b>'+esc(l.action||'AI')+'</b>'+
+          ' · '+esc(l.model||'')+
+          (l.ref?' · '+esc(l.ref):'')+
+          ' · <span class="'+(bad?'bad':'ok')+'">'+(bad?'失败':'ok')+'</span>'+
+          ' · '+l.ms+'ms</span>'+
+          (bad?'':'<span class="tm">'+esc((l.at||'').slice(11,16))+'</span>')+
+          (bad?'<div class="ftrace" style="color:#be123c">'+esc(l.detail||'')+'</div>':'')+
+          '</div>';
+      }).join(''):'<div class="empty">暂无 AI 调用记录——研判/翻译/分类后自动记录</div>';
+    }).catch(function(){});
+  }
+  function loadFetchLogs(){
+    jget('/api/fetch/logs?limit=30').then(function(d){
+      document.getElementById('flcount').textContent=d.items.length+' 轮';
+      document.getElementById('fetchlogs').innerHTML=d.items.length?d.items.map(function(l){
+        var err=l.error?('<div class="ftrace" style="color:#be123c">✗ '+esc(l.error)+'</div>'):'';
+        return '<div class="flrow'+(l.error?' ferr':'')+'">'+
+          '<div class="f1"><span class="fat">'+esc((l.at||'').slice(5,16))+'</span>'+
+          '<span class="ftrig'+(l.trigger==='manual'?' manual':'')+'">'+(l.trigger==='manual'?'手动':'定时')+'</span>'+
+          '<span>到期 '+l.accounts_due+' · 成功 '+l.accounts_ok+'</span>'+
+          '<span class="fok">+新 '+l.new+'</span><span class="fnew">AI '+l.ai+'</span></div>'+
+          (l.trace?'<div class="ftrace">'+esc(l.trace)+'</div>':'')+err+'</div>';
+      }).join(''):'<div class="empty">暂无日志</div>';
+    }).catch(function(){document.getElementById('fetchlogs').innerHTML='<div class="empty">加载失败</div>';});
+  }
+
+  /* ---------- 首页仪表盘六卡 ---------- */
+  function hdot(ok, warn){
+    return '<span class="sdot '+(ok?'ok':(warn?'':'bad'))+'"></span>';
+  }
+  function loadHome(){
+    if (!document.getElementById('home-panel').classList.contains('on')) return;
+    // AI 引擎卡
+    jget('/api/ai/config').then(function(ac){
+      var v=ac.values||{};
+      var on=v.enabled&&v.has_key;
+      var host=(v.base_url||'').replace(/^https?:\/\//,'').slice(0,34);
+      jget('/api/ai/logs?limit=1').then(function(lg){
+        var st=lg.stats||{};
+        document.getElementById('hc-ai').innerHTML=
+          '<div class="hrow">'+hdot(on)+'<b>'+(v.enabled?'已启用':'未启用')+'</b>'+
+          '<span class="hchip">'+esc(v.model||'未配置模型')+'</span>'+
+          (v.has_key?'':'<span class="hchip" style="color:#c2410c;border-color:rgba(234,88,12,.4)">未配 Key</span>')+'</div>'+
+          '<div class="hrow"><span>接口</span><b>'+esc(host||'—')+'</b>'+
+          '<span>自动研判</span><b>'+(v.auto_analyze?'开':'关')+'</b></div>'+
+          '<div class="hrow"><span>今日调用</span><b>'+st.calls+' 次</b>'+
+          '<span class="'+(st.error?'bad':'ok')+'">成功 '+st.ok+' · 失败 '+st.error+'</span>'+
+          '<span>平均 '+st.avg_ms+'ms</span></div>';
+      }).catch(function(){});
+    }).catch(function(){});
+    // 通道卡
+    jget('/api/channels').then(function(d){
+      document.getElementById('hc-ch').innerHTML=d.items.map(function(c){
+        var insts=c.instances||[], en=insts.filter(function(i){return i.enabled;});
+        var dots=insts.map(function(i){
+          return '<span class="hchip" title="'+esc(i.name)+'">'+esc(i.name.slice(0,8))+
+            (i.enabled?(i.simulated?'<i style="color:#0e7490;font-style:normal"> 模</i>':'<i style="color:#047857;font-style:normal"> 真</i>'):'<i style="color:#94a3b8;font-style:normal"> 停</i>')+'</span>';
+        }).join('');
+        return '<div class="hrow">'+esc(c.name)+'<b>'+en.length+' / '+insts.length+' 启用</b>'+dots+'</div>';
+      }).join('');
+    }).catch(function(){});
+    // 过滤卡：默认规则摘要 + 命名规则库 + 实例绑定
+    Promise.all([jget('/api/push/filters'), jget('/api/push/rules'), jget('/api/channels')]).then(function(rs){
+      var f=(rs[0].values)||rs[0]||{};
+      var sev=f.min_severity?((SEV[f.min_severity]||{}).n||f.min_severity):'不限';
+      var rules=rs[1].items||[];
+      var bound=0;
+      (rs[2].items||[]).forEach(function(c){(c.instances||[]).forEach(function(i){
+        if(i.filter_rule)bound++;
+      });});
+      document.getElementById('hc-pf').innerHTML=
+        '<div class="hrow"><span>默认规则</span><b>'+esc(((f.mode||'and')==='or'?'或·任一满足':'且·全部满足')+' · '+sev)+
+        (f.categories?' · 分类:'+esc(f.categories):'')+
+        (f.countries?' · 国家:'+esc(f.countries):'')+(f.industries?' · 行业:'+esc(f.industries):'')+
+        (f.tags?' · 标签:'+esc(f.tags):'')+
+        (f.keywords?' · 关键词:'+esc(f.keywords):'')+'</b></div>'+
+        '<div class="hrow"><span>命名规则</span><b>'+rules.length+' 条</b>'+
+        '<span>实例绑定</span><b>'+bound+' 个</b>'+
+        (rules.length?'<span style="color:var(--mut2)">'+rules.map(function(r){return esc(r.name);}).join('、')+'</span>':'')+'</div>';
+    }).catch(function(){});
+    // 24h 分类 Top5
+    jget('/api/facets').then(function(f){
+      var cats=(f.categories||[]).slice(0,5);
+      var max=cats.length?cats[0].count:1;
+      document.getElementById('hc-cat').innerHTML=cats.length?cats.map(function(c){
+        return '<div class="hrow"><span style="min-width:96px">'+esc(c.name)+'</span>'+
+          '<span class="hbar"><i style="width:'+Math.max(6,Math.round(c.count/max*100))+'%"></i></span>'+
+          '<b>'+c.count+'</b></div>';
+      }).join(''):'<div class="empty">暂无分类数据</div>';
+      // 关键词标签 Top10（点击 → 跳推文流并套用标签筛选）
+      var tg=(f.tags||[]).slice(0,10);
+      document.getElementById('hc-tags').innerHTML=tg.length
+        ?'<div class="hrow" style="flex-wrap:wrap;gap:6px">'+tg.map(function(x){
+            return '<span class="hchip" data-tag="'+esc(x.name)+'" style="cursor:pointer" title="点击筛选该标签">'+
+              esc(x.name)+' <b>'+x.count+'</b></span>';
+          }).join('')+'</div>'
+        :'<div class="empty">标签回填中…</div>';
+    }).catch(function(){});
+    // 报告任务概览
+    jget('/api/reports/tasks?limit=50').then(function(d){
+      var c={};(d.tasks||[]).forEach(function(t){c[t.status]=(c[t.status]||0)+1;});
+      var order=['待写','写作中','已交付待推','已推送','待人工'];
+      document.getElementById('hc-rt').innerHTML=
+        '<div class="hrow">'+order.map(function(k){
+          return '<span class="hchip">'+k+' <b>'+(c[k]||0)+'</b></span>';
+        }).join('')+'</div>'+
+        ((d.tasks||[]).length?('<div class="hrow"><span>最新</span><b style="max-width:75%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
+          esc(d.tasks[0].title)+'</b><span class="hchip">'+esc(d.tasks[0].status)+'</span></div>'):'<div class="hrow">暂无任务</div>');
+    }).catch(function(){});
+    // 系统概况
+    jget('/api/stats').then(function(s){
+      var lf=s.last_fetch||{};
+      document.getElementById('hc-sys').innerHTML=
+        '<div class="hrow"><span>数据总量</span><b>'+s.total+' 条</b><span>今日新增</span><b>'+s.today+'</b></div>'+
+        '<div class="hrow"><span>累计研判</span><b>'+s.ai_analyzed+'</b><span>地区覆盖</span><b>'+s.geo_tagged+'</b>'+
+        '<span>已分类</span><b>'+s.categorized+'</b></div>'+
+        '<div class="hrow"><span>最近抓取</span><b>'+esc((lf.at||'').slice(5,16)||'—')+'</b>'+
+        (lf.error?'<span class="bad">✗ '+esc(lf.error.slice(0,40))+'</span>':'<span class="ok">正常</span>')+'</div>';
+    }).catch(function(){});
+  }
+  document.querySelectorAll('#home-grid .hmore').forEach(function(a){
+    a.addEventListener('click',function(){showView(a.getAttribute('data-goto'));});
+  });
+  /* 首页标签 chip 点击 → 跳推文流并套用标签筛选 */
+  document.getElementById('home-grid').addEventListener('click',function(ev){
+    var el=ev.target&&ev.target.closest?ev.target.closest('[data-tag]'):null;
+    if(!el)return;
+    state.tag=el.getAttribute('data-tag');
+    var sel=document.getElementById('tagsel');
+    if(sel&&sel.querySelector('option[value="'+state.tag.replace(/"/g,'\\"')+'"]'))sel.value=state.tag;
+    showView('feed-panel');loadTweets();
+  });
+  loadHome();
+
+  /* AI 实时快切 */
+  var aiMaster={enabled:false,has_key:false};
+  document.getElementById('aiquick').addEventListener('change',function(){
+    var on=this.checked;
+    if(on&&!(aiMaster.enabled&&aiMaster.has_key)){
+      this.checked=false;
+      snack('请先在右侧「AI 设置」中配置 Key 并启用 AI');return;
+    }
+    fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({values:{auto_analyze:on}})})
+      .then(function(){snack(on?'AI 实时研判/翻译已开启（新推文自动处理）':'AI 实时研判/翻译已关闭（手动按钮仍可用）');});
+  });
+
+  /* ---------- 推送记录 ---------- */
+  function loadLogs(){
+    jget('/api/push/logs?limit=10').then(function(d){
+      document.getElementById('logs').innerHTML=d.items.length?d.items.map(function(l){
+        return '<div class="lrow'+(l.status==='失败'?' bad':'')+'"><span class="tx"><b>'+esc(l.channel)+'</b> · '+esc(l.kind)+
+          ' · <span class="'+(l.status==='失败'?'bad':'ok')+'">'+esc(l.status)+'</span></span>'+
+          '<span class="tm">'+esc((l.created_at||'').slice(11,16))+'</span></div>';
+      }).join(''):'<div class="empty">暂无推送记录</div>';
+    }).catch(function(){});
+  }
+
+  /* ---------- 交互 ---------- */
+  document.querySelectorAll('.pill[data-sev]').forEach(function(p){
+    p.addEventListener('click',function(){
+      document.querySelectorAll('.pill[data-sev]').forEach(function(x){x.setAttribute('aria-pressed','false');});
+      p.setAttribute('aria-pressed','true');
+      state.sev=p.getAttribute('data-sev');loadTweets();
+    });
+  });
+  document.querySelectorAll('.viewsw .pill').forEach(function(p){
+    p.setAttribute('aria-pressed', String(p.getAttribute('data-view')===state.view));
+    p.addEventListener('click',function(){
+      state.view=p.getAttribute('data-view');
+      try{localStorage.setItem('xintel_view',state.view);}catch(e){}
+      document.querySelectorAll('.viewsw .pill').forEach(function(x){
+        x.setAttribute('aria-pressed', String(x.getAttribute('data-view')===state.view));});
+      loadTweets();
+    });
+  });
+  document.getElementById('accsel').addEventListener('change',function(){state.acc=this.value;loadTweets();});
+  document.getElementById('ctrysel').addEventListener('change',function(){state.country=this.value;loadTweets();});
+  document.getElementById('indsel').addEventListener('change',function(){state.industry=this.value;loadTweets();});
+  document.getElementById('catsel').addEventListener('change',function(){state.category=this.value;loadTweets();});
+  document.getElementById('tagsel').addEventListener('change',function(){state.tag=this.value;loadTweets();});
+  /* 卡片上的标签 chip 点击 → 直接套用对应筛选（基标：国家/分类/行业；橙标：关键词标签） */
+  function applyChipFilter(filter,value){
+    if(!filter||!value)return;
+    if(filter==='country'){state.country=value;document.getElementById('ctrysel').value=value;}
+    else if(filter==='category'){state.category=value;document.getElementById('catsel').value=value;}
+    else if(filter==='industry'){state.industry=value;document.getElementById('indsel').value=value;}
+    else if(filter==='tag'){state.tag=value;document.getElementById('tagsel').value=value;}
+    else return;
+    loadTweets();
+  }
+  document.getElementById('list').addEventListener('click',function(ev){
+    var el=ev.target&&ev.target.closest?ev.target.closest('.geo[data-filter]'):null;
+    if(el)applyChipFilter(el.getAttribute('data-filter'),el.getAttribute('data-value'));
+  });
+  document.getElementById('statsel').addEventListener('change',function(){state.status=this.value;loadTweets();});
+
+  /* 批量操作 */
+  document.querySelectorAll('#batchbar [data-bop]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var ids=Array.from(selected);
+      if(!ids.length)return;
+      var op=b.getAttribute('data-bop');
+      if(op==='delete'&&!confirm('确认删除选中的 '+ids.length+' 条推文？（收藏的不会被本操作删除，勾选含收藏项时请留意）'))return;
+      if((op==='ai_translate'||op==='ai_analyze')&&!confirm('对选中 '+ids.length+' 条执行 AI '+(op==='ai_translate'?'翻译':'研判')+'？每次最多处理 20 条，耗时较长。'))return;
+      b.disabled=true;
+      fetch('/api/tweets/batch',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ids:ids,op:op})})
+        .then(function(r){return r.json();})
+        .then(function(res){
+          b.disabled=false;
+          if(res.ok){
+            if(res.op&&res.op.indexOf('ai_')===0){
+              snack('AI 批量'+(op==='ai_translate'?'翻译':'研判')+'完成：成功 '+res.done+' 条，失败 '+res.fail+' 条');
+              selected.clear();
+            }else{
+              snack('已处理 '+res.affected+' 条');selected.clear();
+            }
+            loadTweets();loadStats();
+          }else snack('批量操作失败');
+        }).catch(function(){b.disabled=false;snack('请求失败');});
+    });
+  });
+  document.getElementById('selclear').addEventListener('click',function(){
+    selected.clear();loadTweets();
+  });
+
+  /* ---------- 报告任务（桥接 report-writer Agent） ---------- */
+  var RT_STATUS={'待写':['rtb-wait','待写'],'写作中':['rtb-writing','写作中'],'已交付待推':['rtb-ready','已交付待推'],
+                 '已推送':['rtb-done','已推送'],'待人工':['rtb-human','待人工'],'已取消':['rtb-wait','已取消']};
+  var rtCache={};
+  function loadReportTasks(){
+    jget('/api/reports/tasks?limit=20').then(function(res){
+      var tasks=res.tasks||[];
+      rtCache={};
+      var c={};tasks.forEach(function(t){rtCache[t.id]=t;c[t.status]=(c[t.status]||0)+1;});
+      document.getElementById('rtcounts').textContent=
+        ['待写','写作中','已交付待推','已推送','待人工'].map(function(k){return k+' '+(c[k]||0);}).join(' · ');
+      var box=document.getElementById('rtlist');
+      if(!tasks.length){
+        box.innerHTML='<div class="empty">暂无任务——推文流勾选后点「生成报告任务」，或点右上「+ 新建任务」建纯外部线索任务</div>';
+        return;
+      }
+      box.innerHTML=tasks.map(function(t){
+        var st=RT_STATUS[t.status]||['rtb-wait',t.status];
+        var gate=((t.gate_summary||'').split('\n')[0]);
+        var ops='';
+        if(t.status==='待人工')ops+='<button class="btn btn-xs" data-rt="gate" data-id="'+t.id+'" type="button">查看违规</button>';
+        if(t.status==='已交付待推')ops+='<button class="btn btn-xs" data-rt="push" data-id="'+t.id+'" type="button" style="border-color:rgba(5,150,105,.5);color:#047857">推送通知</button>';
+        if(t.status!=='写作中')ops+='<button class="btn btn-xs" data-rt="del" data-id="'+t.id+'" type="button" style="border-color:rgba(225,29,72,.4);color:#be123c">删除</button>';
+        ops+='<a class="btn btn-xs" href="/api/reports/tasks/'+t.id+'/package" target="_blank">线索包</a>';
+        return '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(t.title)+'</span>'+
+          '<span class="rtb rtb-wait">'+esc(t.tier||'速报')+'</span>'+
+          '<span class="rtb '+st[0]+'">'+st[1]+'</span></div>'+
+          '<div class="rtmeta">字数 '+(t.word_count||'—')+' ｜ 门禁 '+(t.ledger_pass||0)+'/'+(t.ledger_total||0)+' PASS'
+          +' ｜ 更新 '+esc((t.updated_at||'').slice(5,16))+(t.assignee?' ｜ '+esc(t.assignee):'')+'</div>'+
+          (gate?'<div class="rtgate" title="'+esc(t.gate_summary||'')+'">gate：'+esc(gate)+'</div>':'')+
+          '<div class="ops2" style="margin-top:8px">'+ops+'</div></div>';
+      }).join('');
+    }).catch(function(){});
+  }
+  function showInfo(title,body){
+    document.getElementById('rtinfo-title').textContent=title;
+    document.getElementById('rtinfo-body').textContent=body;
+    document.getElementById('rtinfo').classList.add('show');
+  }
+  document.getElementById('rtinfo-close').addEventListener('click',function(){
+    document.getElementById('rtinfo').classList.remove('show');
+  });
+  function openRtModal(){
+    var ids=Array.from(selected);
+    var titles=[];
+    if(ids.length){
+      lastItems.forEach(function(t){if(selected.has(t.id))titles.push(t.title_zh||t.text||'');});
+    }
+    var title=(titles.length?titles[0]:'').split('\n')[0].slice(0,60);
+    var iocs=[];
+    lastItems.forEach(function(t){if(selected.has(t.id))(t.ai_iocs||[]).forEach(function(x){if(iocs.indexOf(x)<0)iocs.push(x);});});
+    document.getElementById('rt-title').value=title;
+    document.getElementById('rt-kw').value=iocs.slice(0,5).join('\n');
+    document.getElementById('rt-notes').value='';
+    document.getElementById('rt-auto').checked=false;
+    document.getElementById('rtmodal').classList.add('show');
+    document.getElementById('rt-submit').setAttribute('data-ids',JSON.stringify(ids));
+  }
+  document.getElementById('rt-cancel').addEventListener('click',function(){
+    document.getElementById('rtmodal').classList.remove('show');
+  });
+  document.getElementById('rt-submit').addEventListener('click',function(){
+    var b=this;
+    var ids=JSON.parse(b.getAttribute('data-ids')||'[]');
+    var title=document.getElementById('rt-title').value.trim();
+    if(!title){snack('请填写任务标题');return;}
+    var kws=document.getElementById('rt-kw').value.split('\n').map(function(s){return s.trim();}).filter(Boolean);
+    if(kws.length<3&&!confirm('关键词不足 3 组（当前 '+kws.length+' 组），规范要求 ≥3 组检索关键词，仍要创建吗？'))return;
+    b.disabled=true;
+    fetch('/api/reports/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:title,keywords:kws,tier:document.getElementById('rt-tier').value,
+        notes:document.getElementById('rt-notes').value.trim(),tweet_ids:ids,
+        auto_push:document.getElementById('rt-auto').checked?1:0})})
+      .then(function(r){return r.json();})
+      .then(function(res){
+        b.disabled=false;
+        if(res.id){
+          document.getElementById('rtmodal').classList.remove('show');
+          snack('报告任务 #'+res.id+' 已创建（待写），线索包已生成');
+          selected.clear();loadTweets();loadReportTasks();
+        }else snack('创建失败：'+(res.detail||JSON.stringify(res).slice(0,120)));
+      }).catch(function(){b.disabled=false;snack('请求失败');});
+  });
+  document.getElementById('rt-new').addEventListener('click',function(){
+    selected.clear();openRtModal();
+    document.getElementById('rt-title').value='';
+    document.getElementById('rt-kw').value='';
+  });
+  document.getElementById('selreport').addEventListener('click',function(){
+    if(!selected.size){snack('请先勾选推文');return;}
+    if(selected.size>50){snack('报告任务最多关联 50 条推文');return;}
+    openRtModal();
+  });
+  document.getElementById('rtlist').addEventListener('click',function(e){
+    var b=e.target.closest('[data-rt]');
+    if(!b)return;
+    var id=+b.getAttribute('data-id'),act=b.getAttribute('data-rt'),t=rtCache[id];
+    if(!t)return;
+    if(act==='gate'){
+      showInfo('违规详情（任务 #'+id+'）',(t.gate_summary||'（无）')+'\n\nwarnings：'+JSON.stringify(t.warnings||[],null,1));
+    }else if(act==='push'){
+      if(!confirm('确认推送「'+t.title+'」？\n将按已启用通道分发：企微附报告交付附件；钉钉/PushPlus/WxPusher 按能力发摘要。'))return;
+      b.disabled=true;
+      fetch('/api/reports/tasks/'+id+'/push',{method:'POST'})
+        .then(function(r){return r.json();})
+        .then(function(r){
+          loadReportTasks();
+          if(r.error)snack('推送失败：'+r.error);
+          else snack('已推送：'+((r.channels||[]).map(function(c){return c.channel+' '+c.status;}).join('，')||'（无启用通道）'));
+        }).catch(function(){b.disabled=false;snack('请求失败');});
+    }else if(act==='del'){
+      if(!confirm('删除任务 #'+id+'「'+t.title+'」？'))return;
+      fetch('/api/reports/tasks/'+id,{method:'DELETE'})
+        .then(function(r){return r.json();})
+        .then(function(r){
+          if(r.ok)snack('任务已删除');else snack('删除失败：'+(r.detail||'写作中不可删'));
+          loadReportTasks();
+        }).catch(function(){snack('请求失败');});
+    }
+  });
+
+  /* 一键清理 */
+  document.getElementById('cleanbtn').addEventListener('click',function(){
+    var days=document.getElementById('cleandays').value;
+    if(!confirm('确认删除 '+days+' 天前的全部推文？（★ 收藏的永久保留）'))return;
+    var b=document.getElementById('cleanbtn');b.disabled=true;
+    fetch('/api/tweets/cleanup',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({keep_days:parseInt(days,10)})})
+      .then(function(r){return r.json();})
+      .then(function(res){
+        b.disabled=false;
+        if(res.ok){snack('清理完成：删除 '+res.deleted+' 条旧推文（收藏已保留）');loadTweets();loadStats();}
+        else snack('清理失败');
+      }).catch(function(){b.disabled=false;snack('请求失败');});
+  });
+  document.getElementById('q').addEventListener('input',function(){state.q=this.value.trim();loadTweets();});
+  document.getElementById('btn-fetch').addEventListener('click',function(){
+    if(busy)return;
+    busy=true;setBusy(true);
+    document.getElementById('livetext').textContent='抓取中…';
+    fetch('/api/fetch/run',{method:'POST'}).catch(function(){busy=false;setBusy(false);});
+    loadStats();
+  });
+
+  /* ---------- 轮询与倒计时 ---------- */
+  var tick=0;
+  setInterval(function(){tick++;loadStats();if(tick%7===0&&!busy){loadTweets();loadLogs();loadReportTasks();
+    if(curLogTab==='ai')loadAiLogs();
+    if(document.getElementById('home-panel').classList.contains('on'))loadHome();}},2000);
+  var RINGC=56.55;
+  setInterval(function(){
+    if(nextIn==null)return;
+    nextIn=Math.max(0,nextIn-1);
+    var el=document.getElementById('timer');
+    el.textContent=nextIn>0?(two(Math.floor(nextIn/60))+':'+two(nextIn%60)):'抓取中';
+    document.getElementById('ringfg').setAttribute('stroke-dashoffset',
+      (RINGC*(1-Math.min(1,nextIn/intervalSec))).toFixed(2));
+  },1000);
+
+  loadStats();loadTweets();loadAccounts();loadAiConfig();loadPushFilters();loadPushRules();loadChannels();loadLogs();loadFacets();loadReportTasks();
+
+  /* ---------- 侧边栏：视图切换 + 展开折叠（均持久化） ---------- */
+  var sbBody = document.body;
+  if (localStorage.getItem('xintel_sb') === 'expanded') sbBody.classList.add('sb-expanded');
+  document.getElementById('sb-toggle-btn').addEventListener('click', function () {
+    sbBody.classList.toggle('sb-expanded');
+    localStorage.setItem('xintel_sb', sbBody.classList.contains('sb-expanded') ? 'expanded' : 'collapsed');
+  });
+  function showView(id){
+    if (!document.getElementById(id)) {
+      // 旧版视图 id 兼容映射：抓取日志/推送记录已合并进日志审计
+      id = (id === 'fl-panel' || id === 'log-panel') ? 'logs-panel' : 'home-panel';
+    }
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('on', v.id === id); });
+    document.querySelectorAll('.sb-item').forEach(function (b) {
+      var dv = b.getAttribute('data-view');
+      var on = dv === id ||
+        (b.classList.contains('sb-subitem') && b.getAttribute('data-logtab') && id === 'logs-panel'
+         && b.getAttribute('data-logtab') === curLogTab);
+      b.classList.toggle('active', on);
+    });
+    // 子项命中时同步点亮其一级（组上下文高亮）
+    document.querySelectorAll('.sb-group').forEach(function (g) {
+      if (g.querySelector('.sb-subitem.active')) g.querySelector('.sb-parent').classList.add('active');
+    });
+    localStorage.setItem('xintel_view_cur', id);
+  }
+  document.querySelectorAll('.sb-item:not(.sb-subitem)').forEach(function (b) {
+    b.addEventListener('click', function () {
+      showView(b.getAttribute('data-view'));
+      if (window.innerWidth < 640) sbBody.classList.remove('sb-expanded');
+    });
+  });
+  showView(localStorage.getItem('xintel_view_cur') || 'home-panel');
+})();
+</script>
+</body>
+</html>

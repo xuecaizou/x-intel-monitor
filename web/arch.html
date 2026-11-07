@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X-Intel · 系统架构与功能架构说明</title>
+<style>
+:root{--bg:#eef2f9;--panel:rgba(255,255,255,.9);--line:rgba(15,23,42,.09);--line2:rgba(15,23,42,.18);
+--text:#1a2333;--mut:#5b6b84;--mut2:#8494ab;--acc:#0e7490;--acc2:#4f46e5;--ok:#059669;--warn:#b45309}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+font-size:14.5px;line-height:1.75;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:26px 20px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{width:30px;height:30px}
+.brand h1{font-size:21px;background:linear-gradient(90deg,#0e7490,#4f46e5);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--mut);font-size:13px}
+.links a{color:var(--acc);text-decoration:none;font-size:13.5px;border:1px solid rgba(8,145,178,.35);
+padding:5px 13px;border-radius:9px;background:rgba(8,145,178,.06);margin-left:8px}
+.links a:hover{background:rgba(8,145,178,.13)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin-bottom:16px;
+box-shadow:0 8px 28px -18px rgba(30,41,59,.25)}
+h2{font-size:17px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line);color:#0f172a}
+h3{font-size:14.5px;margin:16px 0 6px;color:#0e7490}
+p{margin:6px 0;color:#334155}
+ul,ol{margin:6px 0 6px 22px;color:#334155}
+li{margin:3px 0}
+li::marker{color:var(--acc)}
+code{background:rgba(15,23,42,.06);border:1px solid var(--line);border-radius:5px;padding:0 6px;
+font-family:Consolas,monospace;font-size:12.5px;color:#0f172a}
+pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:13px 16px;overflow-x:auto;
+font-family:Consolas,monospace;font-size:12.5px;line-height:1.6;margin:8px 0}
+pre code{background:none;border:none;color:inherit;padding:0}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:rgba(8,145,178,.06);font-weight:600;white-space:nowrap}
+td code{white-space:nowrap}
+.tip{background:rgba(5,150,105,.06);border:1px solid rgba(5,150,105,.25);border-radius:9px;padding:9px 14px;margin:9px 0;color:#065f46;font-size:13px}
+.archsvg{width:100%;height:auto;margin:10px 0}
+.figcap{font-size:12px;color:var(--mut2);text-align:center;margin:-2px 0 8px}
+.stepnum{font-weight:700;fill:#fff}
+footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
+      <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
+      <path d="M4 4l6.5 8.2L4.4 20h2.6l4.8-6 4.7 6H20l-6.6-8.4L19.6 4H17l-4.3 5.4L8.5 4H4z" stroke="url(#g)" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    <div><h1>X-Intel 系统架构与功能架构说明</h1>
+    <div class="sub">总体架构 · 一轮抓取数据流 · 模块结构 · 关键机制 · v6</div></div>
+  </div>
+  <div class="links"><a href="/">← 控制台</a><a href="/help">帮助文档</a><a href="/readme">README</a></div>
+</header>
+
+<!-- 图1 总体架构 -->
+<div class="card">
+  <h2>图 1 · 总体分层架构</h2>
+  <p>四个层次自上而下：客户端 → FastAPI 服务 → 引擎管道 → 数据与外部依赖。所有外部访问（浏览器、Agent、推送目标）都经 REST API，内部组件单进程协作。</p>
+  <svg class="archsvg" viewBox="0 0 960 520" role="img" aria-label="总体分层架构图">
+    <defs>
+      <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/></marker>
+      <linearGradient id="hg" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    </defs>
+    <!-- 客户端层 -->
+    <text x="20" y="30" font-size="13" font-weight="700" fill="#0e7490">客户端层</text>
+    <rect x="20" y="42" width="200" height="40" rx="9" fill="#fff" stroke="#cbd5e1"/>
+    <text x="120" y="66" text-anchor="middle" font-size="11.5" fill="#334155">浏览器控制台（亮色 · 局域网可访问）</text>
+    <rect x="240" y="42" width="200" height="40" rx="9" fill="#fff" stroke="#cbd5e1"/>
+    <text x="340" y="66" text-anchor="middle" font-size="11.5" fill="#334155">外部工具 / AI Agent（REST 调用）</text>
+    <rect x="460" y="42" width="200" height="40" rx="9" fill="#fff" stroke="#cbd5e1"/>
+    <text x="560" y="66" text-anchor="middle" font-size="11.5" fill="#334155">推送目标（企业微信/钉钉/微信）</text>
+    <!-- 服务层 -->
+    <text x="20" y="122" font-size="13" font-weight="700" fill="#0e7490">FastAPI 服务层（uvicorn · 0.0.0.0:8083）</text>
+    <rect x="20" y="134" width="640" height="66" rx="12" fill="rgba(8,145,178,.06)" stroke="rgba(8,145,178,.4)"/>
+    <rect x="36" y="148" width="196" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="134" y="164" text-anchor="middle" font-size="11.5" fill="#334155">REST API（23 端点）</text>
+    <text x="134" y="179" text-anchor="middle" font-size="10.5" fill="#64748b">tweets·accounts·ai·channels·stats…</text>
+    <rect x="244" y="148" width="196" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="342" y="164" text-anchor="middle" font-size="11.5" fill="#334155">静态页面</text>
+    <text x="342" y="179" text-anchor="middle" font-size="10.5" fill="#64748b">index.html · /help · /readme · /arch</text>
+    <rect x="452" y="148" width="192" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="548" y="164" text-anchor="middle" font-size="11.5" fill="#334155">Swagger / OpenAPI</text>
+    <text x="548" y="179" text-anchor="middle" font-size="10.5" fill="#64748b">/docs · /openapi.json</text>
+    <!-- 引擎管道 -->
+    <text x="20" y="242" font-size="13" font-weight="700" fill="#4f46e5">引擎管道（单进程后台）</text>
+    <rect x="20" y="254" width="640" height="110" rx="12" fill="rgba(99,102,241,.05)" stroke="rgba(99,102,241,.4)"/>
+    <rect x="36" y="268" width="120" height="40" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="96" y="284" text-anchor="middle" font-size="11.5" fill="#334155">调度器</text>
+    <text x="96" y="300" text-anchor="middle" font-size="10.5" fill="#64748b">APScheduler 15min</text>
+    <rect x="168" y="268" width="140" height="40" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="238" y="284" text-anchor="middle" font-size="11.5" fill="#334155">engine.run_fetch</text>
+    <text x="238" y="300" text-anchor="middle" font-size="10.5" fill="#64748b">锁防重入 · 管道编排</text>
+    <rect x="320" y="268" width="140" height="40" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="390" y="284" text-anchor="middle" font-size="11.5" fill="#334155">twitter.py 三级降级</text>
+    <text x="390" y="300" text-anchor="middle" font-size="10.5" fill="#64748b">增量短路 · 媒体提取</text>
+    <rect x="472" y="268" width="88" height="40" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="516" y="284" text-anchor="middle" font-size="11.5" fill="#334155">ai.py</text>
+    <text x="516" y="300" text-anchor="middle" font-size="10.5" fill="#64748b">研判/翻译</text>
+    <rect x="572" y="268" width="72" height="40" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="608" y="284" text-anchor="middle" font-size="11.5" fill="#334155">notify</text>
+    <text x="608" y="300" text-anchor="middle" font-size="10.5" fill="#64748b">四通道</text>
+    <!-- 数据层 -->
+    <text x="20" y="406" font-size="13" font-weight="700" fill="#047857">数据层</text>
+    <rect x="20" y="418" width="640" height="66" rx="12" fill="rgba(5,150,105,.05)" stroke="rgba(5,150,105,.4)"/>
+    <rect x="36" y="432" width="196" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="134" y="448" text-anchor="middle" font-size="11.5" fill="#334155">SQLite data/xintel.db</text>
+    <text x="134" y="463" text-anchor="middle" font-size="10.5" fill="#64748b">tweets·x_accounts·push_logs·kv</text>
+    <rect x="244" y="432" width="196" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="342" y="448" text-anchor="middle" font-size="11.5" fill="#334155">data/runtime.json</text>
+    <text x="342" y="463" text-anchor="middle" font-size="10.5" fill="#64748b">页面改动（Key/凭据/开关/过滤）</text>
+    <rect x="452" y="432" width="192" height="38" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="548" y="448" text-anchor="middle" font-size="11.5" fill="#334155">config.yaml / example</text>
+    <text x="548" y="463" text-anchor="middle" font-size="10.5" fill="#64748b">三层合并：默认←yaml←runtime</text>
+    <!-- 外部依赖 -->
+    <text x="690" y="122" font-size="13" font-weight="700" fill="#b45309">外部依赖（经代理）</text>
+    <rect x="690" y="134" width="250" height="150" rx="12" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="815" y="158" text-anchor="middle" font-size="11.5" fill="#92400e">本地代理 socks5://…:10808</text>
+    <rect x="704" y="172" width="222" height="26" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="815" y="189" text-anchor="middle" font-size="11" fill="#334155">A · syndication.twitter.com</text>
+    <rect x="704" y="202" width="222" height="26" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="815" y="219" text-anchor="middle" font-size="11" fill="#334155">B · nitter 实例 / twiiit 轮换器</text>
+    <rect x="704" y="232" width="222" height="26" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="815" y="249" text-anchor="middle" font-size="11" fill="#334155">pbs.twimg.com（推文截图）</text>
+    <text x="690" y="316" font-size="13" font-weight="700" fill="#b45309">外部依赖（直连）</text>
+    <rect x="690" y="328" width="250" height="100" rx="12" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <rect x="704" y="342" width="222" height="26" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="815" y="359" text-anchor="middle" font-size="11" fill="#334155">AI 厂商（DeepSeek/GLM/Qwen…）</text>
+    <rect x="704" y="374" width="222" height="26" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="815" y="391" text-anchor="middle" font-size="11" fill="#334155">推送服务（pushplus/wxpusher）</text>
+    <text x="815" y="416" text-anchor="middle" font-size="10.5" fill="#b45309">国内直连；可选 ai.proxy</text>
+    <!-- 连线 -->
+    <path d="M120 82 V128" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M340 82 V128" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M560 82 C600 82 620 110 660 130 C700 150 690 190 700 200" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 4" fill="none" marker-end="url(#a1)"/>
+    <path d="M96 168 V254 C96 280 130 288 162 288" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a1)"/>
+    <path d="M156 288 H162" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M308 288 H314" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M460 288 H466" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M560 288 H566" stroke="#64748b" stroke-width="1.5" marker-end="url(#a1)"/>
+    <path d="M238 308 V420 C238 440 250 450 260 451" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a1)"/>
+    <path d="M390 308 C390 380 500 400 548 426" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 4" fill="none" marker-end="url(#a1)"/>
+    <path d="M390 268 C390 230 640 260 700 240" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 4" fill="none" marker-end="url(#a1)"/>
+    <path d="M608 268 C608 200 700 300 704 355" stroke="#64748b" stroke-width="1.2" stroke-dasharray="5 4" fill="none" marker-end="url(#a1)"/>
+  </svg>
+  <p class="figcap">图 1 · 总体分层架构：客户端 → FastAPI 服务 → 引擎管道 → 数据层；虚线为外部依赖调用</p>
+</div>
+
+<!-- 图2 数据流 -->
+<div class="card">
+  <h2>图 2 · 一轮抓取的完整数据流</h2>
+  <p>每 15 分钟（或手动「立即抓取」）触发一轮。12 个步骤按序执行，三处智能短路保证「没更新不干活、没额度不硬跑、被过滤不骚扰」。</p>
+  <svg class="archsvg" viewBox="0 0 960 560" role="img" aria-label="一轮抓取数据流图">
+    <defs>
+      <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/></marker>
+    </defs>
+    <!-- Row 1 -->
+    <rect x="16" y="40" width="270" height="64" rx="10" fill="rgba(8,145,178,.07)" stroke="rgba(8,145,178,.4)"/>
+    <circle cx="40" cy="72" r="12" fill="#0891b2"/><text x="40" y="76" text-anchor="middle" class="stepnum" font-size="11">1</text>
+    <text x="60" y="66" font-size="12" font-weight="600" fill="#0f172a">触发</text>
+    <text x="60" y="84" font-size="10.5" fill="#64748b">APScheduler 15min / 手动按钮 / API</text>
+    <path d="M286 72 H316" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="322" y="40" width="270" height="64" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="346" cy="72" r="12" fill="#4f46e5"/><text x="346" y="76" text-anchor="middle" class="stepnum" font-size="11">2</text>
+    <text x="366" y="66" font-size="12" font-weight="600" fill="#0f172a">锁防重入</text>
+    <text x="366" y="84" font-size="10.5" fill="#64748b">运行中直接返回，不并发</text>
+    <path d="M592 72 H622" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="628" y="40" width="300" height="64" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="652" cy="72" r="12" fill="#4f46e5"/><text x="652" y="76" text-anchor="middle" class="stepnum" font-size="11">3</text>
+    <text x="672" y="66" font-size="12" font-weight="600" fill="#0f172a">加载配置（三层合并）</text>
+    <text x="672" y="84" font-size="10.5" fill="#64748b">内置默认 ← config.yaml ← runtime.json</text>
+    <path d="M778 104 V134 H120 V148" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a2)"/>
+    <!-- Row 2 -->
+    <rect x="16" y="152" width="270" height="78" rx="10" fill="rgba(8,145,178,.07)" stroke="rgba(8,145,178,.4)"/>
+    <circle cx="40" cy="184" r="12" fill="#0891b2"/><text x="40" y="188" text-anchor="middle" class="stepnum" font-size="11">4</text>
+    <text x="60" y="178" font-size="12" font-weight="600" fill="#0f172a">遍历到期账号</text>
+    <text x="60" y="196" font-size="10.5" fill="#64748b">fetch_minutes=0 跟随全局；&gt;0 按账号</text>
+    <text x="60" y="212" font-size="10.5" fill="#64748b">到期时间判定；未到期跳过（频率功能）</text>
+    <path d="M286 191 H316" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="322" y="152" width="270" height="78" rx="10" fill="rgba(217,119,6,.06)" stroke="rgba(217,119,6,.4)"/>
+    <circle cx="346" cy="184" r="12" fill="#d97706"/><text x="346" y="188" text-anchor="middle" class="stepnum" font-size="11">5</text>
+    <text x="366" y="178" font-size="12" font-weight="600" fill="#0f172a">三级降级抓取（经代理）</text>
+    <text x="366" y="196" font-size="10.5" fill="#64748b">A syndication → B Nitter(缓存实例→twiiit) → C Cookie</text>
+    <text x="366" y="212" font-size="10.5" fill="#64748b">任一层成功即止；全失败如实报错，不影响其他源</text>
+    <path d="M592 191 H622" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="628" y="152" width="300" height="78" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="652" cy="184" r="12" fill="#4f46e5"/><text x="652" y="188" text-anchor="middle" class="stepnum" font-size="11">6</text>
+    <text x="672" y="178" font-size="12" font-weight="600" fill="#0f172a">增量短路（置顶 id 比对）</text>
+    <text x="672" y="196" font-size="10.5" fill="#64748b">截断到上次置顶推文之后；无更新→0 处理</text>
+    <text x="672" y="212" font-size="10.5" fill="#64748b">截图原图从 RSS 描述解码提取（media_url）</text>
+    <path d="M778 191 V241 H151 V255" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a2)"/>
+    <!-- Row 3 -->
+    <rect x="16" y="259" width="270" height="78" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="40" cy="291" r="12" fill="#4f46e5"/><text x="40" y="295" text-anchor="middle" class="stepnum" font-size="11">7</text>
+    <text x="60" y="285" font-size="12" font-weight="600" fill="#0f172a">去重入库</text>
+    <text x="60" y="303" font-size="10.5" fill="#64748b">UNIQUE(screen_name, tweet_id)</text>
+    <text x="60" y="319" font-size="10.5" fill="#64748b">仅新推文进入后续管道</text>
+    <path d="M286 298 H316" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="322" y="259" width="270" height="78" rx="10" fill="rgba(99,102,241,.07)" stroke="rgba(99,102,241,.4)"/>
+    <circle cx="346" cy="291" r="12" fill="#4f46e5"/><text x="346" y="295" text-anchor="middle" class="stepnum" font-size="11">8</text>
+    <text x="366" y="285" font-size="12" font-weight="600" fill="#0f172a">AI 研判 + 翻译（自动阶段）</text>
+    <text x="366" y="303" font-size="10.5" fill="#64748b">prompt 携带原文+参考译文中英对照+媒体备注</text>
+    <text x="366" y="319" font-size="10.5" fill="#64748b">每轮限 auto_limit 条；单条失败不阻塞；未提及地理标「未知」</text>
+    <path d="M592 298 H622" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="628" y="259" width="300" height="78" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="652" cy="291" r="12" fill="#4f46e5"/><text x="652" y="295" text-anchor="middle" class="stepnum" font-size="11">9</text>
+    <text x="672" y="285" font-size="12" font-weight="600" fill="#0f172a">更新 AI 结果列</text>
+    <text x="672" y="303" font-size="10.5" fill="#64748b">ai_severity/type/assessment/recommendations/</text>
+    <text x="672" y="319" font-size="10.5" fill="#64748b">iocs/geo_*/org/industry/title_zh/text_zh</text>
+    <path d="M778 298 V348 H151 V362" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a2)"/>
+    <!-- Row 4 -->
+    <rect x="16" y="366" width="270" height="78" rx="10" fill="rgba(5,150,105,.06)" stroke="rgba(5,150,105,.4)"/>
+    <circle cx="40" cy="398" r="12" fill="#059669"/><text x="40" y="402" text-anchor="middle" class="stepnum" font-size="11">10</text>
+    <text x="60" y="392" font-size="12" font-weight="600" fill="#0f172a">推送过滤（四维）</text>
+    <text x="60" y="410" font-size="10.5" fill="#64748b">最低等级 / 国家白名单 / 行业白名单 /</text>
+    <text x="60" y="426" font-size="10.5" fill="#64748b">关键词白名单；被过滤轮次记入推送日志</text>
+    <path d="M286 405 H316" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="322" y="366" width="270" height="78" rx="10" fill="rgba(5,150,105,.06)" stroke="rgba(5,150,105,.4)"/>
+    <circle cx="346" cy="398" r="12" fill="#059669"/><text x="346" y="402" text-anchor="middle" class="stepnum" font-size="11">11</text>
+    <text x="366" y="392" font-size="12" font-weight="600" fill="#0f172a">推送分发</text>
+    <text x="366" y="410" font-size="10.5" fill="#64748b">摘要（≤8 条，含国家标注）+ critical/high</text>
+    <text x="366" y="426" font-size="10.5" fill="#64748b">即时单推（含截图链接/中英对照/研判/建议）</text>
+    <path d="M592 405 H622" stroke="#64748b" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="628" y="366" width="300" height="78" rx="10" fill="#fff" stroke="#cbd5e1"/>
+    <circle cx="652" cy="398" r="12" fill="#4f46e5"/><text x="652" y="402" text-anchor="middle" class="stepnum" font-size="11">12</text>
+    <text x="672" y="392" font-size="12" font-weight="600" fill="#0f172a">记录与呈现</text>
+    <text x="672" y="410" font-size="10.5" fill="#64748b">last_fetch/kv 更新 → 前端 2s 轮询感知 →</text>
+    <text x="672" y="426" font-size="10.5" fill="#64748b">自动刷新推文流/统计/日志 → Snackbar 提示</text>
+    <!-- 旁注 -->
+    <rect x="16" y="470" width="912" height="66" rx="10" fill="rgba(8,145,178,.05)" stroke="rgba(8,145,178,.3)"/>
+    <text x="36" y="494" font-size="11.5" fill="#0e7490" font-weight="600">四处短路保护</text>
+    <text x="36" y="516" font-size="11" fill="#334155">① 步骤 6：无更新直接跳过入库与 AI —— 不重复处理；② 步骤 8：未启用 AI / 无 Key / 无新推文时整段跳过 —— 不浪费额度；③ 步骤 10：全部被过滤时仅记日志不外发 —— 不骚扰接收人。单源/单通道故障均不阻塞其他组件。</text>
+  </svg>
+  <p class="figcap">图 2 · 一轮抓取数据流：触发 → 采集 → 增量 → 入库 → AI → 过滤 → 推送 → 呈现</p>
+</div>
+
+<!-- 图3 模块结构 -->
+<div class="card">
+  <h2>图 3 · 代码模块结构与依赖</h2>
+  <svg class="archsvg" viewBox="0 0 960 430" role="img" aria-label="代码模块结构图">
+    <defs>
+      <marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/></marker>
+    </defs>
+    <!-- 入口 -->
+    <rect x="380" y="24" width="200" height="56" rx="10" fill="rgba(8,145,178,.08)" stroke="rgba(8,145,178,.45)"/>
+    <text x="480" y="47" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0e7490">run.py / app/main.py</text>
+    <text x="480" y="66" text-anchor="middle" font-size="10.5" fill="#64748b">启动 · lifespan 初始化 · / /help /readme 路由</text>
+    <!-- 服务层 -->
+    <rect x="60" y="130" width="256" height="120" rx="10" fill="rgba(8,145,178,.06)" stroke="rgba(8,145,178,.4)"/>
+    <text x="188" y="152" text-anchor="middle" font-size="12" font-weight="700" fill="#0e7490">api/routes.py — REST 路由</text>
+    <text x="76" y="174" font-size="11" fill="#334155">/api/tweets·flag·batch·cleanup · /api/media</text>
+    <text x="76" y="192" font-size="11" fill="#334155">/api/x/accounts CRUD · /api/ai/*</text>
+    <text x="76" y="210" font-size="11" fill="#334155">/api/channels·filters·logs · /api/stats</text>
+    <rect x="352" y="130" width="256" height="120" rx="10" fill="rgba(99,102,241,.06)" stroke="rgba(99,102,241,.4)"/>
+    <text x="480" y="152" text-anchor="middle" font-size="12" font-weight="700" fill="#4f46e5">app/engine.py — 主管道</text>
+    <text x="368" y="174" font-size="11" fill="#334155">run_fetch 编排 · aggregate 跨源聚合</text>
+    <text x="368" y="192" font-size="11" fill="#334155">dispatch 推送分发 · backfill_tags 补标</text>
+    <text x="368" y="210" font-size="11" fill="#334155">pass_filter 四维过滤 · test_channel</text>
+    <rect x="644" y="130" width="256" height="120" rx="10" fill="rgba(5,150,105,.06)" stroke="rgba(5,150,105,.4)"/>
+    <text x="772" y="152" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">app/scheduler.py</text>
+    <text x="660" y="174" font-size="11" fill="#334155">APScheduler 定时（interval）</text>
+    <text x="660" y="192" font-size="11" fill="#334155">启动即抓（next_run_time=now）</text>
+    <text x="660" y="210" font-size="11" fill="#334155">不可用时降级 threading 循环</text>
+    <!-- 依赖中层 -->
+    <rect x="60" y="290" width="200" height="110" rx="10" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="160" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/twitter.py</text>
+    <text x="76" y="334" font-size="11" fill="#334155">三级降级（syndication/</text>
+    <text x="76" y="352" font-size="11" fill="#334155">Nitter/Cookie）· 增量短路</text>
+    <text x="76" y="370" font-size="11" fill="#334155">媒体提取 · 到期调度</text>
+    <rect x="290" y="290" width="200" height="110" rx="10" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="390" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/ai.py</text>
+    <text x="306" y="334" font-size="11" fill="#334155">OpenAI 兼容 /chat/completions</text>
+    <text x="306" y="352" font-size="11" fill="#334155">研判/翻译（中英对照 prompt）</text>
+    <text x="306" y="370" font-size="11" fill="#334155">batch_process · test_ai</text>
+    <rect x="520" y="290" width="200" height="110" rx="10" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="620" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/notify/</text>
+    <text x="536" y="334" font-size="11" fill="#334155">Markdown 模板（三件套）</text>
+    <text x="536" y="352" font-size="11" fill="#334155">wecom/dingtalk加签/</text>
+    <text x="536" y="370" font-size="11" fill="#334155">pushplus/wxpusher</text>
+    <rect x="750" y="290" width="150" height="110" rx="10" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="825" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/grading.py</text>
+    <text x="766" y="334" font-size="11" fill="#334155">关键词兜底分级</text>
+    <text x="766" y="352" font-size="11" fill="#334155">（AI 未覆盖时）</text>
+    <!-- 底层 -->
+    <rect x="200" y="340" width="0" height="0" fill="none"/>
+    <rect x="380" y="256" width="0" height="0" fill="none"/>
+    <!-- web -->
+    <rect x="60" y="130" width="0" height="0" fill="none"/>
+    <!-- 连线：main → 三个 -->
+    <path d="M430 80 C300 100 240 110 200 126" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a3)"/>
+    <path d="M480 80 V126" stroke="#64748b" stroke-width="1.5" marker-end="url(#a3)"/>
+    <path d="M530 80 C660 100 720 110 760 126" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a3)"/>
+    <!-- routes → engine -->
+    <path d="M316 190 H348" stroke="#64748b" stroke-width="1.5" marker-end="url(#a3)"/>
+    <!-- engine → 中层 -->
+    <path d="M400 250 C340 268 280 278 200 290" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a3)"/>
+    <path d="M440 250 V286" stroke="#64748b" stroke-width="1.5" marker-end="url(#a3)"/>
+    <path d="M500 250 C540 268 570 278 600 290" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#a3)"/>
+    <!-- 底层公共 -->
+    <rect x="290" y="256" width="0" height="0" fill="none"/>
+    <text x="480" y="418" text-anchor="middle" font-size="11" fill="#64748b">公共底层：app/config.py（三层配置合并）· app/db.py（SQLite 四表）——被全部模块引用；web/（index/help 静态页）由 main 直接托管</text>
+  </svg>
+  <p class="figcap">图 3 · 代码模块结构与依赖方向（箭头 = 依赖/调用）</p>
+</div>
+
+<!-- 功能架构说明 -->
+<div class="card">
+  <h2>功能架构说明</h2>
+  <h3>模块职责</h3>
+  <table>
+    <tr><th>模块</th><th>职责</th><th>关键机制</th></tr>
+    <tr><td><code>app/main.py</code></td><td>FastAPI 入口：lifespan 初始化建库/预置账号/启动调度器；挂载 API 与静态页</td><td>路由：<code>/</code> <code>/help</code> <code>/readme(.md)</code> <code>/arch</code> <code>/docs</code></td></tr>
+    <tr><td><code>app/config.py</code></td><td>配置加载与持久化</td><td>三层合并（内置默认 ← config.yaml ← runtime.json）；<code>save_runtime</code> 供页面写入</td></tr>
+    <tr><td><code>app/geo_rules.py</code></td><td>地理标签规则层</td><td>国旗 → 强地理词（国名/城市/州省）→ 企业名（仅弱线索，默认不采信）；ASCII 词边界 + 最长匹配 + URL/handle 掩码 + 多国判 ambiguous</td></tr>
+<tr><td><code>app/db.py</code></td><td>SQLite 数据层（单连接 + 线程锁）</td><td>tweets（含 AI/geo/媒体/状态列）· x_accounts（含频率）· push_logs · kv；自动 ALTER 迁移</td></tr>
+    <tr><td><code>app/twitter.py</code></td><td>X 数据采集（监控源 01）</td><td>三级降级（syndication→Nitter→Cookie）· 置顶 id 增量短路 · 到期账号调度 · 媒体提取解码 · 统一经代理</td></tr>
+    <tr><td><code>app/rssfetch.py</code></td><td>RSS 源采集（监控源 02）</td><td>feedparser 解析 RSS/Atom · guid 增量短路 · 独立到期调度 · 条目带「RSS:」前缀复用 tweets 管道（AI/推送/筛选全通用）· test_source 连通测试</td></tr>
+    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；JSON 容错解析；中英对照 prompt；批量处理；额度异常如实落库</td></tr>
+    <tr><td><code>app/engine.py</code></td><td>主管道编排</td><td>run_fetch 总控（锁防重入）· 四维推送过滤 · 摘要+即时分发 · backfill 补标 · 单条 AI</td></tr>
+    <tr><td><code>app/scheduler.py</code></td><td>定时调度</td><td>APScheduler 优先，降级 threading；next_run_in 供前端倒计时</td></tr>
+    <tr><td><code>app/notify/</code></td><td>推送实现</td><td>三件套 Markdown 模板（截图/原文/译文/研判/地理）；四通道 send；模拟模式判定</td></tr>
+    <tr><td><code>app/grading.py</code></td><td>兜底分级</td><td>AI 未覆盖时按关键词判 high/medium</td></tr>
+    <tr><td><code>api/routes.py</code></td><td>REST 路由（36 端点）</td><td>推文/账号/AI/通道/过滤/统计/报告任务；凭据脱敏；媒体代理域名白名单</td></tr>
+    <tr><td><code>app/reports.py</code></td><td>报告任务桥接模块</td><td>线索包生成 · claim 原子领取（409 防双领）· 复跑机械门禁验收（subprocess py -3.13, list 传参, timeout 180s）· 按通道能力推送</td></tr>
+    <tr><td><code>web/</code></td><td>前端（零依赖静态页）</td><td>index.html 控制台（亮色/左侧菜单视图切换/批量栏/弹窗）· help.html 帮助 · arch.html 本页</td></tr>
+  </table>
+
+  <h3>数据模型</h3>
+  <table>
+    <tr><th>表/文件</th><th>内容</th></tr>
+    <tr><td><code>tweets</code></td><td>业务列：screen_name · tweet_id（X 为雪花 / RSS 为 md5 前 20 位，仅作业务唯一键，<b>不作排序键</b>）· text · url · published_at（GMT）· media_url（截图原图）· is_retweet · is_reply；AI 列：ai_status/ai_model/ai_severity/ai_type/ai_iocs/ai_assessment/ai_recommendations/ai_confidence/ai_retries；翻译列：title_zh/text_zh；地理列：geo_country/geo_province/geo_city/org/industry/geo_basis（flag·geo·ai·soft_org·recheck）；标签列：tags（JSON 数组 ≤10 个，英文缩写带中文说明；json_each 筛选 + facets 聚合）；分类列：category（16 类情报分类）；管理列：starred/read/ignored/pushed（推送门控）。UNIQUE(screen_name, tweet_id) 去重</td></tr>
+<tr><td><code>fetch_logs</code></td><td>抓取日志：at · trigger（manual/schedule）· accounts_due/ok · new/ai · error · trace（分层追踪明细），保留 500 轮</td></tr>
+    <tr><td><code>x_accounts</code></td><td>screen_name · display · enabled · fetch_minutes（0=跟随全局）</td></tr>
+    <tr><td><code>rss_sources</code></td><td>监控源 02：name · url(UNIQUE) · enabled · fetch_minutes；条目入 tweets 表 screen_name 带「RSS:」前缀，kv rss_top_{id} 记首条 guid 短路、rss_last_{id} 记频率</td></tr>
+    <tr><td><code>push_logs</code></td><td>channel · kind（摘要/即时/测试/过滤/报告交付）· status（成功/模拟成功/失败）· detail · content</td></tr>
+    <tr><td><code>report_tasks</code></td><td>报告任务桥接：title · keywords(JSON) · tier（速报/完整）· notes · tweet_ids(JSON ≤50) · package_path（线索包 data/report_tasks/task_&lt;id&gt;.json）· status（待写/写作中/已交付待推/已推送/待人工/已取消）· assignee · deliver_dir/docx（Agent 回写）· gate_exit/gate_summary（系统复跑门禁结果）· word_count/ledger_total/ledger_pass · warnings(JSON) · auto_push</td></tr>
+    <tr><td><code>kv</code></td><td>x_nitter_instance（可用实例缓存）· acc_top_*（增量位点）· acc_last_*（频率记账）· last_fetch（最近抓取结果）· x_gql_queryid/x_uid_*（Cookie 层缓存）</td></tr>
+    <tr><td><code>runtime.json</code></td><td>页面改动持久层：ai 配置（含 Key 明文，勿外传）· channels 凭据与开关 · push.filters</td></tr>
+  </table>
+
+  <h3>关键机制</h3>
+  <ol>
+    <li><b>三级降级抓取</b>：A syndication（免登录但匿名额度易 429）→ B Nitter RSS（实例缓存直连 + twiiit 轮换发现，按「<code>&lt;?xml</code> 开头」验收防 CF/Anubis 挑战页）→ C Cookie 直连（实验性）。任一层成功即止，全失败才整体标红。</li>
+    <li><b>增量短路</b>：kv 记录每账号已入库的置顶雪花 id；新一轮 RSS 仍会整体拉取（X 无条件拉取接口），但会在置顶 id 处截断——无更新时 0 入库、0 AI、0 推送。</li>
+    <li><b>排序与时区</b>：雪花 ID 全局时间有序，列表按 <code>CAST(tweet_id AS INTEGER) DESC</code> 排序，补抓批次内不乱序；<code>published_at</code> 存 GMT 裸值，前端按 UTC 解析转本地时区显示。</li>
+    <li><b>AI 额度保护</b>：自动阶段每轮限 auto_limit 条；研判失败的推文标 ai_status=error 不自动重试；无地理信息的推文标「未知」不被补标任务反复处理。</li>
+    <li><b>模拟模式</b>：通道凭据留空 = 模拟——消息照常经模板生成并写入推送日志（标「模拟成功」），不外发；填入凭据即真实推送，无需重启。</li>
+    <li><b>媒体代理</b>：<code>/api/media?url=…</code> 服务端经抓取代理拉取 pbs.twimg.com 原图（域名白名单校验），客户端无需直连 X 图片 CDN，并带 24h 缓存头。</li>
+<li><b>通道多实例</b>：channels.{key}.instances 列表（每实例 name/凭据/enabled/filters 四维筛选），旧单实例结构运行时兼容读取；推送按实例循环——全局过滤后每实例再过自己的 filters，推送日志 channel 列记「类型·实例名」；企微 45009 限频自动退避（15s/30s×3 次）+发送节奏 4s。</li>
+<li><b>推送门控</b>：AI 实时开启时，仅 ai_status='ok' 的推文进入推送（失败重试 2 轮后附错误说明放行）——保证推送内容必经研判；推送后标记 pushed 防重复。</li>
+<li><b>混合分类</b>：16 类情报分类采用 脚本规则（9 组关键词零成本命中）+ AI 批量兜底（每 10 条一次调用）双通道；新推文研判时顺带标注分类。</li>
+<li><b>syndication 熔断</b>：连续 3 轮失败后 30 分钟内跳过该层（省每轮 15s+ 无效等待），成功自动复位。</li>
+<li><b>报告任务桥接</b>：系统只做任务管理与验收（建任务/线索包落盘/claim 原子领取/复跑机械门禁/推送），报告正文由外部 report-writer Agent 产出——验收不信任 Agent 自报 gate 结果，系统必须自己复跑已配置的门禁脚本（py -3.13 subprocess，exit 0=已交付待推，否则待人工，宁拦住不放过）；推送按通道能力分发（企微附件两步法，其余通道摘要+内网获取提示）。</li>
+<li><b>AI 模型拉取</b>：<code>GET {base_url}/models</code>（OpenAI 兼容标准端点）→ 前端 datalist 下拉，仍可手输；先保存配置再拉取，保证用最新地址与 Key。</li>
+  </ol>
+</div>
+
+<footer>X-Intel · 系统架构与功能架构说明 · 配套阅读：/help（使用与 API）· /readme（README 双格式）</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X-Intel · README · X(Twitter) 情报监控台</title>
+<style>
+:root{--bg:#eef2f9;--panel:rgba(255,255,255,.9);--line:rgba(15,23,42,.09);--line2:rgba(15,23,42,.18);
+--text:#1a2333;--mut:#5b6b84;--mut2:#8494ab;--acc:#0e7490;--acc2:#4f46e5;--ok:#059669;--warn:#b45309}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+font-size:14.5px;line-height:1.75;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1020px;margin:0 auto;padding:26px 20px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{width:30px;height:30px}
+.brand h1{font-size:21px;background:linear-gradient(90deg,#0e7490,#4f46e5);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--mut);font-size:13px}
+.links a{color:var(--acc);text-decoration:none;font-size:13.5px;border:1px solid rgba(8,145,178,.35);
+padding:5px 13px;border-radius:9px;background:rgba(8,145,178,.06);margin-left:8px}
+.links a:hover{background:rgba(8,145,178,.13)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin-bottom:16px;
+box-shadow:0 8px 28px -18px rgba(30,41,59,.25)}
+h2{font-size:17px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line);color:#0f172a}
+h3{font-size:14.5px;margin:16px 0 6px;color:#0e7490}
+p{margin:6px 0;color:#334155}
+ul,ol{margin:6px 0 6px 22px;color:#334155}
+li{margin:3px 0}
+li::marker{color:var(--acc)}
+code{background:rgba(15,23,42,.06);border:1px solid var(--line);border-radius:5px;padding:0 6px;
+font-family:Consolas,monospace;font-size:12.5px;color:#0f172a}
+pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:13px 16px;overflow-x:auto;
+font-family:Consolas,monospace;font-size:12.5px;line-height:1.6;margin:8px 0}
+pre code{background:none;border:none;color:inherit;padding:0}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:rgba(8,145,178,.06);font-weight:600;white-space:nowrap}
+td code{white-space:nowrap}
+.tag{display:inline-block;font-size:11px;border-radius:5px;padding:0 7px;vertical-align:1px;margin-left:6px}
+.tag.get{background:rgba(2,132,199,.1);color:#0369a1}
+.tag.post{background:rgba(5,150,105,.1);color:#047857}
+.tag.put{background:rgba(217,119,6,.12);color:#b45309}
+.tag.del{background:rgba(225,29,72,.1);color:#be123c}
+.tip{background:rgba(5,150,105,.06);border:1px solid rgba(5,150,105,.25);border-radius:9px;padding:9px 14px;margin:9px 0;color:#065f46;font-size:13px}
+.warn{background:rgba(217,119,6,.06);border:1px solid rgba(217,119,6,.3);border-radius:9px;padding:9px 14px;margin:9px 0;color:#92400e;font-size:13px}
+.archsvg{width:100%;height:auto;margin:10px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
+      <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
+      <path d="M4 4l6.5 8.2L4.4 20h2.6l4.8-6 4.7 6H20l-6.6-8.4L19.6 4H17l-4.3 5.4L8.5 4H4z" stroke="url(#g)" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    <div><h1>X-Intel · X(Twitter) 情报监控台</h1>
+    <div class="sub">独立监控 X 账号威胁情报：三级降级抓取 → AI 研判/翻译/地理标签 → 四通道推送 · v6</div></div>
+  </div>
+  <div class="links"><a href="/help">内建帮助文档</a><a href="/">控制台</a></div>
+</header>
+
+<div class="card">
+  <h2>功能特性</h2>
+  <div class="grid2">
+    <div>
+      <h3>监控源 01 · X 账号（三级降级 · 必须走代理）</h3>
+      <ul>
+        <li>A · X syndication 官方接口（免登录）</li>
+        <li>B · Nitter RSS：可用实例缓存 + twiiit.com 轮换自动发现</li>
+        <li>C · X 登录 Cookie 直连 GraphQL（实验性）</li>
+        <li>每账号独立监控频率（5 分钟~2 小时/跟随全局）</li>
+        <li>增量抓取：置顶推文 id 短路，未更新不重复处理</li>
+        <li>AI 实时开关：一键启停自动研判/翻译</li>
+        <li>抓取日志：每轮分层追踪明细持久化（500 轮）</li>
+      </ul>
+    </div>
+    <div>
+      <h3>推文管理</h3>
+      <ul>
+        <li>卡片/列表双视图（记忆选择）· 左侧菜单视图切换（48px ⇄ 220px 记忆）</li>
+        <li>推文截图：服务端代理拉取 X 图片 CDN</li>
+        <li>收藏 / 已读 / 忽略 + 状态筛选</li>
+        <li>勾选批量：已读/忽略/删除/批量翻译/批量研判</li>
+        <li>一键清理（保留 1~30 天，收藏永久保留）</li>
+        <li>雪花 ID 排序（全局时间有序）+ 本地时区显示</li>
+      </ul>
+    </div>
+    <div>
+      <h3>AI 能力</h3>
+      <ul>
+        <li>厂商预设：DeepSeek/GLM/Kimi/Qwen/OpenAI/Ollama/自定义</li>
+        <li>监控源 02 · RSS：feedburner/通用 RSS/Atom，guid 增量短路，条目复用 AI/推送管道</li>
+        <li>智能研判：类型/等级/评估/处置建议/IOC/置信度</li>
+        <li>智能翻译：标题摘要 + 完整中文（专有名词不译）</li>
+        <li>地理行业标签：国家→省州→城市 + 涉事单位 + 行业</li>
+        <li>情报分类：16 类标准（预警/参考/舆论/政策/动态/态势/主体+各类攻击线索）</li>
+        <li>模型列表拉取：调厂商 /models 填充下拉（仍可手输）</li>
+        <li>自动处理 + 手动按钮 + 批量 + 补标；prompt 中英对照</li>
+      </ul>
+    </div>
+    <div>
+      <h3>推送</h3>
+      <ul>
+        <li>四通道 × 多实例：每通道可加 N 个推送目标（如 5 个企微群）</li>
+        <li>实例级推送筛选（等级/国家/行业/关键词，叠加全局过滤）· 企微限频自动退避</li>
+        <li>摘要合并（≤8 条）+ critical/high 即时单推（企微自动附截图原图）</li>
+        <li>推送过滤四维：等级/国家/行业/关键词白名单</li>
+        <li>报告交付按通道能力分发（企微附件两步法/钉钉摘要/PushPlus 富文本/WxPusher 卡片）</li>
+        <li>凭据页面编辑（脱敏），留空=模拟模式</li>
+      </ul>
+    </div>
+    <div>
+      <h3>报告任务（写作桥接）</h3>
+      <ul>
+        <li>勾选推文生成线索包 → 外部 report-writer Agent 按规范写作</li>
+        <li>claim 原子领取（并发双领 409）· heartbeat/abort</li>
+        <li>交付后系统复跑机械门禁（不信任 Agent 自报）</li>
+        <li>六状态状态机；auto_push 可选；推送按通道能力分发</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>快速开始</h2>
+  <pre><code>pip install -r requirements.txt
+python run.py
+# 控制台 http://本机IP:8083（默认监听 0.0.0.0，局域网可访问）
+# 帮助文档 http://本机IP:8083/help   Swagger http://本机IP:8083/docs</code></pre>
+  <p>首次启动自动建库（SQLite <code>data/xintel.db</code>）并预置 @DailyDarkWeb 监控账号；页面改动（AI Key/通道凭据/开关/过滤规则）持久化到 <code>data/runtime.json</code>，优先级高于 <code>config.yaml</code>。</p>
+  <div class="warn"><b>网络要求</b>：X 相关域名直连会被 DNS 污染（实测解析到 Facebook IP 段），<code>network.proxy</code> 必须指向可用本地代理（默认 socks5://127.0.0.1:10808）。AI 接口默认直连（国内厂商无需代理）。</div>
+</div>
+
+<div class="card">
+  <h2>系统架构</h2>
+  <svg class="archsvg" viewBox="0 0 960 400" role="img" aria-label="X-Intel 系统架构图">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/></marker>
+      <linearGradient id="hg" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    </defs>
+    <rect x="20" y="60" width="200" height="230" rx="12" fill="rgba(8,145,178,.06)" stroke="rgba(8,145,178,.4)"/>
+    <text x="120" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#0e7490">采集层（经代理）</text>
+    <rect x="40" y="104" width="160" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="120" y="124" text-anchor="middle" font-size="11.5" fill="#334155">A · syndication 官方接口</text>
+    <rect x="40" y="142" width="160" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="120" y="162" text-anchor="middle" font-size="11.5" fill="#334155">B · Nitter RSS（实例缓存+轮换）</text>
+    <rect x="40" y="180" width="160" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="120" y="200" text-anchor="middle" font-size="11.5" fill="#334155">C · X Cookie 直连 GraphQL</text>
+    <rect x="40" y="222" width="160" height="44" rx="7" fill="rgba(217,119,6,.08)" stroke="rgba(217,119,6,.4)"/>
+    <text x="120" y="240" text-anchor="middle" font-size="11.5" fill="#92400e">本地代理 socks5://…:10808</text>
+    <text x="120" y="256" text-anchor="middle" font-size="10.5" fill="#b45309">X 域名被 DNS 污染，必须走代理</text>
+    <rect x="270" y="60" width="220" height="230" rx="12" fill="rgba(99,102,241,.05)" stroke="rgba(99,102,241,.4)"/>
+    <text x="380" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#4f46e5">处理管道</text>
+    <rect x="288" y="104" width="184" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="380" y="124" text-anchor="middle" font-size="11.5" fill="#334155">到期账号调度 + 置顶 id 增量短路</text>
+    <rect x="288" y="142" width="184" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="380" y="162" text-anchor="middle" font-size="11.5" fill="#334155">UNIQUE 去重入库</text>
+    <rect x="288" y="180" width="184" height="52" rx="7" fill="rgba(99,102,241,.08)" stroke="rgba(99,102,241,.35)"/>
+    <text x="380" y="200" text-anchor="middle" font-size="11.5" fill="#3730a3">AI：研判 / 翻译 / 地理标签</text>
+    <text x="380" y="218" text-anchor="middle" font-size="10.5" fill="#4f46e5">等级·类型·IOC·国家/省州/城市·单位·行业</text>
+    <rect x="288" y="240" width="184" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="380" y="260" text-anchor="middle" font-size="11.5" fill="#334155">推送过滤（等级/国家/行业/关键词）</text>
+    <rect x="540" y="120" width="180" height="110" rx="12" fill="rgba(5,150,105,.05)" stroke="rgba(5,150,105,.4)"/>
+    <text x="630" y="148" text-anchor="middle" font-size="14" font-weight="700" fill="#047857">SQLite 存储</text>
+    <text x="630" y="172" text-anchor="middle" font-size="11.5" fill="#334155">tweets（含 AI 结果与地理标签）</text>
+    <text x="630" y="192" text-anchor="middle" font-size="11.5" fill="#334155">x_accounts / push_logs / kv</text>
+    <text x="630" y="212" text-anchor="middle" font-size="11.5" fill="#334155">data/runtime.json 运行时配置</text>
+    <rect x="760" y="60" width="180" height="230" rx="12" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
+    <text x="850" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#b45309">输出层</text>
+    <rect x="778" y="104" width="144" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="850" y="124" text-anchor="middle" font-size="11.5" fill="#334155">Web 控制台（亮色）</text>
+    <rect x="778" y="142" width="144" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="850" y="162" text-anchor="middle" font-size="11.5" fill="#334155">REST API + Swagger</text>
+    <rect x="778" y="180" width="144" height="52" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="850" y="200" text-anchor="middle" font-size="11.5" fill="#334155">推送通道</text>
+    <text x="850" y="218" text-anchor="middle" font-size="10.5" fill="#64748b">企业微信/钉钉/PushPlus/WxPusher</text>
+    <rect x="778" y="240" width="144" height="30" rx="7" fill="#fff" stroke="#cbd5e1"/>
+    <text x="850" y="260" text-anchor="middle" font-size="11.5" fill="#334155">外部工具 / AI Agent</text>
+    <path d="M220 175 H262" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M490 175 H532" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M720 145 C740 145 740 130 752 130" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M720 175 H752" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M720 205 C740 205 740 235 752 245" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <path d="M720 225 C742 225 742 255 752 255" stroke="#64748b" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+    <text x="380" y="330" text-anchor="middle" font-size="12" fill="#64748b">抓取周期 15 分钟（可配）· 每账号可独立设置频率 · 定时器 APScheduler（不可用时降级 threading）</text>
+  </svg>
+</div>
+
+<div class="card">
+  <h2>配置说明（config.yaml；页面改动优先存 data/runtime.json）</h2>
+  <pre><code>server:   { host: 0.0.0.0, port: 8083 }        # 0.0.0.0 = 局域网可访问
+fetch:    { interval_minutes: 15, timeout_seconds: 25, retries: 1 }
+network:  { proxy: "socks5://127.0.0.1:10808" } # 全局代理（X 源必须）
+x:
+  strategy: "auto"                # auto = syndication → Nitter → Cookie 直连
+  show_replies: true
+  max_items: 20                   # 每账号每轮最多入库条数
+  nitter_instances: ["nitter.meowing.monster"]   # 兜底实例（会随时间变化）
+  auth_token: ""                  # 可选：X 登录 Cookie（第三级直连）
+  ct0: ""
+ai:
+  enabled: true
+  base_url: "https://api.deepseek.com/v1"   # OpenAI 兼容；页面有厂商预设
+  api_key: ""
+  model: "deepseek-chat"
+  auto_analyze: true              # 新推文自动研判+翻译
+  auto_limit: 10                  # 每轮自动处理上限（控成本）
+  max_tokens: 1200
+  proxy: ""                       # AI 接口可选代理
+channels:
+  wecom:    { enabled: true,  webhook: "" }
+  dingtalk: { enabled: true,  webhook: "", secret: "" }
+  pushplus: { enabled: false, token: "" }
+  wxpusher: { enabled: false, app_token: "", uid: "" }
+push:
+  digest_max_items: 8
+  filters: { min_severity: "", countries: "", industries: "", keywords: "" }</code></pre>
+</div>
+
+<div class="card">
+  <h2>REST API 参考</h2>
+  <p>交互式文档（Swagger UI）：<code>/docs</code> · OpenAPI：<code>/openapi.json</code> · 全部接口无鉴权，仅限内网。</p>
+  <h3>推文数据与管理</h3>
+  <p><span class="tag get">GET</span><code>/api/tweets?screen_name=&amp;severity=&amp;country=&amp;industry=&amp;q=&amp;status=&amp;limit=&amp;offset=</code> — 推文流。<code>status</code>：all（未忽略）/ unread / read / ignored / starred。条目含 <code>text/title_zh/text_zh/ai_*/geo_*/org/industry/media_url/starred/read/ignored</code>。</p>
+  <p><span class="tag get">GET</span><code>/api/media?url=…</code> — 推文截图代理（仅 pbs/ton.twimg.com，服务端走抓取代理拉图）。</p>
+  <p><span class="tag get">GET</span><code>/api/facets</code> — 国家与行业去重计数。</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/{id}/flag</code> — <code>{"starred":true,"read":true,"ignored":false}</code> 任意组合。</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/batch</code> — <code>{"ids":[…],"op":"read·unread·ignore·unignore·delete·ai_translate·ai_analyze"}</code>（批量 AI ≤20 条串行）。</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/cleanup</code> — <code>{"keep_days":1|2|3|7|30}</code>，收藏永久保留。</p>
+  <h3>AI 独立接口（不落库，供外部工具 / AI Agent 调用）</h3>
+  <p><span class="tag post">POST</span><code>/api/ai/analyze</code> — <code>{"text":"…","screen_name":"可选"}</code> → 结构化研判（threat_type / severity / confidence / assessment / recommendations[] / actors[] / iocs[] / country / province / city / organizations[] / industry / model）</p>
+  <p><span class="tag post">POST</span><code>/api/ai/translate</code> — <code>{"text":"…"}</code> → <code>{title_zh, text_zh}</code></p>
+  <p><span class="tag post">POST</span><code>/api/ai/tag</code> — <code>{"text":"…"}</code> → <code>{country, province, city, organizations[], industry}</code></p>
+  <p><span class="tag post">POST</span><code>/api/ai/test</code> — 连通测试 · <span class="tag post">POST</span><code>/api/ai/backfill?limit=10</code> — 批量补标 · <span class="tag get">GET</span><code>/api/ai/config</code>（Key 脱敏）/ <span class="tag put">PUT</span><code>/api/ai/config</code> · <span class="tag get">GET</span><code>/api/ai/models</code> — 拉取厂商 /models 模型列表</p>
+  <h3>监控账号</h3>
+  <p><span class="tag get">GET</span><code>/api/x/accounts</code> · <span class="tag post">POST</span><code>/api/x/accounts</code> <code>{"screen_name":"…"}</code> · <span class="tag put">PUT</span><code>/api/x/accounts/{id}</code>（screen_name / display / fetch_minutes）· <span class="tag post">POST</span><code>/api/x/accounts/{id}/toggle</code> · <span class="tag del">DELETE</span><code>/api/x/accounts/{id}</code></p>
+  <h3>抓取 / 统计 / 推送</h3>
+  <p><span class="tag post">POST</span><code>/api/fetch/run</code> · <span class="tag get">GET</span><code>/api/fetch/logs</code>（抓取日志：分层追踪明细，保留 500 轮）· <span class="tag get">GET</span><code>/api/stats</code>（含 ai_auto_on）· <span class="tag get">GET</span><code>/api/push/logs</code></p>
+  <p><span class="tag get">GET</span><code>/api/channels</code> · <span class="tag post">POST</span><code>/api/channels/{key}/toggle</code> · <span class="tag get">GET</span><code>/api/channels/{key}/config</code>（脱敏）/ <span class="tag put">PUT</span><code>/api/channels/{key}/config</code> · <span class="tag post">POST</span><code>/api/channels/{key}/test</code></p>
+  <p><span class="tag get">GET</span><code>/api/push/filters</code> / <span class="tag put">PUT</span><code>/api/push/filters</code>（min_severity / countries / industries / keywords）</p>
+  <h3>报告任务（桥接外部 report-writer Agent）</h3>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks</code> — 建任务（title/keywords≥3组/tweet_ids≤50/tier 速报·完整/notes/auto_push），线索包落盘 <code>data/report_tasks/task_&lt;id&gt;.json</code> · <span class="tag get">GET</span><code>/api/reports/tasks</code>（列表）· <span class="tag get">GET</span><code>/api/reports/tasks/{id}/package</code>（<b>Agent 取料入口</b>）</p>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks/{id}/status</code> — <code>{"action":"claim|heartbeat|abort"}</code>，claim 原子领取并发双领 409 · <span class="tag post">POST</span><code>/api/reports/tasks/{id}/deliver</code> — 交付回写+<b>系统复跑机械门禁验收</b>（可选 word_limit；exit 0 → 已交付待推，否则待人工）· <span class="tag post">POST</span><code>/api/reports/tasks/{id}/push</code> — 人工确认推送（企微 markdown+报告交付附件，其余通道按能力分发）· <span class="tag del">DELETE</span><code>/api/reports/tasks/{id}</code>（写作中 409）</p>
+</div>
+
+<div class="card">
+  <h2>Agent / 外部工具接入</h2>
+  <p>系统内建帮助页 <code>/help</code> 第 7、8 节提供接入指南与 <b>5 个可直接复制的 Prompt 模板</b>（系统接入 Prompt、每日威胁简报、定向监控分析、任意文本研判、IOC 汇总导出），模板内嵌 API 说明与字段含义，替换 <code>{BASE}</code> 即可粘贴给任何具备联网能力的 AI（Claude / GPT / Cursor / Dify / 本地 Agent）。</p>
+  <pre><code>1. GET  {BASE}/api/tweets?severity=high&amp;country=美国&amp;limit=20   ← 拉取情报（自带中文翻译与地理标签）
+2. GET  {BASE}/api/facets                                        ← 确认可选维度
+3. POST {BASE}/api/ai/analyze {"text":"外部文章正文"}             ← 研判任意外部文本
+4. 轮询 GET {BASE}/api/stats 的 last_fetch.at 感知增量            ← 变化后拉 /api/tweets?limit=10</code></pre>
+</div>
+
+<div class="card">
+  <h2>常见问题</h2>
+  <ul>
+    <li><b>抓取全失败？</b>先确认本地代理可用（X 域名被 DNS 污染必须走代理）；出口节点切换后无需改配置。</li>
+    <li><b>AI 报 429 / 额度用尽？</b>供应商侧额度问题，报错如实显示在推文卡上；换 Key 或充值后点卡上按钮重试，或用「补齐地区标签」批量补跑。</li>
+    <li><b>推文为什么是英文？</b>等 AI 自动翻译完成即显示中文块；也可手动点「翻译」。</li>
+    <li><b>时间看不懂？</b>页面时间已按本地时区渲染；数据库 / API 原始值统一为 GMT。</li>
+    <li><b>安全提示</b>：系统无鉴权，仅限内网使用；AI Key 明文存于 <code>data/runtime.json</code>，勿外传。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>目录结构</h2>
+  <pre><code>x-intel-monitor/
+├── run.py               # 启动入口
+├── config.example.yaml  # 配置模板（页面改动优先存 data/runtime.json）
+├── requirements.txt
+├── seed_demo.py         # 离线演示数据
+├── app/
+│   ├── main.py          # FastAPI 入口（lifespan 初始化 + /help 路由）
+│   ├── config.py        # 三层配置合并（默认←config.yaml←runtime.json）
+│   ├── db.py            # SQLite：tweets(含AI/geo列) / x_accounts / push_logs / kv
+│   ├── grading.py       # 关键词兜底分级
+│   ├── engine.py        # 管道：抓取→去重→AI→过滤→摘要/即时推送
+│   ├── scheduler.py     # APScheduler（降级 threading）
+│   ├── twitter.py       # 三级降级抓取 + 媒体提取 + 增量短路
+│   ├── ai.py            # OpenAI 兼容研判/翻译/标签 + 批量处理
+│   └── notify/          # Markdown 模板 + 四通道
+├── api/routes.py        # REST 路由
+├── web/index.html       # 控制台（亮色）
+├── web/help.html        # 内建帮助文档（/help）
+└── data/                # xintel.db / runtime.json</code></pre>
+</div>
+
+<footer>X-Intel · X 情报监控台 · README（MD 与 HTML 双格式，内容同源）· 生成于 2026-10-31</footer>
+</div>
+</body>
+</html>

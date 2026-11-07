@@ -1,0 +1,40 @@
+# X-Intel 需求追踪表
+
+> 维护约定：每条需求含 **ID｜内容｜来源与确认依据｜验收条件｜实现位置｜关联模块｜验证用例｜状态**。
+> 状态取值：✅已实现且已验证 / 🟡已实现未验证 / 🔶部分实现 / 📋已确认未实现 / ⚠曾实现后丢失 / 💭待确认想法 / ❌已取消或被替代。
+> 验证用例列指向 healthcheck.py / smoke_test.py 的具体断言或浏览器实测记录。
+> 本表由 2026-11-07 系统性盘点建立，来源：项目记忆库（x-intel-monitor.md 全版本记录）、/help 与 /arch 内建文档、代码实读、本会话验证证据。
+
+| ID | 需求内容 | 来源与依据 | 验收条件 | 实现位置 | 关联模块 | 验证用例 | 状态 |
+|----|---------|-----------|---------|---------|---------|---------|------|
+| R1 | 双源监控：01 X 账号（syndication→Nitter→Cookie 三级降级、每账号独立频率、置顶 id 增量短路）+ 02 RSS（guid 增量短路、RSS: 前缀隔离） | 2026-11-05 v9 用户明确需求；/help 监控源章节 | 新增源即采集入库；停用源不再采集；日志逐源可追踪 | app/twitter.py、app/rssfetch.py、app/engine.py run_fetch | engine/db/scheduler | smoke G4、healthcheck RSS 组、fetch_logs trace | ✅ |
+| R2 | AI 研判/翻译/16 类分类（OpenAI 兼容、四层 JSON 兼容） | 2026-10-26 起持续需求 | 新推文自动研判+翻译；失败不阻塞推送门控另有规则（R13） | app/ai.py、app/engine.py run_ai_stage | ai/engine/db | smoke G5、healthcheck AI 组 | ✅ |
+| R3 | 地理标签三层判定（国旗→强地理词→企业名仅弱线索不采信）；企业总部≠受害国；披露机构不参与 | 2026-11-06 Bug2 修复确认（用户明确需求） | 企业名不直接定国家；geo_basis 记录依据 | app/geo_rules.py、backfill_geo.py、app/ai.py（入库兜底 F7） | ai/geo_rules/backfill | smoke G5 兜底双断言、B6 抽查 | ✅ |
+| R4 | 统一排序键 `COALESCE(NULLIF(published_at,''),created_at) DESC, id DESC`；禁用 CAST(tweet_id)（RSS md5 恒 0） | 2026-11-06 Bug1 用户明确需求 | RSS 进首屏、分页时序连续 | app/db.py 三处排序点 | db/前端 | smoke G3 四条排序断言 | ✅ |
+| R5 | RSS published_at 归一 GMT `YYYY-MM-DD HH:MM`（RFC2822 不可字符串排序） | 2026-11-06 Bug1 配套确认 | 库内无 RFC2822 原串 | app/rssfetch.py _norm_time | rssfetch/db | smoke G3 published_at 格式断言 | ✅ |
+| R6 | 推送四通道（企微/钉钉/PushPlus/WxPusher）多实例；实例 filter_rule 绑定命名规则（**替代**全局，非叠加）；解绑回退默认 | 2026-11-05 v9 + v9.7 用户明确需求 | 同一情报按各实例规则独立判定；删规则自动解绑 | app/engine.py dispatch/_enabled_channels、api/routes.py 实例端点 | engine/notify/routes | smoke G6、代码实读（本盘点关联验证） | ✅ |
+| R7 | 推送过滤六维（等级/分类/国家/行业/标签/关键词）+ **且/或组合模式**（默认且）；维度内多值恒为或 | 2026-11-07 用户明确需求（"需要或的关系"） | 且=全部满足才推；或=任一非空维度满足即推；空维度不参与 | app/engine.py pass_filter、api/routes.py、前端 pf-panel | engine/routes/前端 | smoke G6 九条 pass_filter 断言 | ✅ |
+| R8 | 白名单输入为标记式控件（facets 常用值下拉 + 自定义回车 + chips 可删去重） | 2026-11-07 用户明确需求 | 下拉选值/自定义输入均正确序列化为顿号串 | web/index.html tokenFieldHtml/bindTokenField | 前端/routes | 浏览器实测（下拉/自定义/去重/删除/保存回读） | ✅ |
+| R9 | 企微图片直传（markdown 后紧跟 image 消息 base64 直传）+ 45009 退避（15s/30s×3）+ 4s 发送节奏 | 2026-11-01 用户实测需求；v9.1 修复 | 图片在群里直接显示；限频自动恢复 | app/notify/channels.py WeComChannel | notify/engine | smoke G6 企微真实推送；push_logs | ✅ |
+| R10 | 凭据掩码不回写：编辑表单留空=不变；含 ****/… 的值一律丢弃 | v9.1/v9.3 两次修复（用户反复反馈） | 留空提交不变；粘贴完整新地址即换 | api/routes.py api_channel_update clean 过滤、前端 instFormHtml | routes/前端 | **B3 回归六步实测全 PASS（本轮）** | ✅ |
+| R11 | 报告任务六状态机（待写→写作中→已交付待推→已推送；待人工/已取消）；原子领取；系统复跑配置的门禁脚本，不信任 Agent 自报 | 2026-11-05 v8 交接文档 | 并发 claim 409；gate≠0 → 待人工；写作中不可删 | app/reports.py、api/routes.py 报告端点 | reports/engine/db | smoke G7 八条 | ✅ |
+| R12 | 首页=系统信息汇聚（长期约定：每加功能同步首页展示卡） | 2026-11-05 用户明确约定 | 新功能必同步首页；首页不跟随其它视图显示 | web/index.html home-grid/loadHome | 前端/routes | healthcheck 页面断言；浏览器实测 | ✅ |
+| R13 | 推送门控：AI 实时开启时仅 ai_status=ok 可推送（error 且 retries≥2 附说明放行） | 2026-11-01 v6.2 确认 | 未研判推文不推送 | app/engine.py _pushable_by_ai | engine | 代码实读 + ai error 零积压佐证 | 🟡（逻辑确认，场景级端到端未单独测） |
+| R14 | 混合分类：rule_classify 关键词优先（零成本）+ AI 批量兜底；AI 研判顺带 intel_category | 2026-11-01 v6.2 确认 | 新推文 100% 有分类 | app/ai.py rule_classify、app/engine.py | ai/engine | 本盘点实测：分类覆盖 100%，规则兜底 0 触发（AI 先行） | ✅ |
+| R15 | 数据清理 keep_days（1/2/3/7/30），starred 永久保留 | 2026-11-01 v6 确认 | 清理后收藏保留；计数返回 | app/db.py cleanup_old | db/前端 | 代码实读；**未在真实库执行**（破坏性） | 🟡 |
+| R16 | AI 模型列表拉取（/models → datalist 下拉，仍可手输） | 2026-11-05 v8 确认 | 保存配置后拉取；失败保留手输 | app/ai.py list_models、前端 ai-fetch-models | ai/前端 | smoke G5 模型列表断言 | ✅ |
+| R17 | facets 计数随筛选上下文联动（各维度排除自身条件）；选中项 0 计数保留显示 | 2026-11-07 Bug 修复确认（"显示 36 实际 0"） | 下拉数字=选它能得到的真实条数 | app/db.py facets、api/routes.py、前端 loadFacets | db/routes/前端 | smoke G8 七条、浏览器场景实测 | ✅ |
+| R18 | 关键词标签 ≤10 个/条；英文缩写译成「英文（中文说明）」；入库时 AI 漏判由强地理规则兜底（F7） | 2026-11-06/07 用户明确需求 | 新推文自动打标；标签精确匹配筛选 | app/ai.py analyze_tweet、app/geo_rules.py | ai/geo_rules | smoke G5 兜底双断言（可控替身） | ✅ |
+| R19 | 日志审计三页签（抓取/推送/AI 日志，AI 日志留存 500 条） | 2026-11-05 v9.2 确认 | 三类日志可查、AI 失败红色可见 | app/db.py ai_logs、前端 logs-panel | db/前端 | smoke G5 AI 日志落库断言 | ✅ |
+| R20 | 统计口径拆分：推送成功/模拟分列（KPI 显示"含模拟 N"） | 2026-11-07 本盘点 F3 修复（口径不清晰问题） | stats 提供 push_sim；KPI 区分真实/模拟 | app/db.py push_stats_today、前端 KPI | db/routes/前端 | 本轮实测 stats 三键 + 浏览器 KPI | ✅ |
+
+## 待确认/候选需求（不擅自实现）
+
+| ID | 内容 | 背景 | 状态 |
+|----|------|------|------|
+| C1 | 跨通道推送去重改为 per-(tweet,instance) 粒度 | 现状：pushed=1 是推文级全局标记。实例 A 发过后标记全局，**之后新启用的实例/通道不会补发历史推文**；同轮内所有启用实例都会收到（无串用）。改动需新增关联表，属业务语义变更 | 💭 待用户决策（详见 bug-ledger B14） |
+| C2 | 模拟发送是否应占用 pushed 标记 | 现状：模拟发送也标记 pushed=1（防止无限重发），代价是**之后配置真实凭据的历史积压不会补发**。若改"模拟不标记"会导致未配置通道每轮重发模拟+真实通道重复发送风险，必须与 C1 一起设计 | 💭 待用户决策（与 C1 同一决策） |
+| C3 | 发送失败的批次是否需要补发机制 | 现状：实例发送失败仍标记 pushed（下一轮只处理新推文，失败批次不重试）。可做"失败重推队列"或"失败清单+手动重推" | 💭 待用户决策 |
+| C4 | cleanup 是否保护被报告任务引用的推文 | 现状：cleanup_old 按时间删除（starred 保留），不检查 report_tasks.tweet_ids 引用；线索包是创建时快照不受影响，但任务引用的原始推文可能被删导致无法回溯 | 💭 待用户决策（建议：报告任务引用的推文豁免清理） |
+| C5 | 企微群1 实例遗留 `filters` 垃圾字符串字段 | v9.7 改版前残留，引擎不读取，无功能影响；可在下次触碰该配置时顺手清理 | 💭 低优先级清理候选 |
+| C6 | 推文流标签/单位 chip 点击筛选（已实现）扩展到 org chip | org chip 当前不可点击；若有需要再加 | 💭 待确认想法 |

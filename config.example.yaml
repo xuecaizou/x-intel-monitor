@@ -1,0 +1,44 @@
+# X-Intel 配置模板：复制为 config.yaml 后按需修改
+# 页面上也可以随时改 AI Key / 通道凭据 / 开关（保存到 data/runtime.json，优先级更高）
+
+server:
+  host: 0.0.0.0     # 0.0.0.0 = 监听所有网卡，局域网可访问；改 127.0.0.1 则仅本机
+  port: 8083
+
+fetch:
+  interval_minutes: 15   # 抓取间隔
+  timeout_seconds: 25    # 单请求超时（经代理建议 ≥25s）
+  retries: 1
+
+network:
+  proxy: "socks5://127.0.0.1:10808"   # X 相关域名直连被 DNS 污染，必须走代理
+                                      # 也支持 http://127.0.0.1:10809 等
+
+x:
+  proxy: "socks5://127.0.0.1:10808"   # 本源专用代理（留空回退 network.proxy）
+  strategy: "auto"          # auto: syndication → Nitter → Cookie 直连；可单独指定一层
+  show_replies: true        # 是否包含账号发出的回复
+  max_items: 20             # 每账号每轮最多入库条数
+  first_fetch_limit: 10     # 新账号首次抓取回溯的历史推文条数（页面可改）
+  nitter_instances: ["nitter.meowing.monster"]  # 兜底实例（2026-10 实测可用，会随时间变化）
+  auth_token: ""            # 可选：X 登录 Cookie（F12 → Cookies → x.com），第三级直连用
+  ct0: ""                   # 与 auth_token 同页获取
+
+ai:
+  enabled: false                        # 配好 Key 后打开（页面也可开关）
+  base_url: "https://api.deepseek.com/v1"  # OpenAI 兼容接口；GLM: https://open.bigmodel.cn/api/paas/v4
+  api_key: ""                           # 你的 AI Key（页面可随时改，脱敏回显）
+  model: "deepseek-chat"                # 模型名
+  auto_analyze: true                    # 新推文自动研判+翻译
+  auto_limit: 10                        # 每轮自动处理上限（控成本）
+  max_tokens: 1200
+  proxy: ""                             # AI 接口可选代理；国内厂商直连留空
+
+channels:
+  wecom:    { enabled: true,  webhook: "" }              # 企业微信群机器人
+  dingtalk: { enabled: true,  webhook: "", secret: "" }  # 钉钉机器人（加签）
+  pushplus: { enabled: false, token: "" }                # 个人微信 · pushplus.plus
+  wxpusher: { enabled: false, app_token: "", uid: "" }   # 个人微信 · wxpusher.zjiecode.com
+
+push:
+  digest_max_items: 8      # 每轮摘要最多合并条数；AI 判为 critical/high 的推文额外即时单推

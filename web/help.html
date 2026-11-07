@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X-Intel · 帮助文档</title>
+<style>
+:root{--bg:#eef2f9;--panel:rgba(255,255,255,.9);--line:rgba(15,23,42,.09);--line2:rgba(15,23,42,.18);
+--text:#1a2333;--mut:#5b6b84;--mut2:#8494ab;--acc:#0e7490;--acc2:#4f46e5;--ok:#059669;--warn:#b45309}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+font-size:14.5px;line-height:1.75;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1020px;margin:0 auto;padding:26px 20px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:22px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{width:30px;height:30px}
+.brand h1{font-size:21px;background:linear-gradient(90deg,#0e7490,#4f46e5);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--mut);font-size:13px}
+.links a{color:var(--acc);text-decoration:none;font-size:13.5px;border:1px solid rgba(8,145,178,.35);
+padding:5px 13px;border-radius:9px;background:rgba(8,145,178,.06);margin-left:8px}
+.links a:hover{background:rgba(8,145,178,.13)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin-bottom:16px;
+box-shadow:0 8px 28px -18px rgba(30,41,59,.25)}
+h2{font-size:17px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--line);color:#0f172a}
+h3{font-size:14.5px;margin:16px 0 6px;color:#0e7490}
+p{margin:6px 0;color:#334155}
+ul,ol{margin:6px 0 6px 22px;color:#334155}
+li{margin:3px 0}
+li::marker{color:var(--acc)}
+code{background:rgba(15,23,42,.06);border:1px solid var(--line);border-radius:5px;padding:0 6px;
+font-family:Consolas,monospace;font-size:12.5px;color:#0f172a}
+pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:13px 16px;overflow-x:auto;
+font-family:Consolas,monospace;font-size:12.5px;line-height:1.6;margin:8px 0}
+pre code{background:none;border:none;color:inherit;padding:0}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:rgba(8,145,178,.06);font-weight:600;white-space:nowrap}
+td code{white-space:nowrap}
+.tag{display:inline-block;font-size:11px;border-radius:5px;padding:0 7px;vertical-align:1px;margin-left:6px}
+.tag.get{background:rgba(2,132,199,.1);color:#0369a1}
+.tag.post{background:rgba(5,150,105,.1);color:#047857}
+.tag.put{background:rgba(217,119,6,.12);color:#b45309}
+.tag.del{background:rgba(225,29,72,.1);color:#be123c}
+.tip{background:rgba(5,150,105,.06);border:1px solid rgba(5,150,105,.25);border-radius:9px;padding:9px 14px;margin:9px 0;color:#065f46;font-size:13px}
+.warn{background:rgba(217,119,6,.06);border:1px solid rgba(217,119,6,.3);border-radius:9px;padding:9px 14px;margin:9px 0;color:#92400e;font-size:13px}
+.toc{columns:2;gap:24px}
+.toc a{color:var(--acc);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
+      <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
+      <path d="M4 4l6.5 8.2L4.4 20h2.6l4.8-6 4.7 6H20l-6.6-8.4L19.6 4H17l-4.3 5.4L8.5 4H4z" stroke="url(#g)" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    <div><h1>X-Intel 帮助文档</h1><p class="sub">X(Twitter) 情报监控台 · AI 研判/翻译/分类/地理标签 · v6</p></div>
+  </div>
+  <div class="links"><a href="/arch">系统架构</a><a href="/readme">README</a><a href="/docs">Swagger</a><a href="/">← 控制台</a></div>
+</header>
+
+<div class="card">
+  <h2>目录</h2>
+  <div class="toc">
+    <p>1. <a href="#start">快速开始</a></p>
+    <p>2. <a href="#features">功能总览</a></p>
+    <p>3. <a href="#accounts">监控账号管理</a></p>
+    <p>4. <a href="#ai">AI 研判 / 翻译 / 地理标签 / 情报分类</a></p>
+    <p>5. <a href="#push">推送与推送过滤</a></p>
+    <p>6. <a href="#ops">日志与运维</a></p>
+    <p>7. <a href="#api">REST API 完整参考</a></p>
+    <p>8. <a href="#agent">给外部工具 / AI Agent 的接入指南</a></p>
+    <p>9. <a href="#prompts">推荐 Prompt 模板</a></p>
+    <p>10. <a href="#faq">常见问题</a></p>
+  </div>
+</div>
+
+<div class="card" id="start">
+  <h2>1. 快速开始</h2>
+  <pre><code>pip install -r requirements.txt
+python run.py
+# 控制台 http://本机IP:8083（默认监听 0.0.0.0，局域网可访问）
+# 帮助文档 /help · 架构说明 /arch · README /readme · Swagger /docs</code></pre>
+  <ul>
+    <li><b>配置 AI</b>：左侧菜单「AI 设置」→ 选厂商预设（DeepSeek/GLM/Kimi/Qwen/OpenAI/Ollama/自定义）→ 填 API Key → 打开「AI 功能启用」→ 点「测试连通」；「拉取模型」可从厂商 /models 拉取模型列表下拉选择。</li>
+    <li><b>添加监控账号</b>：左侧菜单「监控账号」输入 @用户名 → 选首抓条数 → 添加。</li>
+    <li><b>配置代理</b>：X 域名被 DNS 污染，<code>network.proxy</code> 必须指向可用本地代理（默认 socks5://127.0.0.1:10808）。</li>
+    <li><b>抓取</b>：默认每 15 分钟一轮（含 AI 处理与推送），也可点「立即抓取」。</li>
+  </ul>
+</div>
+
+<div class="card" id="features">
+  <h2>2. 功能总览</h2>
+  <table>
+    <tr><th>模块</th><th>能力</th></tr>
+    <tr><td>导航</td><td>左侧菜单切换视图（推文流/监控账号/AI 设置/报告任务/推送过滤/推送通道/抓取日志/推送记录），底部帮助/架构外链；收起态 48px 图标条 ⇄ 展开态 220px（顶部按钮切换，选择均记忆）</td></tr><tr><td>采集</td><td>双源：01 X 账号（三级降级 syndication→Nitter→Cookie 直连 · 每账号独立频率 · 置顶 id 增量短路 · 首抓条数可设 · 截图原图提取）+ 02 RSS 订阅源（feedburner/通用 RSS/Atom · guid 增量短路 · 独立频率 · 「RSS:」前缀隔离同名账号）</td></tr>
+    <tr><td>推文管理</td><td>卡片/列表双视图 · 截图展示 · 收藏/已读/忽略 · 勾选批量（已读/忽略/删除/翻译/研判/生成报告任务）· 一键清理（收藏保护）</td></tr>
+    <tr><td>AI</td><td>研判（类型/等级/评估/建议/IOC/置信度）· 翻译（中英对照）· 16 类情报分类 · 地理行业标签（国家→省州→城市+单位+行业）· 实时开关</td></tr>
+    <tr><td>筛选</td><td>七维组合：等级/分类/国家/行业/账号/状态/全文检索（下拉带计数）</td></tr>
+    <tr><td>推送</td><td>四通道（企业微信/钉钉/PushPlus/WxPusher）· <b>每通道多实例</b>（如 5 个企微群各一份）· <b>实例级推送筛选</b>（等级/国家/行业/关键词，仅对该实例生效）· 摘要+即时单推 · 企微截图原图直传 · 全局四维过滤 · 企微 45009 限频自动退避 · 报告交付按通道能力分发</td></tr>
+    <tr><td>报告任务</td><td>推文勾选生成线索包 → 外部 report-writer Agent 按规范写作 → 系统复跑机械门禁验收 → 人工确认推送。六状态状态机（待写/写作中/已交付待推/已推送/待人工/已取消），claim 原子防双领</td></tr>
+    <tr><td>运维</td><td>抓取日志（分层追踪，500 轮留存）· 推送日志 · 实时开关 · 页面无缓存（改版即生效）· AI 模型列表一键拉取（/models → 下拉选择）</td></tr>
+  </table>
+</div>
+
+<div class="card" id="accounts">
+  <h2>3. 监控账号管理</h2>
+  <ul>
+    <li><b>添加</b>：输入 @用户名 → 选首抓条数（默认 10，可选 20/30/50）→ 添加。首抓按设置回溯历史推文。</li>
+    <li><b>频率</b>：每账号独立设置（跟随全局 / 5 分钟~2 小时），未到期的轮次自动跳过。</li>
+    <li><b>增量</b>：置顶推文 id 短路——X 无新推文时该账号 0 处理，不重复入库/耗 AI/推送。</li>
+    <li><b>启停/重命名/删除</b>：账号行操作即时生效。</li>
+    <li><b>数据核验</b>：「抓取日志」面板每轮记录各账号分层追踪明细（哪层成功/失败/耗时），可回溯定位。</li>
+  </ul>
+</div>
+
+<div class="card" id="ai">
+  <h2>4. AI 研判 / 翻译 / 地理标签 / 情报分类</h2>
+  <table>
+    <tr><th>维度</th><th>内容</th></tr>
+    <tr><td>威胁研判</td><td>威胁类型、建议等级（critical~info）、态势评估（≤150 字）、处置建议、置信度、IOC 列表</td></tr>
+    <tr><td>智能翻译</td><td>标题式中文概括 + 完整中文翻译（专有名词/IOC/CVE 不译）</td></tr>
+    <tr><td>地理标签</td><td>国家 → 省/州 → 城市 三级地区（未提及如实留空）、涉事单位全称、所属行业；判定依据记入 <code>geo_basis</code>（flag/geo/ai/soft_org）。<b>企业总部不视为涉事国家</b>，披露机构（FBI/CISA 等）不参与判定</td></tr>
+    <tr><td>关键词标签</td><td>AI 研判时提取 <b>≤10 个</b>情报要素标签：威胁手法（木马/勒索/数据泄露/0day…）、技术要素（C2/僵尸网络…）、恶意家族、威胁组织、涉事企业、攻防双方国家；<b>英文缩写一律译成「英文（中文说明）」</b>（如 C2（命令与控制服务器）、RAT（远程访问木马））；存于 <code>tags</code> JSON 列。存量数据用 <code>python backfill_tags.py [--limit N]</code> 轻量回填（顺带补行业/单位/省州缺口，自动提交短事务可断点续跑）</td></tr>
+    <tr><td>情报分类</td><td>16 类标准：预警/参考/舆论/政策/动态/态势/主体情报 + 木马/钓鱼网站/钓鱼邮件/水坑/暴破扫描/僵尸网络/蠕虫/网页篡改/数据泄露线索（脚本规则优先 + AI 兜底）</td></tr>
+  </table>
+  <p>触发方式：新推文自动处理（实时开关控制）或推文卡手动按钮；「补齐地区标签」「AI 分类」按钮批量处理历史数据。研判失败的推文自动重试 2 轮后放行推送（附错误说明），不阻塞管线。</p>
+  <div class="tip"><b>AI 实时开关</b>：推文流标题栏一键启停自动研判/翻译。关闭后新推文仅入库不调 AI（推原文），手动按钮不受影响。</div>
+</div>
+
+<div class="card" id="push">
+  <h2>5. 推送与推送过滤</h2>
+  <ul>
+    <li><b>四通道</b>：企业微信群机器人 / 钉钉机器人（加签）/ PushPlus / WxPusher，凭据面板内联编辑（脱敏回显），留空 = 模拟模式。</li>
+    <li><b>推送门控</b>：AI 实时开启时，仅已研判成功的推文进入推送（重试 2 轮失败后附错误说明放行）——保证推送内容必经研判。</li>
+    <li><b>推送策略</b>：摘要合并（≤8 条，含国家标注/译文）+ AI 判为 critical/high 的推文即时单推（含截图原图/中英对照/研判/建议）。</li>
+    <li><b>企业微信附图</b>：即时单推以 image 消息类型直传截图原图（base64，无需公网 URL），图片直接显示在企微消息中。</li>
+    <li><b>推送过滤六维（2026-11-07 扩展）</b>：最低等级 / <b>情报分类白名单（精确匹配）</b> / 国家白名单 / 行业白名单 / <b>关键词标签白名单（与卡片橙标精确一致）</b> / 关键词白名单，对摘要与即时推送同时生效；被过滤轮次记入日志。命名规则编辑器同六维，供通道实例按需绑定。<b>白名单输入为「标记式」控件</b>：下拉选常用值（来自 facets 动态计数）+ 自由输入不可预测的值回车添加，chips 可删、重复自动去重；关键词框保持自由文本。<b>条件组合方式可选「且 / 或」</b>（默认且）：且=全部满足才推送；或=任一非空维度满足即推送（维度内多值始终是或）；空条件不参与。</li>
+  </ul>
+</div>
+
+<div class="card" id="ops">
+  <h2>6. 日志与运维</h2>
+  <ul>
+    <li><b>抓取日志</b>：侧栏「抓取日志」面板（点击展开），每轮记录 触发方式/到期与成功账号数/新增与 AI 数/<b>分层追踪明细</b>（如 syndication✗429 → nitter✓20条/1.5s），SQLite 持久化保留最近 500 轮。</li>
+    <li><b>推送日志</b>：「推送记录」面板，含推送全文 Markdown 留档。</li>
+    <li><b>服务常驻</b>：Startup 目录 <code>X-Intel.vbs</code> 登录自启；桌面 <code>X-Intel启动.bat</code> 手动拉起；日志 <code>data/service.log</code>。</li>
+    <li><b>页面无缓存</b>：所有页面响应带 no-cache 头，系统改版刷新即生效。</li>
+    <li><b>统一排序键</b>：推文流、AI 补标、待推送三处均按 <code>COALESCE(NULLIF(published_at,''), created_at) DESC, id DESC</code> 排序。不能用 <code>CAST(tweet_id AS INTEGER)</code>——X 雪花 ID 可用但 RSS 条目 ID 是 md5 十六进制，CAST 恒为 0，会把整源条目压到列表末尾。RSS 入库时 <code>published_at</code> 已统一归一为 GMT 裸值 <code>YYYY-MM-DD HH:MM</code>（RFC2822 的月份缩写不能直接字符串排序）。</li>
+    <li><b>地理标签判定</b>：<code>app/geo_rules.py</code> 三层——国旗 emoji（最高置信）→ 强地理词（国名/城市/州省）→ 企业名（<b>仅弱线索，默认不采信</b>）。企业总部所在地不等于涉事国家（"Apple 警告德国议员"应判德国而非美国），FBI/CISA/NCSC 等披露机构名不参与判定。判定依据写入 <code>geo_basis</code> 列（flag/geo/ai/soft_org/geo_recheck/ai_recheck）。</li>
+    <li><b>标签复核</b>：<code>python backfill_geo.py --audit</code> 只读复核存量标签（分国旗一致/强地理一致/仅企业名支撑/冲突多国四档）；<code>--audit --fix</code> 用 AI 按"受害方优先"重判并改写；<code>--fix --no-ai</code> 仅清空冲突项待审。脚本用自动提交模式逐条短事务，可与在线服务并行运行。</li>
+    <li><b>标签联动</b>：卡片上的基标（国家/分类/行业）与橙色关键词标签 chip 均可<b>点击直接套用筛选</b>；筛选栏「全部标签」下拉来自 <code>/api/facets</code> 的 tags 统计（Top60，精确匹配）；首页 TOP TAGS 卡点击跳推文流并套用同款筛选。</li>
+    <li><b>筛选计数动态联动（2026-11-07）</b>：下拉里的计数随当前其它筛选条件实时重算（每个维度统计时排除自身条件）——数字恒等于"在当前条件下选它能得到的真实条数"，不会再出现"显示 36 实际 0 条"。当前选中项计数为 0 时保留显示（0）；筛选组合无结果时提示放宽条件，与"暂无推文可抓取"区分。</li>
+  </ul>
+</div>
+
+<div class="card" id="api">
+  <h2>7. REST API 完整参考</h2>
+  <p>交互式文档（Swagger UI）：<a href="/docs" target="_blank"><code>/docs</code></a> · OpenAPI：<a href="/openapi.json" target="_blank"><code>/openapi.json</code></a> · 全部接口无鉴权，仅限内网。</p>
+  <h3>推文数据与管理</h3>
+  <p><span class="tag get">GET</span><code>/api/tweets?screen_name=&amp;severity=&amp;country=&amp;industry=&amp;category=&amp;tag=&amp;q=&amp;status=&amp;limit=&amp;offset=</code> — 八维筛选推文流（<code>tag</code> 按关键词标签匹配，如 <code>tag=勒索</code>）。<code>status</code>：all（未忽略）/ unread / read / ignored / starred。条目含全部 AI 与地理字段、<code>tags</code> 标签数组。</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/{id}/flag</code> — <code>{"starred":true,"read":true,"ignored":false}</code> 任意组合</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/batch</code> — <code>{"ids":[…],"op":"read·unread·ignore·unignore·delete·ai_translate·ai_analyze"}</code>（批量 AI ≤20 条串行）</p>
+  <p><span class="tag post">POST</span><code>/api/tweets/cleanup</code> — <code>{"keep_days":1|2|3|7|30}</code>，收藏永久保留</p>
+  <p><span class="tag get">GET</span><code>/api/media?url=…</code> — 推文截图代理（仅 pbs/ton.twimg.com）</p>
+  <p><span class="tag get">GET</span><code>/api/facets?severity=&amp;screen_name=&amp;q=&amp;country=&amp;industry=&amp;category=&amp;tag=&amp;status=</code> — 国家/行业/分类/标签计数（<b>随筛选上下文联动</b>，各维度排除自身条件）· <span class="tag get">GET</span><code>/api/categories</code> — 分类计数（全量）</p>
+  <h3>监控源（01 X 账号 / 02 RSS）</h3>
+  <p><span class="tag get">GET</span><code>/api/x/accounts</code> · <span class="tag post">POST</span><code>/api/x/accounts</code> · <span class="tag put">PUT</span><code>/api/x/accounts/{id}</code>（screen_name/display/fetch_minutes）· <span class="tag post">POST</span><code>/api/x/accounts/{id}/toggle</code> · <span class="tag del">DELETE</span><code>/api/x/accounts/{id}</code></p>
+  <p><span class="tag get">GET</span><code>/api/rss/sources</code> · <span class="tag post">POST</span><code>/api/rss/sources</code>（name/url，name 留空自动取域名）· <span class="tag post">POST</span><code>/api/rss/test</code>（连通测试返回条目数+样例，不入库）· <span class="tag put">PUT</span><code>/api/rss/sources/{id}</code> · <span class="tag post">POST</span><code>/api/rss/sources/{id}/toggle</code> · <span class="tag del">DELETE</span><code>/api/rss/sources/{id}</code></p>
+  <p><span class="tag get">GET</span><code>/api/x/accounts</code> · <span class="tag post">POST</span><code>/api/x/accounts</code> · <span class="tag put">PUT</span><code>/api/x/accounts/{id}</code>（screen_name/display/fetch_minutes）· <span class="tag post">POST</span><code>/api/x/accounts/{id}/toggle</code> · <span class="tag del">DELETE</span><code>/api/x/accounts/{id}</code></p>
+  <p><span class="tag get">GET</span><code>/api/x/settings</code> / <span class="tag put">PUT</span><code>/api/x/settings</code> — first_fetch_limit / max_items / show_replies</p>
+  <h3>AI 能力（独立接口，不落库，供外部工具 / Agent 调用）</h3>
+  <p><span class="tag post">POST</span><code>/api/ai/analyze</code> — <code>{"text":"…","screen_name":"可选"}</code> → 结构化研判（含 intel_category 分类/地理/单位/行业）</p>
+  <p><span class="tag post">POST</span><code>/api/ai/translate</code> — <code>{"text":"…"}</code> → <code>{title_zh, text_zh}</code></p>
+  <p><span class="tag post">POST</span><code>/api/ai/tag</code> — <code>{"text":"…"}</code> → <code>{country, province, city, organizations[], industry}</code></p>
+  <p><span class="tag post">POST</span><code>/api/ai/classify?limit=200</code> — 情报分类（后台执行）· <span class="tag post">POST</span><code>/api/ai/backfill</code> — 地理补标</p>
+  <p><span class="tag get">GET</span><code>/api/ai/config</code>（Key 脱敏）/ <span class="tag put">PUT</span><code>/api/ai/config</code> · <span class="tag post">POST</span><code>/api/ai/test</code></p>
+  <p><span class="tag get">GET</span><code>/api/ai/models</code> — 拉取厂商 <code>{base_url}/models</code> 模型列表（OpenAI 兼容端点，按已保存配置；页面「拉取模型」按钮调此接口填充下拉）</p>
+  <h3>报告任务（桥接外部 report-writer Agent）</h3>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks</code> — <code>{"title","keywords":[≥3组],"tweet_ids":[≤50],"tier":"速报|完整","notes","auto_push":0|1}</code> → 建任务+线索包落盘 <code>data/report_tasks/task_&lt;id&gt;.json</code></p>
+  <p><span class="tag get">GET</span><code>/api/reports/tasks?status=&amp;limit=&amp;offset=</code> — 任务列表（全字段）· <span class="tag get">GET</span><code>/api/reports/tasks/{id}/package</code> — <b>Agent 取料入口</b>（线索包 JSON：推文原文+AI 预研判+geo+disclaimer）</p>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks/{id}/status</code> — <code>{"action":"claim|heartbeat|abort","assignee","note"}</code>；claim 原子领取，并发双领返回 409</p>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks/{id}/deliver</code> — 交付回写 + <b>系统复跑机械门禁验收</b>（不信任 agent 自报）：可选 <code>word_limit</code>；exit 0 → 已交付待推，≠0/文件缺 → 待人工</p>
+  <p><span class="tag post">POST</span><code>/api/reports/tasks/{id}/push</code> — 人工确认推送（仅"已交付待推"）：企微 markdown+报告交付附件两步法；钉钉/PushPlus/WxPusher 按能力发摘要</p>
+  <p><span class="tag del">DELETE</span><code>/api/reports/tasks/{id}</code> — 取消（写作中返回 409）</p>
+  <h3>采集 / 统计 / 日志</h3>
+  <p><span class="tag post">POST</span><code>/api/fetch/run</code> · <span class="tag get">GET</span><code>/api/fetch/logs?limit=30</code> — 分层追踪明细（500 轮留存）</p>
+  <p><span class="tag get">GET</span><code>/api/stats</code> — 全量统计（含 ai_auto_on/categorized/geo_tagged）</p>
+  <h3>推送通道（多实例）</h3>
+  <p><span class="tag get">GET</span><code>/api/channels</code>（含每通道 instances 列表）· <span class="tag post">POST</span><code>/api/channels/{key}/instances</code>（添加实例：name/values 凭据/filter_rule 规则绑定）· <span class="tag put">PUT</span><code>/api/channels/{key}/instances/{idx}</code> · <span class="tag del">DELETE</span><code>/api/channels/{key}/instances/{idx}</code></p>
+  <p><span class="tag get">GET</span><code>/api/channels/{key}/instances/{idx}/config</code>（脱敏）· <span class="tag post">POST</span><code>/api/channels/{key}/instances/{idx}/test</code>（单实例测试）· <span class="tag post">POST</span><code>/api/channels/{key}/test</code>（兼容旧调用，测第一个实例）· <span class="tag get">GET</span><code>/api/push/filters</code> / <span class="tag put">PUT</span><code>/api/push/filters</code>（全局六维）· <span class="tag get">GET</span><code>/api/push/logs</code></p>
+  <p><b>实例级筛选</b>：实例通过 <code>filter_rule</code> 绑定命名规则（<b>替代</b>全局，非叠加；留空=用全局六维规则）；旧单实例配置自动迁移为 instances 列表无需手动处理；企微机器人 45009 限频自动退避重试（15s/30s），推送节奏 4s/条。</p>
+  <p><span class="tag get">GET</span><code>/api/channels</code> · <span class="tag post">POST</span><code>/api/channels/{key}/toggle</code> · <span class="tag get">GET</span><code>/api/channels/{key}/config</code>（脱敏）/ <span class="tag put">PUT</span><code>/api/channels/{key}/config</code> · <span class="tag post">POST</span><code>/api/channels/{key}/test</code></p>
+  <p><span class="tag get">GET</span><code>/api/push/filters</code> / <span class="tag put">PUT</span><code>/api/push/filters</code> · <span class="tag get">GET</span><code>/api/push/logs</code></p>
+</div>
+
+<div class="card" id="agent">
+  <h2>8. 给外部工具 / AI Agent 的接入指南</h2>
+  <ol>
+    <li><b>拉取情报</b>：<code>GET /api/tweets?severity=high&amp;country=美国&amp;limit=20</code> —— 筛选后的推文自带中文翻译、AI 研判与地理标签，可直接消费。</li>
+    <li><b>按维度分流</b>：<code>GET /api/categories</code> / <code>/api/facets</code> 获取可选维度与计数。</li>
+    <li><b>处理任意外部文本</b>：POST 到 <code>/api/ai/analyze</code>（研判）或 <code>/api/ai/tag</code>（地理标签抽取），无需先入库。</li>
+    <li><b>监听更新</b>：轮询 <code>GET /api/stats</code> 的 <code>last_fetch.at</code>，变化后拉取 <code>/api/tweets?limit=10</code> 获取增量。</li>
+    <li><b>批量导出</b>：<code>/api/tweets?category=数据泄露线索&amp;limit=100</code> 按 16 类分类拉取。</li>
+  </ol>
+
+  <h3>报告任务与 report-writer Agent（写作桥接）</h3>
+  <p>系统不自己写报告——建任务/发线索包/复跑门禁验收/推送，报告正文由外部 ZCode <code>report-writer</code> Agent 按内部报告编写规范产出。状态机：<code>待写 → 写作中 → 已交付待推 → 已推送</code>，验收 FAIL 落「待人工」。</p>
+  <ol>
+    <li><b>建任务</b>：页面勾选推文 →「生成报告任务」（或 POST 端点 1），线索包自动落盘，含推文原文/AI 预研判/geo/免责声明（AI 字段仅供参考，必须回原文核措辞）。</li>
+    <li><b>Agent 领取</b>：<code>POST …/status {"action":"claim","assignee":"report-writer@&lt;host&gt;"}</code> —— 原子领取，两个 Agent 并发只有一个成功（另一个 409）。</li>
+    <li><b>Agent 取料</b>：<code>GET …/package</code> 拿线索包，按其内部规范自行完成外部检索与溯源核查（线索包不替代这两步）。</li>
+    <li><b>Agent 写作期间</b>：定期 <code>heartbeat</code> 汇报进度；放弃则 <code>abort</code> 释放回待写。</li>
+    <li><b>交付</b>：<code>POST …/deliver</code> 带 deliver_dir/docx/word_count/ledger_total/ledger_pass/warnings（可选 word_limit）。系统自动复跑已配置的门禁脚本（py -3.13，timeout 180s）：<b>exit 0 → 已交付待推；≠0/文件缺 → 待人工</b>（宁拦住不放过）。</li>
+    <li><b>推送</b>：人工在面板点「推送通知」——企微收 markdown+报告交付附件；其他启用通道按能力收摘要。<code>auto_push=1</code> 时验收 PASS 自动推。</li>
+  </ol>
+  <p><b>Agent 调度提示词模板</b>（在 ZCode 会话粘贴，<code>{TASK_ID}</code> 换成面板里的任务号）：</p>
+  <pre><code>领取 X-Intel 报告任务并按规范写报告：
+1. POST {BASE}/api/reports/tasks/{TASK_ID}/status，body {"action":"claim","assignee":"report-writer@本机"}
+2. GET {BASE}/api/reports/tasks/{TASK_ID}/package 取线索包（AI 字段仅供参考，必须回推文原文核措辞）
+3. 按内部报告编写规范完整执行写作与自检（规范不在本仓库内），最后自行运行交付门禁自检
+4. 交付回写：POST {BASE}/api/reports/tasks/{TASK_ID}/deliver，body 含 deliver_dir（交付目录绝对路径）、docx（文件名）、word_count、ledger_total、ledger_pass、warnings 数组
+5. 系统复跑门禁后：PASS 会停在"已交付待推"等人工推送；FAIL 请读 gate_summary 修正后重新走 3-4
+注意：写作期间每完成一大步 POST heartbeat；不要跳过规范任何一步。</code></pre>
+</div>
+
+<div class="card" id="prompts">
+  <h2>9. 推荐 Prompt 模板（复制给其他 AI 直接用）</h2>
+  <p>把模板整段复制给任何具备联网/工具调用能力的 AI（Claude、GPT、Cursor、Dify 工作流、本地 Agent 等），将 <code>{BASE}</code> 替换为本系统地址即可。模板已内嵌 API 说明，AI 无需额外文档即可正确调用。</p>
+
+  <h3>① 系统接入 Prompt（作为 Agent 的 System Prompt，一次配置长期有效）</h3>
+  <pre><code>你是接入 X-Intel 威胁情报监控台的情报分析助手。系统 API 基址：{BASE}（无鉴权，仅限内网使用）。
+
+【可用接口】
+1) GET {BASE}/api/tweets?severity=&amp;country=&amp;industry=&amp;category=&amp;q=&amp;limit=20
+   推文流筛选。severity 可选 critical/high/medium/low/info；category 可选 16 类情报分类
+   （预警情报/参考情报/舆论情报/政策情报/动态情报/态势情报/主体情报/木马攻击线索/
+   钓鱼网站攻击线索/钓鱼邮件攻击线索/水坑攻击线索/暴破扫描攻击线索/僵尸网络传播线索/
+   蠕虫病毒传播线索/网页篡改线索/数据泄露线索/其他）；country/industry 填中文；
+   q 为全文检索（含原文、译文、研判、省州、城市、单位、行业）。
+   返回 {total, items:[...]}，每条含：
+   screen_name（账号）、text（原文）、text_zh（AI中文翻译）、title_zh（中文摘要标题）、
+   ai_severity（AI建议等级）、ai_type（威胁类型）、ai_assessment（态势评估）、
+   ai_recommendations（处置建议数组）、ai_iocs（IOC数组）、ai_confidence（置信度）、
+   category（情报分类）、geo_country/geo_province/geo_city（三级地区）、
+   org（涉事单位数组）、industry（行业）、media_url（截图，经 /api/media 代理展示）、
+   starred/read/ignored（收藏/已读/忽略状态）、published_at、url（推文链接）。
+2) GET {BASE}/api/facets — 国家/行业清单及计数（用于确认筛选值）。
+3) GET {BASE}/api/categories — 16 类情报分类清单及计数。
+4) GET {BASE}/api/stats — 系统状态：today（今日新增）、ai_analyzed（AI 研判数）、
+   categorized（已分类数）、geo_tagged（地区覆盖）、last_fetch（最近抓取时间）。
+5) POST {BASE}/api/ai/analyze  {"text":"任意文本"} — 对系统外文本做威胁研判
+   （含情报分类与地理标签），返回结构化结果。
+6) POST {BASE}/api/ai/translate {"text":"任意文本"} — 中文翻译。
+7) POST {BASE}/api/ai/tag      {"text":"任意文本"} — 抽取 国家/省州/城市/涉事单位/行业。
+
+【工作规则】
+1. 开始先 GET /api/stats 确认服务可用；数据新鲜度以 last_fetch.at 为准。
+2. 拉数据始终用 GET /api/tweets 组合筛选参数（limit ≤ 100），不要全量拉取。
+3. 引用情报必须带推文 url 与 published_at；等级表述为「AI 建议等级」。
+4. 用户给出的公告、文章等外部文本，用 POST /api/ai/analyze 做研判、/api/ai/tag 抽地区。
+5. 全部输出使用简体中文，条目按严重程度（critical→info）排序。
+6. 【三件套展示，必须遵守】展示任何一条推文时，输出中英对照三件套：
+   【截图】{BASE}/api/media?url=&lt;media_url&gt;   ← 有图才输出，可直接内嵌为图片链接
+   【原文】&lt;text&gt;                              ← 推文原文（可截断 ≤300 字）
+   【译文】&lt;text_zh&gt;                           ← AI 中文译文；为空时标注「未翻译」
+   并提示可调 POST {BASE}/api/ai/translate 补译。
+7. 【分类标注】引用推文时标注其 category（情报分类）；用户要求按类筛选时
+   使用 /api/tweets?category= 参数。
+
+【情报卡片输出格式（示例）】
+   🔴 [严重] @DailyDarkWeb · 2026-10-27
+   【分类】数据泄露线索 ｜ 【截图】{BASE}/api/media?url=…
+   【原文】Qilin ransomware gang has listed …（原文 ≤300 字）
+   【译文】Qilin 勒索组织将…列入泄露站点（AI 中文译文）
+   【研判】数据泄露 / 高危 / 置信度 85% —— 评估：… 建议：…
+   【地理】美国 · 德克萨斯州 ｜ 单位：X ｜ 行业：医疗
+   链接：https://x.com/…</code></pre>
+
+  <h3>② 每日威胁简报 Prompt（每日一次，直接粘贴）</h3>
+  <pre><code>请生成今日威胁情报简报，数据源为 X-Intel 系统（API 基址：{BASE}）：
+1. GET {BASE}/api/tweets?severity=high&amp;limit=50 拉取高危及以上推文（今日数据以 /api/stats 的 last_fetch 确认）；
+2. 按 情报分类（category 字段）与国家 分组，每组提炼：事件、涉事单位、行业、AI 研判要点与置信度；
+3. 每条输出「三件套」中英对照：
+   【截图】{BASE}/api/media?url=&lt;media_url&gt;（无图省略）
+   【原文】text 原文（≤200 字）
+   【译文】text_zh 中文译文（空则标「未翻译」）
+4. 单列「IOC 汇总」：合并各条 ai_iocs 去重；
+5. 结尾输出「防守建议 Top3」：汇总各条 ai_recommendations，去重后按优先级排列；
+6. 输出 Markdown 简报，标注数据来源（X-Intel · 账号 · 推文链接），中文输出。</code></pre>
+
+  <h3>③ 定向监控分析 Prompt（按国家/行业/分类深挖）</h3>
+  <pre><code>请针对「{国家}·{行业}·{情报分类}」做定向威胁分析，数据源 X-Intel（API 基址：{BASE}）：
+1. GET {BASE}/api/categories 确认系统内已有的分类与数据量；
+2. GET {BASE}/api/tweets?country={国家}&amp;category={分类}&amp;limit=50 拉取相关推文；
+3. 每条事件输出「三件套」中英对照；
+4. 输出：事件清单（时间线排序）→ 主要威胁行为体/勒索组织 → 针对本行业的共性手法 →
+   与我方相关的供应链暴露面推断（基于涉事单位类型）→ 监控建议；
+5. 若数据不足，明确说明覆盖范围限制，不要编造。</code></pre>
+
+  <h3>④ 任意文本研判 Prompt（把外部文章/公告丢给系统研判）</h3>
+  <pre><code>请帮我研判以下文本的威胁情况。调用 POST {BASE}/api/ai/analyze，
+请求体 text 字段放「原文 + 中文译文（中英对照）」，例如：
+{"text":"原文：Qilin ransomware listed Acme Hospital …\n参考译文：Qilin 勒索组织将 Acme 医院…"}
+（若该文本配有截图，把图片说明也附在 text 末尾；系统会提示文本模型无法看图）
+拿到 result 后向我解释：威胁类型与建议等级是否合理、评估要点、我应该优先执行哪条处置建议；
+若 result.confidence 低于 60，请额外说明不确定性来源。</code></pre>
+
+  <h3>⑤ IOC 汇总导出 Prompt（喂给防火墙/EDR）</h3>
+  <pre><code>请从 X-Intel 拉取最近推文并汇总 IOC，供边界设备使用（API 基址：{BASE}）：
+1. GET {BASE}/api/tweets?limit=100 拉取近期推文；
+2. 合并全部 ai_iocs 字段并去重，按 域名/IP/哈希/CVE 分类整理成表格；
+3. 每条 IOC 标注来源推文链接与 AI 建议等级；
+4. severity=critical/high 来源的 IOC 单独列出，建议优先封禁。</code></pre>
+
+  <div class="tip"><b>无联网能力的 AI？</b>让它生成调用计划由你手动执行也可以：把本页第 7 节 API 文档发给它，
+  它会列出应调用的接口与参数，你把 JSON 返回值贴回即可继续分析。</div>
+</div>
+
+<div class="card" id="faq">
+  <h2>10. 常见问题</h2>
+  <ul>
+    <li><b>抓取全失败？</b>先确认本地代理可用（X 域名被 DNS 污染必须走代理）；故障签名：TCP 能连 10808 但 SSL 握手被重置 = 出口节点问题，换节点即愈。</li>
+    <li><b>AI 报 429 / 额度用尽？</b>供应商侧额度问题，报错如实显示在推文卡上；换 Key 或充值后点卡上按钮重试。</li>
+    <li><b>推文为什么是英文？</b>等 AI 自动翻译完成即显示中文块；也可手动点「翻译」。</li>
+    <li><b>时间看不懂？</b>页面时间已按本地时区渲染；数据库 / API 原始值统一为 GMT。</li>
+    <li><b>推送没收到？</b>查「推送记录」面板的状态列；企业微信需在内网环境打开消息（截图链接指向内网代理）。</li>
+    <li><b>安全提示</b>：系统无鉴权，仅限内网使用；AI Key 明文存于 <code>data/runtime.json</code>，勿外传。</li>
+  </ul>
+</div>
+
+<footer style="text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px">X-Intel · X 情报监控台 · 本页即系统帮助文档（改版自动同步）</footer>
+</div>
+</body>
+</html>
