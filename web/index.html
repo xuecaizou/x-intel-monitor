@@ -1419,7 +1419,8 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       +'<label style="margin-top:8px;font-weight:600">推送规则（在「推送过滤」面板维护）</label>'
       +'<select data-rule id="inst-rule">'+ruleOpts+'</select>'
       +'<div class="ops2"><button class="btn btn-xs chinssave" type="button">保存</button>'
-      +'<span class="hint">'+(forAdd?'可添加多个实例同时推送，各绑不同规则':'留空凭据保持不变；规则在「推送过滤」面板新建维护')+'</span></div>';
+      +'<button class="btn btn-xs chinsavetest" type="button">保存并测试</button>'
+      +'<span class="hint">'+(forAdd?'可添加多个实例同时推送，各绑不同规则':'留空凭据保持不变；行内「测试」按已保存配置执行——表单改完请用「保存并测试」')+'</span></div>';
   }
   function toggleChInstForm(key,idx){
     var fid=idx<0?('chaddform-'+key):('chinst-'+key+'-'+idx);
@@ -1434,7 +1435,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     Promise.all([load, loadRules]).then(function(rs){
       var d=rs[0];
       form.innerHTML=instFormHtml(key,d.values,d.filter_rule,idx<0);
-      form.querySelector('.chinssave').addEventListener('click',function(){
+      function doSave(andTest){
         var values={},name='',filterRule='';
         form.querySelectorAll('input[data-field],select[data-field]').forEach(function(inp){
           var f=inp.getAttribute('data-field');
@@ -1449,10 +1450,23 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           body:JSON.stringify({name:name,enabled:idx<0?true:(form.dataset.enabled!=='0'),values:values,filter_rule:filterRule})})
           .then(function(r){return r.json();})
           .then(function(res){
-            if(res.ok){snack(idx<0?'实例已添加':'实例已保存');form.classList.remove('open');loadChannels();}
-            else snack('保存失败：'+((res.detail&&res.detail.slice(0,80))||''));
-          }).catch(function(){snack('请求失败');});
-      });
+            if(!res.ok){snack('保存失败：'+((res.detail&&res.detail.slice(0,80))||''));return null;}
+            var newIdx=(idx<0&&res.idx!=null)?res.idx:idx;
+            if(!andTest){snack(idx<0?'实例已添加':'实例已保存');form.classList.remove('open');loadChannels();return null;}
+            /* 保存并测试：行内「测试」只测已保存配置，这里先存后测避免"填了没保存测旧值" */
+            return fetch('/api/channels/'+key+'/instances/'+newIdx+'/test',{method:'POST'})
+              .then(function(r){return r.json();})
+              .then(function(t){
+                var ok=t.get&&t.get('status')==='成功';
+                snack('已保存 · 测试'+(t.status||'')+' '+((t.detail||'').slice(0,60)));
+                form.classList.remove('open');loadChannels();
+              });
+          })
+          .catch(function(){snack('请求失败');});
+      }
+      form.querySelector('.chinssave').addEventListener('click',function(){doSave(false);});
+      var st=form.querySelector('.chinsavetest');
+      if(st)st.addEventListener('click',function(){doSave(true);});
     }).catch(function(){snack('加载实例配置失败');});
   }
 
