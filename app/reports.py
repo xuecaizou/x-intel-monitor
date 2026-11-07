@@ -314,13 +314,23 @@ def push_task(tid):
         results.append({"channel": ch.display, "status": status})
         sent += 1 if ok else 0
 
-    if sent > 0:
+    # 结果语义（2026-11-08 修复）：真实成功才推进已推送；仅模拟不改变状态；全失败带错误返回
+    real_ok = any(r["status"] == "成功" for r in results)
+    sim_ok = any(r["status"] == "模拟成功" for r in results)
+    if real_ok:
         with db._lock:
             db.get_conn().execute(
                 "UPDATE report_tasks SET status='已推送', updated_at=? WHERE id=?",
                 (db.now(), int(tid)))
             db.get_conn().commit()
-    return {"id": int(tid), "status": "已推送", "pushed": sent > 0, "channels": results}
+        return {"id": int(tid), "status": "已推送", "pushed": True, "channels": results}
+    if sim_ok:
+        return {"id": int(tid), "status": "已交付待推", "pushed": False,
+                "simulated_only": True,
+                "error": "仅模拟成功（实例未配置真实凭据），不推进真实完成状态",
+                "channels": results}
+    return {"id": int(tid), "status": "已交付待推", "pushed": False,
+            "error": "全部通道发送失败，任务保持已交付待推", "channels": results}
 
 
 def delete_task(tid):

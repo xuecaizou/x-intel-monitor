@@ -127,8 +127,11 @@ check('分页无重复', len(_ids) == len(set(_ids)), f'{len(_ids) - len(set(_id
 check('分页时序连续（无逆序）',
       all(_keys[i] >= _keys[i + 1] for i in range(len(_keys) - 1)),
       f"{sum(1 for i in range(len(_keys)-1) if _keys[i] < _keys[i+1])} 处逆序")
-ai_err = db.get_conn().execute("SELECT COUNT(*) AS n FROM tweets WHERE ai_status='error'").fetchone()['n']
-check('AI 研判零积压', ai_err == 0, f'{ai_err} 条 error')
+# 稳定不变量：不存在超过 15 分钟仍未恢复的 error（在途重试/刚写入的不算，避免与后台管道竞态）
+ai_err = db.get_conn().execute(
+    "SELECT COUNT(*) AS n FROM tweets WHERE ai_status='error'"
+    " AND ai_analyzed_at < datetime('now','localtime','-15 minutes')").fetchone()['n']
+check('AI 研判无长期积压', ai_err == 0, f'{ai_err} 条超15分钟未恢复')
 rss_n = db.get_conn().execute("SELECT COUNT(*) AS n FROM rss_sources").fetchone()['n']
 check('RSS 源表可读', rss_n >= 1, f'{rss_n} 源')
 rt_n = db.get_conn().execute('SELECT COUNT(*) AS n FROM report_tasks').fetchone()['n']
@@ -283,7 +286,12 @@ check('facets 四维度齐全', all(k in f for k in ('countries', 'industries', 
       str(list(f.keys())))
 tot = get('/api/tweets?limit=1')[1]['total']
 cat_sum = sum(x['count'] for x in cats)
-check('分类计数总和=推文总量', cat_sum == tot, f'{cat_sum} vs {tot}')
+# 允许最近 10 分钟入库的在途推文（后台分析可能尚未写 category，避免与管道竞态）
+tot_recent = db.get_conn().execute(
+    "SELECT COUNT(*) AS n FROM tweets WHERE category=''"
+    " AND created_at >= datetime('now','localtime','-10 minutes')").fetchone()['n']
+check('分类计数总和=推文总量（含在途容差）', cat_sum + tot_recent == tot,
+      f'{cat_sum}+{tot_recent} vs {tot}')
 if cats:
     t2 = get(f'/api/tweets?category={cats[0]["name"]}&limit=1')[1]['total']
     check('Top 分类计数=实际条数', cats[0]['count'] == t2, f'{cats[0]["count"]} vs {t2}')

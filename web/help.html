@@ -314,7 +314,8 @@ python run.py
 1. GET {BASE}/api/tweets?limit=100 拉取近期推文；
 2. 合并全部 ai_iocs 字段并去重，按 域名/IP/哈希/CVE 分类整理成表格；
 3. 每条 IOC 标注来源推文链接与 AI 建议等级；
-4. severity=critical/high 来源的 IOC 单独列出，建议优先封禁。</code></pre>
+4. severity=critical/high 来源的 IOC 单独列出，逐条标注来源链接、证据上下文与核验状态；
+5. CVE 编号作为漏洞标识独立列出，不与封禁指标混用；受害单位域名/共享设施域名不得直接列为封禁指标。</code></pre>
 
   <div class="tip"><b>无联网能力的 AI？</b>让它生成调用计划由你手动执行也可以：把本页第 7 节 API 文档发给它，
   它会列出应调用的接口与参数，你把 JSON 返回值贴回即可继续分析。</div>

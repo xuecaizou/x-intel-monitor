@@ -193,16 +193,21 @@ def _enabled_channels(cfg):
     return out
 
 
+def _collect_pending(cfg, ai_realtime, cap=2000):
+    """待推送候选（统一入口）：未推送且未忽略，按统一排序取最近 cap 条（cap 防极端积压，
+    达到上限会在推送日志告警）。AI 门控在此收口；规则过滤统一在 dispatch 按实例执行——
+    实例绑定规则替代默认规则，若在此处按默认规则预过滤，实例规则将永远无法独立生效。"""
+    rows = db.tweets_pending_push(cap)
+    if len(rows) >= cap:
+        db.add_push_log("推送过滤", f"待推送候选达到上限 {cap} 条，更早候选被推迟", "成功", "")
+    return [t for t in rows if _pushable_by_ai(t, ai_realtime)]
+
+
 def dispatch(new_tweets, cfg):
     """摘要推送（≤N 条）+ 严重推文即时单推；全局过滤 + 每实例级四维筛选；凭据留空走模拟模式"""
     if not new_tweets:
         return 0
     flt = _push_filter(cfg)
-    order_all = sorted((t for t in new_tweets if pass_filter(t, flt)), key=_push_sort_key)
-    if not order_all:
-        db.add_push_log("推送过滤", f"本轮 {len(new_tweets)} 条全部被过滤", "成功",
-                        f"过滤条件：{flt}")
-        return 0
     max_items = int(cfg.get("push", {}).get("digest_max_items", 8))
     pushed_ids = []
     sent = 0
@@ -220,7 +225,7 @@ def dispatch(new_tweets, cfg):
                 if r.get("id") == rule_id:
                     rule_name = r.get("name") or rule_id
                     break
-        order = sorted((t for t in order_all if pass_filter(t, inst_flt)), key=_push_sort_key)
+        order = sorted((t for t in new_tweets if pass_filter(t, inst_flt)), key=_push_sort_key)
         if not order:
             db.add_push_log(ch.display, f"实例 {cc.get('instance_name')}：本轮条目全部被过滤",
                             "成功", f"规则：{rule_name or '默认'} / {inst_flt}")
@@ -238,6 +243,8 @@ def dispatch(new_tweets, cfg):
         db.add_push_log(disp, f"摘要 {len(batch)} 条", status, detail,
                         content=build_digest(batch))
         sent += 1 if ok else 0
+        if ok:
+            pushed_ids.extend(t["id"] for t in batch)  # 仅确认实际进入已发送摘要的成员
         for t in order:
             if _effective_severity(t) not in ("critical", "high"):
                 continue
@@ -256,8 +263,9 @@ def dispatch(new_tweets, cfg):
             db.add_push_log(disp, f"即时：{(t.get('text', '') or '')[:24]}", status, detail,
                             content=build_single(t))
             sent += 1 if ok else 0
+            if ok:
+                pushed_ids.append(t["id"])  # 即时单推成功才确认；失败留在待推送（下轮重试）
             time.sleep(4.5)  # 企微机器人限频约 20 条/分钟，即时单推每条含图≈2 消息
-        pushed_ids.extend(t["id"] for t in order)
     db.mark_pushed(list(set(pushed_ids)))  # 已进入推送流程的推文标记，防重复推送
     return sent
 
@@ -289,8 +297,7 @@ def run_fetch(manual=False, cfg=None):
         ai_done = run_ai_stage(new_tweets, cfg)
         ai_realtime = _ai_realtime(cfg)
         # 待推送：未推送且未忽略；AI 实时开启时仅放行已研判（或重试 2 轮失败附说明）的推文
-        pending = [t for t in db.tweets_pending_push(200)
-                   if pass_filter(t, _push_filter(cfg)) and _pushable_by_ai(t, ai_realtime)]
+        pending = _collect_pending(cfg, ai_realtime)
         pushed = dispatch(pending, cfg)
         db.add_fetch_log(trigger, due_acc, ok_acc, len(new_tweets), ai_done,
                          "；".join(errors[-3:]), "｜".join(trace))

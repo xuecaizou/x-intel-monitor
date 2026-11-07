@@ -276,7 +276,7 @@ def batch_tweet_op(ids, op):
            "unread": f"UPDATE tweets SET read=0 WHERE id IN ({ph})",
            "ignore": f"UPDATE tweets SET ignored=1, read=1 WHERE id IN ({ph})",
            "unignore": f"UPDATE tweets SET ignored=0 WHERE id IN ({ph})",
-           "delete": f"DELETE FROM tweets WHERE id IN ({ph})"}.get(op)
+           "delete": f"DELETE FROM tweets WHERE id IN ({ph}) AND starred=0"}.get(op)
     if not sql:
         return 0
     with _lock:
@@ -463,9 +463,10 @@ def mark_pushed(ids):
 
 
 def tweets_pending_ai(limit_n):
-    """未成功研判且未尝试过的推文（避免对反复失败的推文重复烧钱）"""
+    """未研判 + 首败待重试的推文（error 且 retries<2 闭合重试环；≥2 次由推送门控附说明放行）"""
     return [_row_tweet(r) for r in get_conn().execute(
-        "SELECT * FROM tweets WHERE ai_status='' ORDER BY id DESC LIMIT ?", (int(limit_n),)).fetchall()]
+        "SELECT * FROM tweets WHERE ai_status='' OR (ai_status='error' AND ai_retries<2)"
+        " ORDER BY id DESC LIMIT ?", (int(limit_n),)).fetchall()]
 
 
 def tweets_recent(limit_n=8):

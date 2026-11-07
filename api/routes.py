@@ -209,15 +209,18 @@ def _sources_health(accounts):
                 if m2 and m2.group(1) not in rss_status:
                     rss_status[m2.group(1)] = "✗" not in m2.group(2)
 
-    def fmt_src(name, ok, kv_last):
-        return {"name": name, "ok": bool(ok), "cnt24": cnt24(name), "last": fmt_ts(kv_last)}
+    def fmt_src(name, ok, kv_last, count_key):
+        return {"name": name, "ok": bool(ok), "cnt24": cnt24(count_key), "last": fmt_ts(kv_last)}
 
+    # 计数键与库内 screen_name 一致：X 无 @ 前缀，RSS 带 "RSS:" 前缀（2026-11-08 修复恒 0）
     x_items = [fmt_src("@" + a["screen_name"],
                        x_status.get(a["screen_name"], True),
-                       db.get_kv("acc_last_" + a["screen_name"].lower()))
+                       db.get_kv("acc_last_" + a["screen_name"].lower()),
+                       a["screen_name"])
                for a in accounts]
-    rss_items = [fmt_src(s["name"], rss_status.get(s["name"], True),
-                         db.get_kv("rss_last_" + str(s["id"])))
+    rss_items = [fmt_src("[RSS] " + s["name"], rss_status.get(s["name"], True),
+                         db.get_kv("rss_last_" + str(s["id"])),
+                         "RSS:" + s["name"])
                  for s in db.list_rss_sources()]
     return {
         "x": {"total": len(accounts), "enabled": len([a for a in accounts if a["enabled"]]),
