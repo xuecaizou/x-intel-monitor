@@ -43,3 +43,27 @@
 - B11：读 raw runtime.json 判断 proxy 丢失 → 实际 load() 深合并后正常。**验证配置必须用 app.config.load()**。
 - B10：探针点击 `.sb-top` 容器（无绑定）→ 实际按钮是 `#sb-toggle-btn`。
 - B3 首轮：断言读 GET /config 掩码回显 → 掩码恒以 **** 结尾，无法反映存储值，须直核 runtime.json。
+
+
+## 第一批结论修正与第二批台账（2026-11-08）
+
+### 第一批结论修正
+- **A4**：cap 200→2000 属**缓解**（仍可饥饿），第二批以逐实例投递游标根治。
+- **A2**：摘要遗漏已修复；但"A 成功、B 失败只重试 B"未闭合（全局 pushed 耦合），即时失败不标记带来对已成功实例的重复发送风险——均为第二批范围。
+- **模拟消费**：模拟发送仍标记全局 pushed（ consumes 真实资格）——第二批修复项 B15。
+- **冒烟竞态**：两次断言加固属时间窗不变量；第一次失败的根因**待确认**（无法复现并发证据）。
+
+### 第二批问题台账
+| ID | 问题 | 优先级 | 证据状态 | 位置 |
+|----|------|--------|---------|------|
+| B14 | 跨通道 pushed 全局耦合（A 成功 B 失败 B 永久失去资格） | 高 | 静态确认（dispatch pushed_ids 全局合并） | engine.dispatch |
+| B15 | 模拟发送消费真实投递资格 | 高 | 静态确认（sim ok 同样 extend pushed_ids） | engine.dispatch |
+| B16 | 实例发送失败无补发 | 高 | 静态确认 | engine.dispatch |
+| B18 | 实例无稳定 ID（数组下标/改名破坏身份） | 高 | 静态确认（runtime instances 无 iid） | config/runtime |
+| B19 | app/wecom_media.py 缺失，附件推送必然 ModuleNotFoundError 且被 +FAIL 掩盖 | 高 | 静态确认（reports.py import 在 try 内） | app/reports.py:294 |
+| B20 | 报告全部失败/仅模拟状态语义（第一批已修响应，库内部分分项与并发领取未修） | 高 | 部分修复 | reports.push_task |
+| B21 | cleanup/批量删除不保护报告引用与在途投递 | 高 | 静态确认 | db.cleanup_old/batch_tweet_op |
+| B22 | 报告推送无原子领取（并发双推） | 中 | 静态确认 | reports.push_task |
+| B23 | 待人工无退回修改/重新交付路径 | 中 | 静态确认（deliver 仅写作中） | reports.deliver |
+| B24 | runtime.json 写入非原子、无并发保护/写后校验 | 中 | 静态确认（直接 write_text） | config.save_runtime |
+| B25 | 外部 URL 拼接进 onclick（index.html 媒体/原文 onclick） | 中 | 静态确认（待验证可利用性） | web/index.html |
