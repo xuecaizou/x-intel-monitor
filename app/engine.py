@@ -4,6 +4,8 @@ import re
 import threading
 import time
 
+import requests
+
 from . import db, twitter, ai as aimod
 from . import rssfetch
 from .config import load
@@ -193,81 +195,165 @@ def _enabled_channels(cfg):
     return out
 
 
-def _collect_pending(cfg, ai_realtime, cap=2000):
-    """待推送候选（统一入口）：未推送且未忽略，按统一排序取最近 cap 条（cap 防极端积压，
-    达到上限会在推送日志告警）。AI 门控在此收口；规则过滤统一在 dispatch 按实例执行——
-    实例绑定规则替代默认规则，若在此处按默认规则预过滤，实例规则将永远无法独立生效。"""
-    rows = db.tweets_pending_push(cap)
-    if len(rows) >= cap:
-        db.add_push_log("推送过滤", f"待推送候选达到上限 {cap} 条，更早候选被推迟", "成功", "")
-    return [t for t in rows if _pushable_by_ai(t, ai_realtime)]
-
-
-def dispatch(new_tweets, cfg):
-    """摘要推送（≤N 条）+ 严重推文即时单推；全局过滤 + 每实例级四维筛选；凭据留空走模拟模式"""
-    if not new_tweets:
-        return 0
-    flt = _push_filter(cfg)
-    max_items = int(cfg.get("push", {}).get("digest_max_items", 8))
-    pushed_ids = []
-    sent = 0
+def _iid_channels(cfg):
+    """启用实例 → (ch, cc, sim, iid)；未迁移出 iid 的实例不参与投递（load() 已保证补齐）"""
+    out = []
     for ch, cc, sim in _enabled_channels(cfg):
-        # 实例过滤 = 绑定的命名规则（filter_rule）；未绑定 → 全局默认规则
-        rule_id = str(cc.get("filter_rule") or "")
-        rule = _named_filter(cfg, rule_id) if rule_id else None
-        if rule_id and rule is None:
-            db.add_push_log(ch.display, f"实例 {cc.get('instance_name')}：绑定规则 {rule_id} 不存在，回退默认过滤",
-                            "成功", "")
-        inst_flt = rule if rule is not None else flt
-        rule_name = ""
-        if rule is not None:
-            for r in (cfg.get("push") or {}).get("rules") or []:
-                if r.get("id") == rule_id:
-                    rule_name = r.get("name") or rule_id
-                    break
-        order = sorted((t for t in new_tweets if pass_filter(t, inst_flt)), key=_push_sort_key)
-        if not order:
-            db.add_push_log(ch.display, f"实例 {cc.get('instance_name')}：本轮条目全部被过滤",
-                            "成功", f"规则：{rule_name or '默认'} / {inst_flt}")
+        iid = str(cc.get("iid") or "")
+        if iid:
+            out.append((ch, cc, sim, iid))
+    return out
+
+
+def _effective_rule(cfg, cc):
+    """实例有效规则：绑定命名规则 → 替代默认；未绑定 → 默认规则。
+    返回 (过滤字典, rule_id, 规则快照 JSON)——快照随投递记录保存，重试不静默改义。"""
+    rule_id = str(cc.get("filter_rule") or "")
+    rule = next((r for r in (cfg.get("push") or {}).get("rules") or []
+                 if r.get("id") == rule_id), None) if rule_id else None
+    if rule is not None:
+        flt = _named_filter(cfg, rule_id)
+        snap = json.dumps({"name": rule.get("name") or rule_id, **flt}, ensure_ascii=False)
+        return flt, rule_id, snap
+    flt = _push_filter(cfg)
+    return flt, "", json.dumps(flt, ensure_ascii=False)
+
+
+def _classify_send(ok, detail):
+    """发送结果分类：success / retry（可重试）/ permanent（无效配置等，停止自动重试）/ unknown（可能已被对端接收）"""
+    if ok:
+        return "success"
+    d = detail or ""
+    if "93000" in d or "invalid webhook url" in d:
+        return "permanent"   # webhook 无效：配置错误，重试无意义
+    if "Timeout" in d or "timed out" in d.lower():
+        return "unknown"     # 请求可能已被对端接收
+    return "retry"
+
+
+CREATION_CAP = 500      # 每轮每实例新建投递上限（最旧优先；剩余下一轮，游标=deliveries 表本身）
+INSTANT_CAP = 20        # 每轮每实例即时单推上限
+LEASE_SECONDS = 120     # 发送中租约：超时视为进程中断 → 结果不明
+MAX_ATTEMPTS = 4        # 自动重试上限，超过 → 永久失败
+BACKOFF_MINUTES = [2, 5, 15, 60]
+
+
+def _process_msg(ch, cc, sim, mid, title, content, image, st, touched):
+    """原子领取 → 发送 → 结果分类 → 终态/退避。模拟：独立记录，不改真实资格。"""
+    if not db.claim_msg(mid, LEASE_SECONDS):
+        return
+    db.msg_attempt_text(mid, "claimed")
+    unknown = False
+    try:
+        if sim:
+            ok, detail = True, "模拟模式（未配置凭据）"
+        else:
+            ok, detail = ch.send(cc, title, content, image=image)
+    except requests.exceptions.Timeout as e:
+        ok, detail, unknown = False, f"Timeout: {e}"[:200], True
+    except requests.exceptions.ConnectionError as e:
+        ok, detail, unknown = False, f"ConnectionError: {e}"[:200], False
+    except Exception as e:
+        ok, detail, unknown = False, f"{type(e).__name__}: {e}"[:200], False
+    cls = _classify_send(ok, detail)
+    if unknown:
+        cls = "unknown"
+    attempts = db.msg_by_id(mid)["attempts"]
+    if cls == "success":
+        state = "模拟成功" if sim else "成功"
+        db.finish_msg(mid, state, detail)
+        st["sim" if sim else "sent"] += 1
+    elif cls == "permanent" or attempts >= MAX_ATTEMPTS:
+        why = "无效配置" if cls == "permanent" else f"重试 {attempts} 次仍失败"
+        db.finish_msg(mid, "永久失败", f"{detail} ⚠ {why}，已停止自动重试")
+        st["failed"] += 1
+    elif cls == "unknown":
+        db.finish_msg(mid, "结果不明", f"{detail} ⚠ 对端可能已收到；请在推送记录中人工重试")
+        st["unknown"] += 1
+    else:
+        wait_min = BACKOFF_MINUTES[min(attempts - 1, len(BACKOFF_MINUTES) - 1)]
+        db.msg_retry_wait(mid, time.time() + wait_min * 60, f"{detail} ⚠ {wait_min} 分钟后重试")
+        st["retry_wait"] += 1
+    touched.update(db.msg_members(mid))
+
+
+def dispatch_round(cfg):
+    """逐实例可靠投递（第二批）：
+    创建（每实例独立游标=deliveries 表，最旧优先不饥饿）→ 组消息（摘要/即时）
+    → 原子领取发送 → 退避重试/永久失败/结果不明。模拟独立记录；touched 推文回写兼容 pushed。"""
+    st = {"created": 0, "filtered": 0, "sent": 0, "sim": 0,
+          "retry_wait": 0, "failed": 0, "unknown": 0}
+    insts = _iid_channels(cfg)
+    if not insts:
+        return st
+    touched = set()
+    # 1) 创建逻辑投递（含未命中 → 已过滤，供"为什么未推送"可见）
+    for ch, cc, sim, iid in insts:
+        rule_flt, rule_id, rule_snap = _effective_rule(cfg, cc)
+        rule_name = json.loads(rule_snap).get("name", "默认") if rule_snap else "默认"
+        boundary = cc.get("enabled_since") or "1970-01-01 00:00:00"
+        for t in db.delivery_candidates(iid, boundary, cap=CREATION_CAP):
+            hit = pass_filter(t, rule_flt)
+            db.create_delivery(t["id"], iid, ch.key, rule_id, rule_snap,
+                               "待发送" if hit else "已过滤",
+                               reason="" if hit else f"未命中规则[{rule_name}]")
+            st["created" if hit else "filtered"] += 1
+    # 2) 组消息与发送（摘要分批 + 高危即时，两者并存：摘要=轮次汇总、即时=高危提醒）
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    max_items = int((cfg.get("push") or {}).get("digest_max_items", 8))
+    for ch, cc, sim, iid in insts:
+        rule_flt, rule_id, rule_snap = _effective_rule(cfg, cc)
+        pend = db.deliveries_pending(iid, limit=200)
+        if not pend:
             continue
-        disp = f"{ch.display}·{cc.get('instance_name')}"
-        batch = order[:max_items]
-        try:
-            if sim:
-                ok, detail = True, "模拟模式（未配置凭据）"
-            else:
-                ok, detail = ch.send(cc, "X-Intel 推文摘要", build_digest(batch))
-        except Exception as e:
-            ok, detail = False, f"{type(e).__name__}: {e}"[:200]
-        status = "模拟成功" if (sim and ok) else ("成功" if ok else "失败")
-        db.add_push_log(disp, f"摘要 {len(batch)} 条", status, detail,
-                        content=build_digest(batch))
-        sent += 1 if ok else 0
-        if ok:
-            pushed_ids.extend(t["id"] for t in batch)  # 仅确认实际进入已发送摘要的成员
-        for t in order:
-            if _effective_severity(t) not in ("critical", "high"):
-                continue
-            try:
-                if sim:
-                    ok, detail = True, "模拟模式（未配置凭据）"
-                else:
+        pend.sort(key=lambda x: (rank.get((x.get("ai_severity") or "info").lower(), 4), x["id"]))
+        batch = pend[:max_items]
+        if batch:
+            content = build_digest(batch)
+            mid = db.create_msg(iid, ch.key, "digest", rule_id, rule_snap,
+                                "X-Intel 推文摘要", content, [t["id"] for t in batch])
+            db.link_deliveries(iid, [t["id"] for t in batch], mid)
+            _process_msg(ch, cc, sim, mid, "X-Intel 推文摘要", content, None, st, touched)
+        instant = [t for t in pend if _effective_severity(t) in ("critical", "high")][:INSTANT_CAP]
+        for t in instant:
+            content = build_single(t)
+            image = None
+            if t.get("media_url"):
+                try:
+                    image = prepare_image(t)
+                except Exception:
                     image = None
-                    if t.get("media_url"):  # 企微机器人 markdown 不渲染图片 → 截图以 image 消息直传
-                        image = prepare_image(t)
-                    ok, detail = ch.send(cc, f"X-Intel · @{t['screen_name']}",
-                                         build_single(t), image=image)
-            except Exception as e:
-                ok, detail = False, f"{type(e).__name__}: {e}"[:200]
-            status = "模拟成功" if (sim and ok) else ("成功" if ok else "失败")
-            db.add_push_log(disp, f"即时：{(t.get('text', '') or '')[:24]}", status, detail,
-                            content=build_single(t))
-            sent += 1 if ok else 0
-            if ok:
-                pushed_ids.append(t["id"])  # 即时单推成功才确认；失败留在待推送（下轮重试）
-            time.sleep(4.5)  # 企微机器人限频约 20 条/分钟，即时单推每条含图≈2 消息
-    db.mark_pushed(list(set(pushed_ids)))  # 已进入推送流程的推文标记，防重复推送
-    return sent
+            title = f"X-Intel · @{t.get('screen_name', '')}"
+            mid = db.create_msg(iid, ch.key, "instant", rule_id, rule_snap,
+                                title, content, [t["id"]])
+            db.link_deliveries(iid, [t["id"]], mid)
+            _process_msg(ch, cc, sim, mid, title, content, image, st, touched)
+            time.sleep(4.5)  # 企微限频：每条即时含图≈2 消息
+    # 3) 到期重试 + 租约过期恢复
+    now_ts = time.time()
+    due, expired = db.msgs_due(now_ts)
+    for mid in expired:
+        db.finish_msg(mid, "结果不明", "发送中租约过期（进程中断）⚠ 对端可能已收到；请人工重试")
+        st["unknown"] += 1
+    for mid in due:
+        m = db.msg_by_id(mid)
+        target = next(((ch, cc, sim, iid) for ch, cc, sim, iid in insts if iid == m["instance_id"]), None)
+        if target is None:
+            continue  # 实例已停用/删除：投递保留，恢复启用后继续（暂停恢复语义）
+        ch, cc, sim, iid = target
+        image = None
+        if m["msg_type"] == "instant" and m["content"]:
+            mem = db.msg_members(mid)
+            t0 = db.get_tweet(mem[0]) if mem else None
+            if t0 and t0.get("media_url"):
+                try:
+                    image = prepare_image(t0)
+                except Exception:
+                    image = None
+        _process_msg(ch, cc, sim, mid, m["title"] or "X-Intel", m["content"] or "", image, st, touched)
+    # 4) 兼容回写：任一终态 → pushed=1（仅防回退旧代码重发与历史展示，不决定资格）
+    db.sync_pushed_compat(list(touched))
+    return st
 
 
 def run_fetch(manual=False, cfg=None):
@@ -296,9 +382,13 @@ def run_fetch(manual=False, cfg=None):
                 new_tweets = new_tweets + [t for t in fresh if t["id"] not in before_ids]
         ai_done = run_ai_stage(new_tweets, cfg)
         ai_realtime = _ai_realtime(cfg)
-        # 待推送：未推送且未忽略；AI 实时开启时仅放行已研判（或重试 2 轮失败附说明）的推文
-        pending = _collect_pending(cfg, ai_realtime)
-        pushed = dispatch(pending, cfg)
+        # 逐实例可靠投递（第二批）：候选创建+过滤记录+发送+重试全部收口 dispatch_round；
+        # tweets.pushed 仅作兼容回写，不再决定实例资格
+        dst = dispatch_round(cfg)
+        pushed = dst["sent"]
+        if dst["filtered"] or dst["retry_wait"] or dst["failed"] or dst["unknown"]:
+            trace.append(f"投递:建{dst['created']}/滤{dst['filtered']}/发{dst['sent']}"
+                         f"/模拟{dst['sim']}/重试等待{dst['retry_wait']}/失败{dst['failed']}/不明{dst['unknown']}")
         db.add_fetch_log(trigger, due_acc, ok_acc, len(new_tweets), ai_done,
                          "；".join(errors[-3:]), "｜".join(trace))
         # 新推文分类兜底：AI 研判失败导致无分类的，用脚本规则补（零成本）

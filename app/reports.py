@@ -103,6 +103,7 @@ def create_task(title, keywords, tier, notes, tweet_ids, auto_push=0, cfg=None):
         db.get_conn().execute("UPDATE report_tasks SET package_path=? WHERE id=?",
                               (ppath, task_id))
         db.get_conn().commit()
+    _register_refs(task_id, ids)
     return {"id": task_id, "status": "待写", "package_path": ppath}
 
 
@@ -167,7 +168,7 @@ def abort(tid, note=""):
     with db._lock:
         cur = db.get_conn().execute(
             "UPDATE report_tasks SET status='待写', assignee='', updated_at=?, notes=notes||? "
-            " WHERE id=? AND status='写作中'",
+            " WHERE id=? AND status IN ('写作中','待人工')",
             (db.now(), (chr(10) + "退回: " + note) if note else "", int(tid)))
         db.get_conn().commit()
         return cur.rowcount > 0
@@ -201,7 +202,7 @@ def deliver(tid, payload):
     t = get_task(tid)
     if not t:
         return None
-    if t["status"] != "写作中":
+    if t["status"] not in ("写作中", "待人工"):
         return {"conflict": True, "status": t["status"]}
 
     deliver_dir = payload.get("deliver_dir", "")
@@ -248,89 +249,175 @@ def deliver(tid, payload):
 
 
 def push_task(tid):
-    """人工确认推送：仅'已交付待推'；按通道能力分发——
-    企微 markdown+附件两步法；钉钉 markdown（附件以目录提示替代）；
-    PushPlus html 富文本；WxPusher markdown+线索包跳转卡片"""
+    """人工确认推送（仅'已交付待推/部分已推送'）。
+
+    原子领取：置'推送中'（10 分钟陈旧自动回收，防并发双推/进程中断卡死）。
+    分项交付：每实例一条 delivery_msgs（msg_type=report），正文/附件分项记入 detail，
+    附件失败不得被正文成功掩盖（状态=部分成功）。
+    补发：'部分已推送' 再推送时跳过上次已成功实例，仅补失败实例。
+    状态语义：全部真实实例成功→已推送；混合→部分已推送；仅模拟/全失败→保持原状态并带说明。
+    """
     t = get_task(tid)
     if not t:
         return None
-    if t["status"] != "已交付待推":
-        return {"error": f"状态为 {t['status']}，仅'已交付待推'可推"}
+    prev_status = t["status"]
+    with db._lock:
+        cur = db.get_conn().execute(
+            "UPDATE report_tasks SET status='推送中', updated_at=? WHERE id=? AND ("
+            " status IN ('已交付待推','部分已推送')"
+            " OR (status='推送中' AND updated_at < datetime('now','localtime','-10 minutes')))",
+            (db.now(), int(tid)))
+        db.get_conn().commit()
+        if cur.rowcount == 0:
+            cur2 = db.get_conn().execute(
+                "SELECT status FROM report_tasks WHERE id=?", (int(tid),)).fetchone()
+            return {"error": f"任务正在推送或状态不允许（当前：{cur2['status'] if cur2 else '?'}）"}
 
-    cfg = load()
-    from .notify.base import image_base
-    base = image_base()
-    title_h = f"X-Intel 报告交付：{t['title'][:30]}"
-    md = (f"**【报告交付】{t['title']}**" + chr(10)
-          + f"> 档位：{t.get('tier','速报')} ｜ 字数：{t.get('word_count') or '—'}"
-          + f" ｜ 门禁：{t.get('ledger_pass') or 0}/{t.get('ledger_total') or 0} PASS" + chr(10)
-          + f"> gate：{t.get('gate_summary','').split(chr(10))[0] if t.get('gate_summary') else '—'}" + chr(10)
-          + f"> 交付目录：{t.get('deliver_dir','')}")
-    # 无文件能力的通道：补一条附件获取提示
-    md_ext = md + (chr(10) + f"> 📎 报告交付附件：内网监控台 {base} 报告任务面板获取")
-    # PushPlus 富文本版
-    import html as _h
-    def _e(s):
-        return _h.escape(str(s if s is not None else ""), quote=False)
-    html_body = (f"<b>【报告交付】{_e(t['title'])}</b><br/>"
-                 f"档位：{_e(t.get('tier','速报'))} ｜ 字数：{_e(t.get('word_count') or '—')}"
-                 f" ｜ 门禁：{_e(t.get('ledger_pass') or 0)}/{_e(t.get('ledger_total') or 0)} PASS<br/>"
-                 f"gate：{_e((t.get('gate_summary') or '—').split(chr(10))[0])}<br/>"
-                 f"交付目录：{_e(t.get('deliver_dir',''))}")
-    # WxPusher 卡片跳转：线索包下载
-    pkg_url = f"{base}/api/reports/tasks/{tid}/package"
-
-    sent, results = 0, []
-    from .engine import _enabled_channels
-    for ch, cc, sim in _enabled_channels(cfg):
-        # 附件（仅企微支持文件两步法，且真实模式）
-        attach_note = ""
-        if ch.key == "wecom" and "file" in ch.caps and not sim and t.get("deliver_dir") and t.get("docx"):
-            for suffix_name in (t["docx"].rsplit(".", 1)[0] + "_批注.docx",
-                                t["docx"].rsplit(".", 1)[0] + "_审阅.html"):
-                fp = os.path.join(t["deliver_dir"], suffix_name)
-                if os.path.isfile(fp) and os.path.getsize(fp) <= 20 * 1024 * 1024:
-                    try:
-                        from .wecom_media import push_file
-                        r_ = push_file(cc["webhook"], fp)
-                        attach_note += f" +{suffix_name}:{r_.get('errcode')}"
-                    except Exception as e:
-                        attach_note += f" +{suffix_name}:FAIL"
-        try:
-            if sim:
-                ok, detail = True, "模拟模式（未配置凭据）"
-            elif ch.key == "pushplus":
-                ok, detail = ch.send(cc, title_h, md_ext, html=html_body)
-            elif ch.key == "wxpusher":
-                ok, detail = ch.send(cc, title_h, md_ext, url=pkg_url)
-            else:
-                # 企微等有 file 能力的通道：附件直推，消息不带附件提示行
-                ok, detail = ch.send(cc, title_h, md_ext if "file" not in ch.caps else md)
-        except Exception as e:
-            ok, detail = False, f"{type(e).__name__}: {e}"[:200]
-        status = "模拟成功" if (sim and ok) else ("成功" if ok else "失败")
-        db.add_push_log(ch.display, f"报告交付：{t['title'][:22]} (任务{tid})",
-                        status, detail + attach_note, content=md)
-        results.append({"channel": ch.display, "status": status})
-        sent += 1 if ok else 0
-
-    # 结果语义（2026-11-08 修复）：真实成功才推进已推送；仅模拟不改变状态；全失败带错误返回
-    real_ok = any(r["status"] == "成功" for r in results)
-    sim_ok = any(r["status"] == "模拟成功" for r in results)
-    if real_ok:
+    def _restore():
         with db._lock:
             db.get_conn().execute(
-                "UPDATE report_tasks SET status='已推送', updated_at=? WHERE id=?",
-                (db.now(), int(tid)))
+                "UPDATE report_tasks SET status=?, updated_at=? WHERE id=? AND status='推送中'",
+                (prev_status, db.now(), int(tid)))
             db.get_conn().commit()
-        return {"id": int(tid), "status": "已推送", "pushed": True, "channels": results}
-    if sim_ok:
-        return {"id": int(tid), "status": "已交付待推", "pushed": False,
-                "simulated_only": True,
-                "error": "仅模拟成功（实例未配置真实凭据），不推进真实完成状态",
-                "channels": results}
-    return {"id": int(tid), "status": "已交付待推", "pushed": False,
-            "error": "全部通道发送失败，任务保持已交付待推", "channels": results}
+
+    try:
+        cfg = load()
+        from .notify.base import image_base
+        base = image_base()
+        title_h = f"X-Intel 报告交付：{t['title'][:30]}"
+        md = (f"**【报告交付】{t['title']}**" + chr(10)
+              + f"> 档位：{t.get('tier','速报')} ｜ 字数：{t.get('word_count') or '—'}"
+              + f" ｜ 门禁：{t.get('ledger_pass') or 0}/{t.get('ledger_total') or 0} PASS" + chr(10)
+              + f"> gate：{t.get('gate_summary','').split(chr(10))[0] if t.get('gate_summary') else '—'}" + chr(10)
+              + f"> 交付目录：{t.get('deliver_dir','')}")
+        md_ext = md + (chr(10) + f"> 📎 报告交付附件：内网监控台 {base} 报告任务面板获取")
+        import html as _h
+
+        def _e(x):
+            return _h.escape(str(x if x is not None else ""), quote=False)
+        html_body = (f"<b>【报告交付】{_e(t['title'])}</b><br/>"
+                     f"档位：{_e(t.get('tier','速报'))} ｜ 字数：{_e(t.get('word_count') or '—')}"
+                     f" ｜ 门禁：{_e(t.get('ledger_pass') or 0)}/{_e(t.get('ledger_total') or 0)} PASS<br/>"
+                     f"gate：{_e((t.get('gate_summary') or '—').split(chr(10))[0])}<br/>"
+                     f"交付目录：{_e(t.get('deliver_dir',''))}")
+        pkg_url = f"{base}/api/reports/tasks/{tid}/package"
+
+        # 上次各实例结果：部分补发跳过已成功实例
+        prev = {m["instance_id"]: m["state"] for m in db.msgs_report(tid)}
+        results, any_fail = [], False
+        sim_any = False
+        from .engine import _iid_channels
+        for ch, cc, sim, iid in _iid_channels(cfg):
+            if prev.get(iid) == "成功":
+                results.append({"channel": ch.display, "status": "跳过（上次已成功）", "iid": iid})
+                continue
+            items, attach_note = [], ""
+            try:
+                if sim:
+                    ok, detail = True, "模拟模式（未配置凭据）"
+                elif ch.key == "pushplus":
+                    ok, detail = ch.send(cc, title_h, md_ext, html=html_body)
+                elif ch.key == "wxpusher":
+                    ok, detail = ch.send(cc, title_h, md_ext, url=pkg_url)
+                else:
+                    ok, detail = ch.send(cc, title_h, md_ext if "file" not in ch.caps else md)
+            except Exception as e:
+                ok, detail = False, f"{type(e).__name__}: {e}"[:200]
+            items.append({"item": "正文", "ok": bool(ok), "detail": str(detail)[:120] if not ok else ""})
+            # 附件分项（仅企微真实模式；模块缺失/单附件失败→分项失败，不得被正文成功掩盖）
+            if ch.key == "wecom" and "file" in ch.caps and not sim and t.get("deliver_dir") and t.get("docx"):
+                _push_file = None
+                try:
+                    from .wecom_media import push_file as _push_file
+                except Exception as e:
+                    items.append({"item": "附件模块", "ok": False, "detail": str(e)[:120]})
+                if _push_file is not None:
+                    for suffix_name in (t["docx"].rsplit(".", 1)[0] + "_批注.docx",
+                                        t["docx"].rsplit(".", 1)[0] + "_审阅.html"):
+                        fp = os.path.join(t["deliver_dir"], suffix_name)
+                        if not os.path.isfile(fp):
+                            items.append({"item": suffix_name, "ok": False, "detail": "交付目录中不存在"})
+                            attach_note += f" +{suffix_name}:缺失"
+                            continue
+                        if os.path.getsize(fp) > 20 * 1024 * 1024:
+                            items.append({"item": suffix_name, "ok": False, "detail": "超过 20MB"})
+                            attach_note += f" +{suffix_name}:超限"
+                            continue
+                        try:
+                            r_ = _push_file(cc["webhook"], fp)
+                            iok = r_.get("errcode") == 0
+                            items.append({"item": suffix_name, "ok": iok, "detail": str(r_)[:120]})
+                            attach_note += f" +{suffix_name}:{r_.get('errcode')}"
+                        except Exception as e:
+                            items.append({"item": suffix_name, "ok": False, "detail": str(e)[:120]})
+                            attach_note += f" +{suffix_name}:FAIL"
+            if sim and ok:
+                status_i = "模拟成功"
+                sim_any = True
+            elif ok and all(i["ok"] for i in items):
+                status_i = "成功"
+            elif any(i["ok"] for i in items):
+                status_i = "部分成功"
+                any_fail = True
+            else:
+                status_i = "失败"
+                any_fail = True
+            mid = db.create_msg(cc.get("iid") or "", ch.key, "report", "", "", title_h, md,
+                                None, report_task_id=tid)
+            db.finish_msg(mid, status_i, json.dumps({"items": items}, ensure_ascii=False)[:400])
+            db.add_push_log(ch.display, f"报告交付：{t['title'][:22]} (任务{tid})",
+                            status_i, detail + attach_note, content=md)
+            results.append({"channel": ch.display, "status": status_i, "iid": iid})
+
+        real_ok = any(r["status"] == "成功" for r in results)
+        real_partial = any(r["status"] == "部分成功" for r in results)
+        sim_only = (not real_ok) and (not real_partial) and sim_any             and not any(r["status"] == "失败" for r in results)
+        if real_ok and not any_fail:
+            final = "已推送"
+        elif real_ok or real_partial:
+            final = "部分已推送"  # 有真实进展但存在失败分项/实例；可再推送补失败部分
+        elif sim_only:
+            final = prev_status  # 仅模拟：不推进真实完成
+        else:
+            final = prev_status  # 全失败/全跳过：保持
+        if final in ("已推送", "部分已推送"):
+            with db._lock:
+                db.get_conn().execute(
+                    "UPDATE report_tasks SET status=?, updated_at=? WHERE id=? AND status='推送中'",
+                    (final, db.now(), int(tid)))
+                db.get_conn().commit()
+        else:
+            _restore()
+        out = {"id": int(tid), "status": final, "pushed": final in ("已推送", "部分已推送"),
+               "channels": results}
+        if final == prev_status and not (real_ok or sim_any):
+            out["error"] = "全部通道发送失败，任务保持原状态"
+        if sim_only:
+            out["simulated_only"] = True
+            out["error"] = "仅模拟成功（实例未配置真实凭据），不推进真实完成状态"
+        return out
+    except Exception as e:
+        _restore()
+        return {"error": f"推送异常已回滚状态：{type(e).__name__}: {e}"[:200]}
+
+
+def _register_refs(report_id, tweet_ids):
+    """报告→原始情报引用登记（可靠查询入口；UNIQUE 幂等）。删除任务后保留（保守保护）。"""
+    for tid0 in (tweet_ids or []):
+        try:
+            with db._lock:
+                db.get_conn().execute(
+                    "INSERT OR IGNORE INTO report_refs (report_id, tweet_id, created_at) VALUES (?,?,?)",
+                    (int(report_id), int(tid0), db.now()))
+            db.get_conn().commit()
+        except Exception:
+            continue
+
+
+def refs_for(report_id):
+    return [r["tweet_id"] for r in db.get_conn().execute(
+        "SELECT tweet_id FROM report_refs WHERE report_id=? ORDER BY tweet_id",
+        (int(report_id),)).fetchall()]
 
 
 def delete_task(tid):

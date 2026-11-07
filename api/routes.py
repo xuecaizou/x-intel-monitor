@@ -685,6 +685,7 @@ def api_channels():
             "key": ch.key, "name": ch.display,
             "instances": [{
                 "idx": i,
+                "iid": str(it.get("iid") or ""),
                 "name": (it.get("name") or f"{ch.display}{i + 1}"),
                 "enabled": bool(it.get("enabled")),
                 "simulated": not ch.configured(it),
@@ -763,7 +764,8 @@ def api_channel_inst_config(key: str, idx: int):
     for f in CHANNEL_SECRET_FIELDS[key]:
         out[f] = _mask(inst.get(f, ""))
     out["filter_rule"] = str(inst.get("filter_rule") or "")
-    return {"key": key, "idx": idx, "values": out}
+    return {"key": key, "idx": idx, "values": out,
+            "iid": str(inst.get("iid") or ""), "enabled_since": inst.get("enabled_since", "")}
 
 
 @router.post("/api/channels/{key}/instances/{idx}/test")
@@ -800,6 +802,79 @@ def api_channel_test(key: str):
     if r is None:
         raise HTTPException(404, "通道不存在")
     return r
+
+
+# ---------- 历史补发 / 迁移预览（显式、可预览、限范围） ----------
+
+
+class BackfillBody(BaseModel):
+    since: str = ""          # 入库时间下界（YYYY-MM-DD HH:MM:SS，含）
+    until: str = ""          # 入库时间上界（含），空=现在
+    limit: int = 100
+    preview: bool = True
+
+
+@router.post("/api/channels/{key}/instances/{idx}/backfill")
+def api_instance_backfill(key: str, idx: int, body: BackfillBody):
+    """历史补发：为指定实例按入库时间窗创建投递记录（预览或执行）。
+    显式操作——默认迁移不补发历史；执行受 limit 限速限范围。"""
+    if key not in CHANNEL_SECRET_FIELDS:
+        raise HTTPException(404, "通道不存在")
+    cc = _load_channel(key)
+    if idx < 0 or idx >= len(cc.get("instances") or []):
+        raise HTTPException(404, "实例不存在")
+    inst = cc["instances"][idx]
+    iid = str(inst.get("iid") or "")
+    since = body.since or "1970-01-01 00:00:00"
+    until = body.until or "2999-12-31 23:59:59"
+    cands = db.delivery_candidates(iid, since, cap=max(1, int(body.limit)) * 4)
+    cands = [t for t in cands if t["created_at"] <= until][: max(1, int(body.limit))]
+    if body.preview:
+        return {"iid": iid, "preview": True, "count": len(cands),
+                "since": since, "until": until,
+                "samples": [{"id": t["id"], "title": (t.get("title_zh") or t["text"][:40]),
+                             "created_at": t["created_at"]} for t in cands[:10]]}
+    from .engine import pass_filter, _effective_rule, _push_filter
+    rule_flt, rule_id, rule_snap = _effective_rule(load(), inst)
+    created = filtered = 0
+    for t in cands:
+        hit = pass_filter(t, rule_flt)
+        if db.create_delivery(t["id"], iid, key, rule_id, rule_snap,
+                              "待发送" if hit else "已过滤",
+                              reason="" if hit else "未命中规则[历史补发]"):
+            created += 1
+        else:
+            filtered += 1
+    return {"iid": iid, "executed": True, "created": created, "filtered": filtered,
+            "since": since, "until": until}
+
+
+@router.get("/api/admin/migration/preview")
+def api_migration_preview():
+    """迁移预览（只读）：涉及记录数、历史截止点（enabled_since）、投递状态分布、未知数量。
+    迁移本身幂等可重复执行：新表 IF NOT EXISTS + report_refs 回填 INSERT OR IGNORE + iid 补齐。"""
+    c = db.get_conn()
+    insts = []
+    for k, cc in ((load().get("channels") or {}).items()):
+        for it in (cc.get("instances") or []):
+            insts.append({"channel": k, "name": it.get("name"), "iid": it.get("iid"),
+                          "enabled_since": it.get("enabled_since"),
+                          "enabled": bool(it.get("enabled"))})
+    msgs = {}
+    for r in c.execute("SELECT state, COUNT(*) n FROM delivery_msgs GROUP BY state"):
+        msgs[r["state"]] = r["n"]
+    return {
+        "tweets_total": c.execute("SELECT COUNT(*) n FROM tweets").fetchone()["n"],
+        "pushed_1": c.execute("SELECT COUNT(*) n FROM tweets WHERE pushed=1").fetchone()["n"],
+        "pushed_0": c.execute("SELECT COUNT(*) n FROM tweets WHERE pushed=0").fetchone()["n"],
+        "report_tasks": c.execute("SELECT COUNT(*) n FROM report_tasks").fetchone()["n"],
+        "report_refs": c.execute("SELECT COUNT(*) n FROM report_refs").fetchone()["n"],
+        "deliveries": c.execute("SELECT COUNT(*) n FROM deliveries").fetchone()["n"],
+        "delivery_msgs_by_state": msgs,
+        "instances": insts,
+        "note": "旧 pushed=1 不转换为'所有实例已发送'（历史实例级证据不存在）；"
+                "迁移后实例 enabled_since=迁移时刻，默认不补发历史；补发走 backfill 显式接口",
+    }
 
 
 # ---------- 报告任务模块（桥接 ZCode report-writer Agent） ----------

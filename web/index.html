@@ -1755,7 +1755,8 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
 
   /* ---------- 报告任务（桥接 report-writer Agent） ---------- */
   var RT_STATUS={'待写':['rtb-wait','待写'],'写作中':['rtb-writing','写作中'],'已交付待推':['rtb-ready','已交付待推'],
-                 '已推送':['rtb-done','已推送'],'待人工':['rtb-human','待人工'],'已取消':['rtb-wait','已取消']};
+                 '已推送':['rtb-done','已推送'],'部分已推送':['rtb-ready','部分已推送'],'推送中':['rtb-writing','推送中'],
+                 '待人工':['rtb-human','待人工'],'已取消':['rtb-wait','已取消']};
   var rtCache={};
   function loadReportTasks(){
     jget('/api/reports/tasks?limit=20').then(function(res){
@@ -1854,7 +1855,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     if(act==='gate'){
       showInfo('违规详情（任务 #'+id+'）',(t.gate_summary||'（无）')+'\n\nwarnings：'+JSON.stringify(t.warnings||[],null,1));
     }else if(act==='push'){
-      if(!confirm('确认推送「'+t.title+'」？\n将按已启用通道分发：企微附报告交付附件；钉钉/PushPlus/WxPusher 按能力发摘要。'))return;
+      if(!confirm('确认推送「'+t.title+'」？\n将按已启用通道分发（上次成功实例自动跳过）：企微附报告交付附件；钉钉/PushPlus/WxPusher 按能力发摘要。'))return;
       b.disabled=true;
       fetch('/api/reports/tasks/'+id+'/push',{method:'POST'})
         .then(function(r){return r.json();})

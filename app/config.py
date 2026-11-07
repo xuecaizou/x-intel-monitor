@@ -1,9 +1,15 @@
 """X-Intel 配置加载：默认值 <- config.yaml <- data/runtime.json 三层合并"""
 import copy
+import datetime
+import threading
 import json
+import os
+import uuid
 from pathlib import Path
 
 import yaml
+
+_rt_lock = threading.Lock()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -66,18 +72,55 @@ def load():
             _deep_merge(cfg, json.loads(runtime.read_text(encoding="utf-8")))
         except Exception:
             pass
+    if ensure_instance_ids(cfg):
+        save_runtime({"channels": cfg.get("channels") or {}})
     return cfg
 
 
+def ensure_instance_ids(cfg):
+    """为每个通道实例补稳定身份 iid（ci_+12hex，不随改名/排序变化；删除重建生成新 iid）
+    与 enabled_since 投递边界（迁移时=当前时间，即默认不补发历史；新实例=创建时刻）。
+    返回是否有变更（有则由 load() 持久化）。"""
+    changed = False
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for cc in (cfg.get("channels") or {}).values():
+        insts = cc.get("instances") if isinstance(cc, dict) else None
+        if not isinstance(insts, list):
+            continue
+        for it in insts:
+            if not isinstance(it, dict):
+                continue
+            if not it.get("iid"):
+                it["iid"] = "ci_" + uuid.uuid4().hex[:12]
+                changed = True
+            if not it.get("enabled_since"):
+                it["enabled_since"] = now
+                changed = True
+    return changed
+
+
 def save_runtime(overrides):
-    """页面改动（通道凭据/AI Key/开关）持久化到 data/runtime.json"""
+    """页面改动持久化到 data/runtime.json。
+    并发保护：模块锁 + 文件锁；原子替换（tmp→os.replace）；写后校验；上一版本备份 .bak。"""
     DATA_DIR.mkdir(exist_ok=True)
     p = DATA_DIR / "runtime.json"
-    data = {}
-    if p.exists():
+    with _rt_lock:
+        data = {}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        _deep_merge(data, overrides)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        if json.loads(tmp.read_text(encoding="utf-8")) != data:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("runtime.json 写后校验失败")
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-    _deep_merge(data, overrides)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            if p.exists():
+                (p.with_suffix(".json.bak")).write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            tmp.unlink(missing_ok=True)

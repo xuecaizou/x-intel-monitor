@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 
 from .config import DATA_DIR
 
@@ -113,6 +114,53 @@ def init_db():
             fetch_minutes INTEGER DEFAULT 0,
             created_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS delivery_msgs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id TEXT NOT NULL,
+            channel_key TEXT NOT NULL,
+            msg_type TEXT NOT NULL DEFAULT 'digest',
+            report_task_id INTEGER,
+            title TEXT DEFAULT '',
+            state TEXT NOT NULL DEFAULT '待发送',
+            attempts INTEGER DEFAULT 0,
+            next_attempt_at REAL,
+            lease_until REAL,
+            rule_id TEXT DEFAULT '',
+            rule_snapshot TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dmsg_state ON delivery_msgs(instance_id, state);
+        CREATE INDEX IF NOT EXISTS idx_dmsg_report ON delivery_msgs(report_task_id);
+        CREATE TABLE IF NOT EXISTS delivery_items (
+            msg_id INTEGER NOT NULL,
+            tweet_id INTEGER NOT NULL,
+            UNIQUE(msg_id, tweet_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ditems_tweet ON delivery_items(tweet_id);
+        CREATE TABLE IF NOT EXISTS deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tweet_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            channel_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT '待发送',
+            msg_id INTEGER,
+            rule_id TEXT DEFAULT '',
+            rule_snapshot TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT,
+            UNIQUE(tweet_id, instance_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deliv_inst ON deliveries(instance_id, state);
+        CREATE INDEX IF NOT EXISTS idx_deliv_tweet ON deliveries(tweet_id);
+        CREATE TABLE IF NOT EXISTS report_refs (
+            report_id INTEGER NOT NULL,
+            tweet_id INTEGER NOT NULL,
+            created_at TEXT,
+            UNIQUE(report_id, tweet_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rrefs_tweet ON report_refs(tweet_id);
         CREATE TABLE IF NOT EXISTS ai_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -126,6 +174,16 @@ def init_db():
         );
         """)
         os.makedirs(os.path.join(DATA_DIR, "report_tasks"), exist_ok=True)
+        # 迁移（可重复）：既有报告任务的推文引用回填到 report_refs（UNIQUE 幂等）
+        try:
+            get_conn().execute(
+                "INSERT OR IGNORE INTO report_refs(report_id, tweet_id, created_at)"
+                " SELECT id, j.value, datetime('now','localtime') FROM report_tasks,"
+                " json_each(CASE WHEN substr(report_tasks.tweet_ids,1,1)='[' THEN report_tasks.tweet_ids"
+                " ELSE '[]' END) j")
+            get_conn().commit()
+        except Exception:
+            pass
         # 早期建库可能缺列，逐列补齐（已存在则忽略报错）
         added_pushed = False
         for col in ("ai_status", "ai_error", "ai_model", "ai_severity", "ai_type",
@@ -276,7 +334,11 @@ def batch_tweet_op(ids, op):
            "unread": f"UPDATE tweets SET read=0 WHERE id IN ({ph})",
            "ignore": f"UPDATE tweets SET ignored=1, read=1 WHERE id IN ({ph})",
            "unignore": f"UPDATE tweets SET ignored=0 WHERE id IN ({ph})",
-           "delete": f"DELETE FROM tweets WHERE id IN ({ph}) AND starred=0"}.get(op)
+           "delete": f"DELETE FROM tweets WHERE id IN ({ph}) AND starred=0"
+                     f" AND id NOT IN (SELECT tweet_id FROM report_refs)"
+                     f" AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
+                     f"   JOIN delivery_msgs m ON m.id=di.msg_id"
+                     f"   WHERE m.state IN ('待发送','发送中','等待重试'))"}.get(op)
     if not sql:
         return 0
     with _lock:
@@ -286,10 +348,17 @@ def batch_tweet_op(ids, op):
 
 
 def cleanup_old(keep_days):
-    """一键清理：删除 keep_days 天前的推文（收藏的永久保留），返回删除数"""
+    """一键清理：删除 keep_days 天前的推文。
+    保护（2026-11-08）：收藏、被报告任务引用（report_refs）、存在在途投递
+    （待发送/发送中/等待重试消息成员）的推文一律豁免，返回删除数。"""
     with _lock:
         cur = get_conn().execute(
-            "DELETE FROM tweets WHERE starred=0 AND created_at < datetime('now','localtime',?)",
+            "DELETE FROM tweets WHERE starred=0"
+            " AND id NOT IN (SELECT tweet_id FROM report_refs)"
+            " AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
+            "   JOIN delivery_msgs m ON m.id=di.msg_id"
+            "   WHERE m.state IN ('待发送','发送中','等待重试'))"
+            " AND created_at < datetime('now','localtime',?)",
             (f"-{int(keep_days)} days",))
         get_conn().commit()
         return cur.rowcount
@@ -631,3 +700,167 @@ def set_kv(k, v):
 def get_kv(k):
     r = get_conn().execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
     return r["v"] if r else None
+
+
+# ---------- 逐实例投递（第二批） ----------
+# 状态：消息=待发送/发送中/成功/等待重试/永久失败/结果不明/模拟成功/部分成功/已取消
+#       逻辑投递 deliveries=待发送/已过滤/成功/模拟成功/永久失败/结果不明/已取消
+
+
+def delivery_candidates(iid, boundary, cap=500):
+    """某实例尚未建投递记录的候选（ignored=0、入库时间≥边界、AI 门控由调用方过滤）。
+    按 id 升序 = 最旧优先，配合持久记录天然分页，不饥饿；游标即 deliveries 表本身。"""
+    return [_row_tweet(r) for r in get_conn().execute(
+        "SELECT t.* FROM tweets t WHERE t.ignored=0 AND t.created_at>=?"
+        " AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.tweet_id=t.id AND d.instance_id=?)"
+        " ORDER BY t.id ASC LIMIT ?", (boundary, iid, int(cap))).fetchall()]
+
+
+def create_delivery(tweet_id, iid, ckey, rule_id, snap, state, reason="", msg_id=None):
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT OR IGNORE INTO deliveries (tweet_id, instance_id, channel_key, state, msg_id,"
+            " rule_id, rule_snapshot, reason, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (int(tweet_id), iid, ckey, state, msg_id, rule_id, snap, reason, now(), now()))
+        get_conn().commit()
+        return cur.rowcount > 0
+
+
+def deliveries_pending(iid, limit=200):
+    """待发送的逻辑投递（联推文取等级用于摘要排序/即时筛选）"""
+    return [_row_tweet(r) for r in get_conn().execute(
+        "SELECT d.id AS delivery_id, t.* FROM deliveries d JOIN tweets t ON t.id=d.tweet_id"
+        " WHERE d.instance_id=? AND d.state='待发送'"
+        " ORDER BY CASE t.ai_severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1"
+        " WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, t.id ASC LIMIT ?",
+        (iid, int(limit))).fetchall()]
+
+
+def create_msg(iid, ckey, mtype, rule_id, snap, title, content, tweet_ids=None,
+               report_task_id=None):
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT INTO delivery_msgs (instance_id, channel_key, msg_type, report_task_id,"
+            " title, state, rule_id, rule_snapshot, content, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,'待发送',?,?,?,?,?)",
+            (iid, ckey, mtype, report_task_id, title, rule_id, snap, content, now(), now()))
+        mid = cur.lastrowid
+        for tid in (tweet_ids or []):
+            get_conn().execute("INSERT OR IGNORE INTO delivery_items (msg_id, tweet_id) VALUES (?,?)",
+                               (mid, int(tid)))
+        get_conn().commit()
+        return mid
+
+
+def link_deliveries(iid, tweet_ids, msg_id):
+    """逻辑投递 ↔ 消息 关联（消息创建后回填 msg_id，终态镜像依赖它）"""
+    with _lock:
+        for tid in tweet_ids:
+            get_conn().execute(
+                "UPDATE deliveries SET msg_id=? WHERE tweet_id=? AND instance_id=?",
+                (int(msg_id), int(tid), iid))
+        get_conn().commit()
+
+
+def claim_msg(msg_id, lease_seconds=120):
+    """原子领取：仅 待发送/等待重试 可领取；领取后 发送中 + 租约。返回是否领取成功"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE delivery_msgs SET state='发送中', lease_until=?, attempts=attempts+1, updated_at=?"
+            " WHERE id=? AND state IN ('待发送','等待重试')",
+            (time.time() + lease_seconds, now(), int(msg_id)))
+        get_conn().commit()
+        return cur.rowcount > 0
+
+
+def finish_msg(msg_id, state, detail="", mirror=True):
+    """终态写回；digest/instant 成功或永久失败时镜像成员逻辑投递状态"""
+    with _lock:
+        get_conn().execute(
+            "UPDATE delivery_msgs SET state=?, detail=?, lease_until=NULL, updated_at=? WHERE id=?",
+            (state, detail[:400], now(), int(msg_id)))
+        if mirror and state in ("成功", "模拟成功", "永久失败", "结果不明"):
+            get_conn().execute(
+                "UPDATE deliveries SET state=?, msg_id=?, updated_at=? WHERE msg_id=?",
+                (state, int(msg_id), now(), int(msg_id)))
+        get_conn().commit()
+
+
+def msg_retry_wait(msg_id, next_ts, detail=""):
+    with _lock:
+        get_conn().execute(
+            "UPDATE delivery_msgs SET state='等待重试', next_attempt_at=?, detail=?, updated_at=? WHERE id=?",
+            (next_ts, detail[:400], now(), int(msg_id)))
+        get_conn().commit()
+
+
+def msg_attempt_text(msg_id, text):
+    with _lock:
+        get_conn().execute("UPDATE delivery_msgs SET detail=?, updated_at=? WHERE id=?",
+                           (text[:400], now(), int(msg_id)))
+        get_conn().commit()
+
+
+def msg_by_id(msg_id):
+    r = get_conn().execute("SELECT * FROM delivery_msgs WHERE id=?", (int(msg_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def msg_members(msg_id):
+    return [r["tweet_id"] for r in get_conn().execute(
+        "SELECT tweet_id FROM delivery_items WHERE msg_id=?", (int(msg_id),)).fetchall()]
+
+
+def msgs_due(now_ts, limit=50):
+    """到期重试（等待重试且到点）+ 租约过期的发送中（→结果不明，由调用方处理）"""
+    due = [r["id"] for r in get_conn().execute(
+        "SELECT id FROM delivery_msgs WHERE state='等待重试' AND next_attempt_at<=?"
+        " ORDER BY id ASC LIMIT ?", (now_ts, int(limit))).fetchall()]
+    expired = [r["id"] for r in get_conn().execute(
+        "SELECT id FROM delivery_msgs WHERE state='发送中' AND (lease_until IS NULL OR lease_until<?)"
+        " ORDER BY id ASC LIMIT ?", (now_ts, int(limit))).fetchall()]
+    return due, expired
+
+
+def msgs_report(report_task_id):
+    """报告任务的全部投递消息（每实例一条）"""
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM delivery_msgs WHERE report_task_id=? ORDER BY id",
+        (int(report_task_id),)).fetchall()]
+
+
+def reset_sim_deliveries(iid):
+    """模拟转真实：该实例 模拟成功 的逻辑投递重置为 待发送（真实资格仍在；受每轮上限限速）"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE deliveries SET state='待发送', updated_at=? WHERE instance_id=? AND state='模拟成功'",
+            (now(), iid))
+        get_conn().commit()
+        return cur.rowcount
+
+
+def sync_pushed_compat(tweet_ids):
+    """兼容回写：推文存在任一终态投递（成功/模拟成功/永久失败/结果不明/已过滤）→ pushed=1。
+    仅用于旧代码回退防重发与历史展示，不再决定实例投递资格。"""
+    if not tweet_ids:
+        return
+    ph = ",".join("?" * len(tweet_ids))
+    with _lock:
+        get_conn().execute(
+            f"UPDATE tweets SET pushed=1 WHERE pushed=0 AND id IN ({ph})"
+            " AND EXISTS (SELECT 1 FROM deliveries d WHERE d.tweet_id=tweets.id"
+            " AND d.state IN ('成功','模拟成功','永久失败','结果不明','已过滤'))",
+            [int(x) for x in tweet_ids])
+        get_conn().commit()
+
+
+def protected_tweet_ids():
+    """删除入口保护集：收藏 + 报告引用 + 在途投递成员"""
+    rows = get_conn().execute(
+        "SELECT id FROM tweets WHERE starred=1"
+        " UNION SELECT tweet_id FROM report_refs"
+        " UNION SELECT di.tweet_id FROM delivery_items di"
+        " JOIN delivery_msgs m ON m.id=di.msg_id WHERE m.state IN ('待发送','发送中','等待重试')"
+    ).fetchall()
+    return {r["id"] for r in rows}
