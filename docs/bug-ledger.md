@@ -56,8 +56,8 @@
 ### 第二批问题台账
 | ID | 问题 | 优先级 | 证据状态 | 位置 |
 |----|------|--------|---------|------|
-| B14 | 跨通道 pushed 全局耦合（A 成功 B 失败 B 永久失去资格） | 高 | 静态确认（dispatch pushed_ids 全局合并） | engine.dispatch |
-| B15 | 模拟发送消费真实投递资格 | 高 | 静态确认（sim ok 同样 extend pushed_ids） | engine.dispatch |
+| B14 | 跨通道 pushed 全局耦合 | 高 | 已复现 | engine.dispatch |
+| B15 | 模拟发送消费真实投递资格 | 高 | 静态确认 | engine.dispatch |
 | B16 | 实例发送失败无补发 | 高 | 静态确认 | engine.dispatch |
 | B18 | 实例无稳定 ID（数组下标/改名破坏身份） | 高 | 静态确认（runtime instances 无 iid） | config/runtime |
 | B19 | app/wecom_media.py 缺失，附件推送必然 ModuleNotFoundError 且被 +FAIL 掩盖 | 高 | 静态确认（reports.py import 在 try 内） | app/reports.py:294 |
@@ -67,3 +67,13 @@
 | B23 | 待人工无退回修改/重新交付路径 | 中 | 静态确认（deliver 仅写作中） | reports.deliver |
 | B24 | runtime.json 写入非原子、无并发保护/写后校验 | 中 | 静态确认（直接 write_text） | config.save_runtime |
 | B25 | 外部 URL 拼接进 onclick（index.html 媒体/原文 onclick） | 中 | 静态确认（待验证可利用性） | web/index.html |
+
+### 第二批修复结论（2026-11-08）
+- **B14/B15/B16 已闭合**：逐实例投递模型（deliveries/delivery_msgs/delivery_items/delivery_attempts 语义）替代全局 pushed 调度职责；tweets.pushed 仅兼容回写（任一终态→1，供回退旧代码防重发）。验收：tests/test_batch2.py 39 断言（S1-S16）全绿，含"A 成功 B 失败只重试 B""模拟转真实资格仍在""迁移幂等不伪造历史""租约过期→结果不明→人工重试"。
+- **B19 已闭合**：app/wecom_media.py 补齐（两步法+20MB 校验）；附件模块缺失/单附件失败→分项失败，状态=部分成功。
+- **B21 已闭合**：cleanup/批量删除统一豁免 收藏+report_refs+在途投递（db.protected_tweet_ids）。
+- **B22 已闭合**：push_task 原子领取（推送中+10 分钟陈旧回收）。
+- **B23 已闭合**：待人工→重新交付（重跑门禁）/abort 退回修改。
+- **B24 已闭合**：runtime.json 原子写（tmp→os.replace）+写后校验+.bak 备份+模块锁。
+- **B18 已闭合**：实例 iid 稳定身份（迁移实测 3 实例赋码；改名/排序不变、删除重建新码——S6 断言）。
+- 修复前证据：test_batch2 首轮跑出 7 项 FAIL（候选饥饿/模拟消费/身份缺失/分项缺失等），修复后 39/39。

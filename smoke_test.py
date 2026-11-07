@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """X-Intel 系统冒烟测试：七组链路一次跑完，输出 PASS/FAIL 汇总。
-用法：C:/Python314/python.exe smoke_test.py [--nolive]（--nolive 跳过真实抓取/推送等外发动作）
+用法：C:/Python314/python.exe smoke_test.py [--nolive]（--nolive 跳过真实抓取/真实推送）
+副作用分类（--nolive 不是完全离线）：真实调用=AI 连通测试（G5）；模拟外发=钉钉测试（G6，写 push_logs）；
+数据库写入=建删冒烟报告任务（G7）；完全离线=tests/test_batch1.py 与 tests/test_batch2.py（临时库+替身）。
 必须用与服务相同解释器（Python 3.14）：G6 单元断言 from app import engine 连带导入 feedparser，py -3.13 会 ModuleNotFoundError
 G1 服务与页面 | G2 API 全端点（复用 healthcheck）| G3 数据完整性
 G4 采集链路 | G5 AI 链路 | G6 推送链路 | G7 报告任务闭环
