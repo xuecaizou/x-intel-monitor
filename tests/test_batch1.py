@@ -205,6 +205,13 @@ check("D2-c1 真实成功推进已推送", task_status(tid_c) == "已推送" and
       f"status={task_status(tid_c)}")
 
 # ============================================================
+print("== B6 RSS 跟随全局读统一字段 ==")
+import app.rssfetch as rssfetch  # noqa: E402
+check("B6-1 读取 fetch.interval_minutes", rssfetch._global_minutes({"fetch": {"interval_minutes": 5}}) == 5)
+check("B6-2 无 fetch 字段回退 15", rssfetch._global_minutes({"x": {"interval_minutes": 15}}) == 15)
+check("B6-3 空配置回退 15", rssfetch._global_minutes({}) == 15)
+
+# ============================================================
 print("== C9 IOC 导出建议（静态） ==")
 help_txt = (ROOT / "web" / "help.html").read_text(encoding="utf-8")
 check("C9-1 导出模板不含'优先封禁'建议", "建议优先封禁" not in help_txt)

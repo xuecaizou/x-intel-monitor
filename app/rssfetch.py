@@ -128,12 +128,21 @@ def fetch_source(src, cfg, limit=15):
         return 0, "", f"{type(e).__name__}: {str(e)[:120]}"
 
 
+def _global_minutes(cfg):
+    """RSS"跟随全局"频率：统一读调度字段 fetch.interval_minutes（原读 x.interval_minutes，
+    与调度器使用的 fetch.interval_minutes 不一致，导致全局改 5 分钟时 RSS 仍按 15 分钟）"""
+    try:
+        return int((cfg.get("fetch") or {}).get("interval_minutes", 15) or 15)
+    except Exception:
+        return 15
+
+
 def run_rss_round(trigger="schedule"):
     """一轮 RSS 抓取：到期源全部抓取，返回汇总 dict（供 engine 并入 fetch_logs）"""
     from .config import load
     cfg = load()
     srcs = db.list_rss_sources(enabled_only=True)
-    gmin = int((cfg.get("x") or {}).get("interval_minutes", 15) or 15)
+    gmin = _global_minutes(cfg)
     due, ok, total_new, traces, errs = 0, 0, 0, [], []
     for s in srcs:
         minutes = int(s.get("fetch_minutes") or 0) or gmin
