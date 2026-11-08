@@ -1337,12 +1337,22 @@ def list_events(status="", q="", limit=50, offset=0):
 
 
 def event_evidence(uid):
-    """证据列表（联推文内容 + 完整性分级），用于详情页"""
+    """证据列表（联推文内容 + 完整性分级），用于详情页。
+
+    身份契约（2026-11-09 缺陷 D 修复）：
+      - evidence_id = event_evidence 关联表行 id（仅审计用途）
+      - tweet_id    = tweets.id（解除/拆分/跳转/导出必须使用这一身份）
+    历史 SQL 用 v.* 导致关联表 id 以 "id" 键泄漏、created_at 同名歧义——
+    前端与导出误用关联表 id（推文 4091/4092 显示为证据 1/2），解除/拆分/导出
+    全部引用错误。现改为全列唯一别名。"""
     rows = get_conn().execute(
-        "SELECT v.*, t.id AS tweet_id_only, t.screen_name, t.text, t.title_zh, t.text_zh, t.url,"
-        " t.published_at, t.created_at, t.text_hash, t.ai_severity, t.ai_type,"
+        "SELECT v.id AS evidence_id, v.event_uid, v.basis, v.source_kind,"
+        " v.note, v.created_at AS linked_at,"
+        " t.id AS tweet_id, t.screen_name, t.text, t.title_zh, t.text_zh, t.url,"
+        " t.published_at, t.created_at AS collected_at, t.text_hash, t.ai_severity, t.ai_type,"
         " t.category, t.geo_country, t.geo_province, t.geo_city, t.industry, t.ai_integrity,"
-        " t.ai_review, t.analysis_version, t.org, t.tags, t.ai_iocs, t.ai_assessment,"
+        " t.ai_review, t.ai_review_version, t.ai_review_at, t.analysis_version,"
+        " t.org, t.tags, t.ai_iocs, t.ai_assessment,"
         " t.ai_confidence, t.ai_repair"
         " FROM event_evidence v JOIN tweets t ON t.id=v.tweet_id"
         " WHERE v.event_uid=? ORDER BY v.id", (uid,)).fetchall()
@@ -1452,16 +1462,33 @@ def merge_events(src_uid, dst_uid, operator="system", reason=""):
 
 
 def split_event(uid, tweet_ids, new_title, operator="system"):
-    """人工拆分：指定证据移出到新事件"""
+    """人工拆分：指定证据移出到新事件。
+
+    原子语义（2026-11-09 缺陷 D 修复）：先校验传入身份是**本事件内的真实
+    tweet_id**（历史上前端误传关联表 id → 零命中 → 却已创建空事件并报成功）。
+    零有效成员 → 直接失败，不创建空事件。"""
     ev = get_event(uid)
     if not ev:
+        return False, ""
+    c = get_conn()
+    valid_ids = []
+    for tid in (tweet_ids or []):
+        try:
+            tid = int(tid)
+        except Exception:
+            continue
+        r = c.execute("SELECT 1 FROM event_evidence WHERE event_uid=? AND tweet_id=?",
+                      (uid, tid)).fetchone()
+        if r:
+            valid_ids.append(tid)
+    if not valid_ids:
         return False, ""
     new_uid, _ = create_event(new_title or (ev["title"] + "（拆分）"), ev.get("summary", ""),
                               ev.get("severity", ""), operator, [], "manual")
     moved = 0
     with _lock:
         c = get_conn()
-        for tid in tweet_ids:
+        for tid in valid_ids:
             r = c.execute("SELECT * FROM event_evidence WHERE event_uid=? AND tweet_id=?",
                           (uid, int(tid))).fetchone()
             if not r:

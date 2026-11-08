@@ -103,7 +103,10 @@ check("C4-2 有效等级不被无版本审核升级",
 
 # ============================================================
 print("== C5 导出三表达一致（证据含结构/有效/审核三块） ==")
-ev5 = eventexport._evidence_item(db.get_tweet(tid1))  # 已推进版本：stale
+# _evidence_item 契约：event_evidence 联查行（tweet_id=tweets.id 数值主键）
+# —— 不接受 tweets 原始行（其 tweet_id 列是外部字符串 ID，语义不同）
+_c_ev, _ = db.create_event("C5 导出事件", tweet_ids=[tid1, tid3], operator="c-test")
+ev5 = eventexport._evidence_item(db.event_evidence(_c_ev)[0])  # tid1 已推进版本：stale
 ai5 = ev5["ai"]
 check("C5-1 导出含原始结构分级", ai5["structural_integrity"] == "partial",
       str(ai5["structural_integrity"]))
@@ -112,7 +115,7 @@ check("C5-2 导出审核块为三态结构", ai5["review"]["state"] == "stale"
 check("C5-3 stale 审核 → 不可作为已核验结论",
       ai5["usable_as_conclusion"] is False and ai5["must_label_unfinished"] is True,
       f"{ai5['usable_as_conclusion']}/{ai5['must_label_unfinished']}")
-ev5b = eventexport._evidence_item(db.get_tweet(tid3))  # 未审核 verified
+ev5b = eventexport._evidence_item(db.event_evidence(_c_ev)[1])  # tid3 未审核 verified
 ai5b = ev5b["ai"]
 check("C5-4 未审核完整研判：none + 可作结论",
       ai5b["review"]["state"] == "none" and ai5b["usable_as_conclusion"] is True,

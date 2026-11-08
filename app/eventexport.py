@@ -118,11 +118,13 @@ def _evidence_item(t):
     orgs = _arr(t.get("org"))
     tags = _arr(t.get("tags"))
     return {
-        "tweet_id": int(t["id"]),
+        # 身份契约（2026-11-09 缺陷 D）：tweet_id=tweets.id；evidence_id 仅审计
+        "tweet_id": int(t.get("tweet_id") or 0),
+        "evidence_id": int(t.get("evidence_id") or 0),
         "source": t.get("screen_name", ""),
         "url": t.get("url", ""),
         "published_at": t.get("published_at", ""),
-        "collected_at": t.get("created_at", ""),
+        "collected_at": t.get("collected_at", ""),
         "text_hash": t.get("text_hash", ""),
         "title_zh": t.get("title_zh", ""),
         "text": t.get("text", ""),
@@ -167,13 +169,15 @@ def export_event_json(uid):
     for t in snap["evidence"]:
         raw = _arr(t.get("ai_iocs"))
         for v in raw:
-            key = (str(v), t["id"])
+            key = (str(v), int(t.get("tweet_id") or 0))
             if str(v).strip() in seen:
                 continue
             seen.add(str(v).strip())
             kind, role = _classify_ioc(v, t)
             rec = {"value": str(v), "kind": kind, "role": role,
-                   "tweet_id": int(t["id"]), "source": t.get("screen_name", ""),
+                   "tweet_id": int(t.get("tweet_id") or 0),
+                   "evidence_id": int(t.get("evidence_id") or 0),
+                   "source": t.get("screen_name", ""),
                    "verified": integ.is_verified(t),
                    "integrity": integ.effective_grade(t)}
             if kind == "cve":

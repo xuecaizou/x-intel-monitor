@@ -1151,7 +1151,10 @@ def api_event_split(uid: str, body: SplitBody, request: Request):
         raise HTTPException(400, "tweet_ids 不能为空")
     ok, new_uid = db.split_event(uid, body.tweet_ids, body.new_title, _operator(request))
     if not ok:
-        raise HTTPException(404, "事件不存在")
+        if not db.get_event(uid):
+            raise HTTPException(404, "事件不存在")
+        raise HTTPException(400, "拆分失败：传入的 tweet_id 均不属于本事件"
+                                 "（请使用推文ID，而非证据列表行号；不会创建空事件）")
     return {"ok": True, "new_event": new_uid}
 
 
