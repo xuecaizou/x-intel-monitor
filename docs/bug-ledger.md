@@ -135,3 +135,33 @@
 | B58 | 导出快照无条件 BEGIN → 嵌套事务 | 静态确认 | 检查 in_transaction | 导出测试 |
 | B59 | 备份校验未覆盖事件/认证表 | 已复现 | 补 7 表 | 恢复演练 24/24 |
 | B60 | AI 429/额度耗尽被当普通错误反复重试 | 生产日志实测 | AIQuotaError + 中止本轮 | 代码审查 + 下次配额恢复可验 |
+
+### 第七批：集中修复（2026-11-09，基线 b4c720d，分支 fix/central-repair）
+
+> 来源：对新机器独立基线的源码与隔离复核（任务书固定范围 A–J）。
+> 原则：先建立能失败的反例，再修复；替身位于 HTTP/模型边界，业务函数全真。
+
+| ID | 问题 | 根因 | 修复 | 验证 |
+|----|------|------|------|------|
+| A | CI 绿标掩盖真实失败：run 42482898535 两平台各 1 FAIL 仍 success | offline_test.py 收集 failed 后**没有非零退出**（文件在循环后直接结束）；缺失套件被静默 SKIP | 入口改为 run_suites()+main()：失败/缺失/异常退出→exit 1，套件级汇总；新增 tests/test_entry_exit.py 端到端固化退出码契约 | E1–E4（单套件失败/全失败/缺失/全绿 四场景退出码）；两平台 FAIL 修复见 A-S14/A-T8 |
+| A-S14 | S14-1 待人工可重新交付 FAIL（两平台） | _run_gate 硬编码 ["py","-3.13"]——Ubuntu 无 py、Windows CI 无 3.13 注册 → 门禁恒 999 → 交付永远落回"待人工" | 门禁解释器默认 sys.executable（report.gate_python 可配置） | batch2 39/39；三平台本机/CI 均绿 |
+| A-T8 | T8-1 并发保存 WinError 5（Windows） | os.replace 目标被 AV/索引服务瞬时占用，无重试；共享 .json.tmp | 唯一临时名（pid+tid）+ 有界重试（6×递增延时）；.bak 写入重试 | batch3 49/49（本机 Windows 复现→修复） |
+| B | AI 写入绕过版本保护；后台路径"先写库再检查冲突"；429 被吞继续烧钱 | process_tweet 直接 update_ai（process_ai_tasks 双写形同虚设）；失败写回无保护；通用异常吞掉 AIQuotaError；done 统计把模型失败计成功 | process_tweet 纯计算 (fields,error,quota_hit)；新增 db.update_ai_guarded（失败写回权威路径，版本+人工保护原子检查、留审计、不推版本）；全部 AI 链路 429 即停本轮、剩余不计成功；WHERE 兼容 ai_modified TEXT 空串（B47 同源坑） | test_batch7_b 33 断言：迟到成功/迟到失败均不覆盖人工值且留审计、429 整轮仅 1 次 HTTP、落库失败不重复调用、classify done 计数修正 |
+| C | effective_grade 只看 ai_review=manual，未验证版本——旧审核冒充当前批准；审核绑定无原子检查；三态混于单一字段 | 版本绑定字段存在但读取端未校验；update_ai 直接写 | integrity.review_state 三态（valid=绑定当前版本/stale=历史决定/none）；effective_grade 仅 valid 升级；structural_grade 保留原始分级（partial/invalid 不被抹掉）；db.bind_review 原子绑定（版本不符拒绝）；/api/tweets/{tid}/review 竞争→409 | test_batch7_c 20 断言：绑定/竞争409/版本推进失效/历史数据保守 stale/导出三块（integrity/structural_integrity/review{state,reviewed_version,current_version}）；L2-9 夹具按新契约修订 |
+| D | 关联推文 4091/4092 显示证据 ID 1/2；解除无效、拆分建空事件、导出引用错误 | event_evidence 用 v.*——关联表行 id 以 "id" 键泄漏、created_at 同名歧义；前端/导出误用；split 先建事件后校验 | 全列唯一别名（evidence_id/tweet_id/collected_at/linked_at，补 ai_review_version）；split_event 单事务：先校验真实 tweet_id，零有效成员不建空事件（API→400）；解除/拆分前端按响应诚实反馈；导出 tweet_id+evidence_id 双表达 | test_batch7_d 24 断言（夹具垫底 20 条使 tweet_id=4091/4092 与证据行 id=1/2 明显不同）；test_batch4_ai_task A5 mock 适配新签名 |
+| E | 底层情报改变事件版本/审核不变；两个同 expected_version 并发修改均成功；导出与写交错 cannot commit | update_event 乐观锁检查在锁外、UPDATE 无版本条件；无底层情报变化检测；共享连接 BEGIN 被写入隐式回收 | 事件证据指纹 evidence_fingerprint（成员+analysis_version SHA1）+ ensure_event_freshness（读路径检测→推进版本+留痕，幂等）；review_event 锁内复验+绑定指纹；event_review_state 统一 valid/stale/none；update_event/add/remove/split/merge 单事务（_bump_event_locked）；导出改**独立只读连接**（WAL 快照） | test_batch7_e 25 断言：4线程同版本竞争仅1胜、审计同事务、指纹驱动审核失效与恢复、写入期间 6 轮导出零异常、拆分双向版本/指纹一致 |
+| F | IOC 默认 role=attack；组织名子串判 victim；verified 由结构完整性推导；全局去重丢源；invalid 混入攻击分组 | _classify_ioc 默认 attack + org 子串归类；is_verified 掺入人工语义 | role 缺证据默认 unknown（绝不默认 attack）；五桶 cve/attack/victim/reference/invalid（invalid 审计保留带标注）；org 重合只留 hints.org_overlap；verified=人工审核绑定当前版本（review_state）；去重按 (value,tweet_id) 保留全部来源+source_count+role_conflict；CSV 新列与 JSON 一致 | test_batch7_f 18 断言（含短名 ACME 历史误判场景复现） |
+| G | restore_to 原样复制配置——恢复后调度/外发仍 true；旧 Token/会话悄悄复活 | 安全语义只写在文档未落实代码 | restore_to safe_mode（默认）：恢复副本强制 scheduler=false+outbound=false（原件不动）；safety_changes 区分原件哈希与恢复变更；Token/会话一律清除（auth_reset 摘要）；verify_original/integrity_final 分离 | test_batch7_g 17 断言——**隔离目录真实启动恢复实例**：healthz 200、备份前 Token 被运行实例 401、启动日志"调度已按配置暂停"、fetch_logs/push_logs 空、backup API 含最近提交数据；恢复演练测试适配新契约 30/30 |
+| H | 来源测试裸走 _http_get（SSRF 探针）；RSS/媒体默认自动重定向+整包读取；报告交付接受任意绝对目录；附件 webhook 无校验 | safefetch 辅助函数存在但业务链路未接入 | fetch_limited 扩展 purpose/proxies；RSS 抓取+来源测试+api_media 全部受控（逐跳校验/≤8MB/显式超时）；deliver 与附件路径经 safe_report_path（非法路径→待人工+说明）；webhook 校验（https+公网，内网需显式 allow_private.webhook）；媒体代理逐跳复核 twimg 白名单 | test_batch7_h 22 断言（业务入口拒绝行为、零 HTTP 调用断言、302→内网第二跳未发出）；S13/S14/T3 夹具迁受控目录 |
+| I | 首条 GUID 未变整源跳过（漏采）——B33 声称已修但代码未生效；S-D1 夹具 WHERE id=2 空洞通过；RSS 缺 source_id 改名重复入库 | 增量短路逻辑仍在；夹具硬编码 id | 逐条扫描去重（UNIQUE(source_id,tweet_id)）；条目带 source_id=rss:{id}；位点 rss_top 仅入库完成后推进（异常不推进）且只作追踪；S-D1 夹具改真实 sid | test_batch7_i 14 断言：固定反例（首条不变+第二条新增——旧实现必失败）、置顶场景、失败不推进+重跑补齐不重复、整轮幂等、改名归属完整 |
+| J | 3X+1RSS 首页显示 3/3；全模拟推送显示 100% 真实成功率；启用但未运行的源默认正常 | 前端只读 sources.x.total；push_stats_today ok 含模拟；x_status 默认 True | _sources_health 统一口径：total/enabled=X+RSS、逐源四态（ok/error/unknown/disabled）、聚合 health.state（X 成功不掩盖 RSS 失败）；push_stats_today 真实/模拟分列（real_rate 无真实样本→None）；前端 KPI/圆点/副标题/配置页计数同步 | test_batch7_j 22 断言（4/4+partial_error 固定场景、全异常 error、仅模拟 real_rate=None、API 与内部一致）；浏览器实证（隔离实例真实数据 5/5·部分异常·无真实样本） |
+
+**浏览器验收（2026-11-09，隔离实例 127.0.0.1:18200，回环监听）**：
+登录（会话+CSRF）→首页（5/5 统一口径·部分异常·无真实样本）→监控源页（X4+RSS1 计数一致）
+→事件详情（证据表显示推文ID 4018/4019/4020）→关联 4020（snack"证据已关联"，v2）
+→解除 4019（confirm 对话框、"已解除"，v3）→拆分 4020（prompt 对话框、"已拆分"，双向版本推进）
+→审核 approved@v4 →人工修订底层情报→**evidence_changed v5（指纹留痕）**→前端显示
+"历史决定（v4）：approved——需重新审核"→重新审核 approved@v5→导出核对
+（tweet_id/evidence_id 双表达、collected_at 唯一键、IOC role=unknown、verified 不由完整性推导、CSV 新列齐）。
+
+**测试规模**：22 套件 514 PASS / 0 FAIL（本机 Windows 全量）；入口 exit 0 正确。
