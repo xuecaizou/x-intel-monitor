@@ -475,22 +475,44 @@ def translate_tweet(tweet, cfg=None):
 
 
 def process_tweet(tweet, cfg=None):
-    """研判+翻译一次完成；单步失败不阻塞另一步（失败累计 ai_retries，满 2 次放行推送并附说明）"""
+    """研判+翻译一次完成（纯计算，不写库）。
+
+    职责分离（2026-11-09 缺陷 B 修复）：本函数只负责模型计算，不再直接
+    update_ai() 写库——提交必须由调用方经 db.apply_ai_result 权威路径原子完成
+    （提交时检查版本与人工保护）。历史上本函数先 update_ai 后由调用方
+    apply_ai_result 二次写入，等于"先写入再检查冲突"，版本保护被绕过。
+
+    返回 (fields, error, quota_hit)：
+      fields  — 待提交字段（含失败状态 ai_status=error / ai_retries 计数）
+      error   — 模型阶段错误摘要（None=研判成功）
+      quota_hit — 出现 429/额度耗尽：调用方必须停止本轮后续模型调用与翻译，
+                  且不得把剩余条目计入成功。研判已成功的结果不丢弃，随本批提交。
+    AIModifiedError 直接上抛（人工修订保护，由调用方跳过）。
+    """
     cfg = cfg or _cfg()
     fields = {}
+    error = None
     try:
         fields.update(analyze_tweet(tweet, cfg))
         fields["ai_retries"] = 0
+    except AIModifiedError:
+        raise
+    except AIQuotaError as e:
+        return ({"ai_status": "error", "ai_error": f"AIQuotaError: {str(e)[:150]}",
+                 "ai_analyzed_at": db.now()}, f"AIQuotaError: {str(e)[:150]}", True)
     except Exception as e:
-        fields.update({"ai_status": "error", "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
+        error = f"{type(e).__name__}: {str(e)[:180]}"
+        fields.update({"ai_status": "error", "ai_error": error,
                        "ai_retries": int(tweet.get("ai_retries") or 0) + 1,
                        "ai_analyzed_at": db.now()})
     try:
         fields.update(translate_tweet(tweet, cfg))
+    except AIQuotaError as e:
+        fields.setdefault("ai_error", f"翻译配额停止 AIQuotaError: {str(e)[:150]}")
+        return fields, error, True
     except Exception as e:
         fields.setdefault("ai_error", f"{type(e).__name__}: {str(e)[:180]}")
-    db.update_ai(tweet["id"], fields)
-    return fields
+    return fields, error, False
 
 
 def test_ai(cfg=None):
@@ -524,13 +546,19 @@ def list_models(cfg=None):
 
 
 def batch_process(ids, action, cfg=None):
-    """批量翻译/研判（同步串行，单条失败不中断），返回统计"""
+    """批量翻译/研判（同步串行，单条失败不中断），返回统计。
+
+    配额语义（2026-11-09 缺陷 B 修复）：出现 429/额度耗尽立即停止本轮
+    后续调用（不再为剩余条目烧钱），剩余不计成功也不计失败；
+    失败状态写回走 update_ai_guarded（不覆盖人工修改与更新结果）。"""
     cfg = cfg or _cfg()
     _require_key(cfg)
     if action not in ("analyze", "translate"):
         raise ValueError("action 只支持 analyze / translate")
+    todo = list(ids[:20])
     done, fail, errors = 0, 0, []
-    for tid in ids[:20]:
+    quota_stopped = 0
+    for tid in todo:
         t = db.get_tweet(tid)
         if not t:
             continue
@@ -538,6 +566,23 @@ def batch_process(ids, action, cfg=None):
         try:
             fields = (analyze_tweet(t, cfg) if action == "analyze"
                       else translate_tweet(t, cfg))
+        except AIQuotaError as e:
+            quota_stopped = len(todo) - done - fail  # 因配额未成功处理的条数
+            errors.append(f"#{tid}: 配额停止({str(e)[:60]})")
+            db.update_ai_guarded(tid, {"ai_status": "error",
+                                       "ai_error": f"AIQuotaError: {str(e)[:150]}",
+                                       "ai_analyzed_at": db.now()}, base)
+            break
+        except Exception as e:
+            if action == "analyze":
+                db.update_ai_guarded(tid, {"ai_status": "error",
+                                           "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
+                                           "ai_analyzed_at": db.now()}, base)
+            fail += 1
+            errors.append(f"#{tid}: {str(e)[:80]}")
+            time.sleep(0.5)
+            continue
+        try:
             applied, reason, cur = db.apply_ai_result(tid, fields, base)
             if applied:
                 done += 1
@@ -547,26 +592,29 @@ def batch_process(ids, action, cfg=None):
                 errors.append(f"#{tid}: 冲突({reason})")
                 fail += 1
         except Exception as e:
-            if action == "analyze":
-                db.update_ai(tid, {"ai_status": "error",
-                                   "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
-                                   "ai_analyzed_at": db.now()})
+            # 落库异常：计一次失败，本条不重复调用模型
             fail += 1
-            errors.append(f"#{tid}: {str(e)[:80]}")
+            errors.append(f"#{tid}: 落库失败 {type(e).__name__}")
+            db.update_ai_guarded(tid, {"ai_error": f"落库失败 {type(e).__name__}: {str(e)[:120]}"},
+                                 base)
         time.sleep(0.5)
-    return {"action": action, "total": len(ids[:20]), "done": done,
-            "fail": fail, "errors": errors[:5]}
+    out = {"action": action, "total": len(todo), "done": done,
+           "fail": fail, "errors": errors[:5]}
+    if quota_stopped:
+        out["quota_stopped"] = quota_stopped
+    return out
 
 
 def classify_batch(tweets, cfg=None):
-    """AI 批量分类：每 10 条一次调用（省额度），直接更新 tweets.category。
-    返回统计 {total, done, fail}"""
+    """AI 批量分类：每 10 条一次调用（省额度），结果经权威路径按版本提交。
+    返回统计 {total, done, fail[, quota_stopped]}"""
     cfg = cfg or _cfg()
     _require_key(cfg)
     done, fail = 0, 0
+    quota_stopped = 0
     groups = [tweets[i:i + 10] for i in range(0, len(tweets), 10)]
     sep = chr(10)
-    for grp in groups:
+    for gi, grp in enumerate(groups):
         texts = sep.join(
             f"{i}. [id:{t['id']}] {(t.get('text') or '')[:200]}"
             for i, t in enumerate(grp, 1))
@@ -574,30 +622,46 @@ def classify_batch(tweets, cfg=None):
         try:
             result = _chat(cfg, [{"role": "user", "content": prompt}], json_mode=True,
                            action="分类", ref=f"{len(grp)}条批量")
-            results = result.get("results") or []
-            # 单一身份：仅接受库内真实 id（序号映射已移除——序号与 id 撞号会写错情报）
-            byid = {str(t["id"]): t for t in grp}
-            hit = 0
-            seen = set()
-            for r0 in results:
-                t = byid.get(str(r0.get("id", "")).strip())
-                if not t:
-                    continue
-                if t["id"] in seen:
-                    continue  # 重复结果忽略
-                seen.add(t["id"])
-                # 版本语义：分类结果按"当前有效值"条件写入（人工改过的不覆盖）
-                if int(t.get("ai_modified") or 0) == 1:
-                    continue
-                cat = str(r0.get("category", "其他")).strip()[:14]
-                if cat not in CATEGORIES:
-                    cat = "其他"
-                db.update_ai(t["id"], {"category": cat})
-                hit += 1
-            missing = len(grp) - hit
-            fail += max(0, missing)
+        except AIQuotaError as e:
+            # 429/额度耗尽：停止本轮后续批次，剩余不计成功也不计失败
+            quota_stopped = sum(len(g) for g in groups[gi:])
+            print("[classify] 配额停止本轮:", str(e)[:120])
+            break
         except Exception as e:
             fail += len(grp)
             print("[classify] 批次失败:", str(e)[:120])
+            time.sleep(1)
+            continue
+        # 单一身份：仅接受库内真实 id（序号映射已移除——序号与 id 撞号会写错情报）
+        byid = {str(t["id"]): t for t in grp}
+        hit = 0
+        seen = set()
+        for r0 in result.get("results") or []:
+            t = byid.get(str(r0.get("id", "")).strip())
+            if not t:
+                continue
+            if t["id"] in seen:
+                continue  # 重复结果忽略
+            seen.add(t["id"])
+            # 版本语义：分类结果经 apply_ai_result 原子提交——人工改过/版本已推进
+            # 的一律不覆盖（调用前的 ai_modified 预检只是快速通道，竞态由提交兜底）
+            if int(t.get("ai_modified") or 0) == 1:
+                continue
+            cat = str(r0.get("category", "其他")).strip()[:14]
+            if cat not in CATEGORIES:
+                cat = "其他"
+            base = int(t.get("analysis_version") or 0)
+            applied, reason, cur = db.apply_ai_result(t["id"], {"category": cat}, base)
+            if applied:
+                hit += 1
+            else:
+                db.add_ai_log("分类结果冲突", detail=f"{reason} v{base}->v{cur}",
+                              tweet_id=t["id"], status="conflict")
+        missing = len(grp) - hit
+        fail += max(0, missing)
+        done += hit  # 统计修复：原实现 hit 从未累加进 done，分类成功数恒 0
         time.sleep(1)
-    return {"total": len(tweets), "done": done, "fail": fail}
+    out = {"total": len(tweets), "done": done, "fail": fail}
+    if quota_stopped:
+        out["quota_stopped"] = quota_stopped
+    return out

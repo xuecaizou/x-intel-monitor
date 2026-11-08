@@ -795,6 +795,48 @@ def clear_manual_protection(tid):
         return cur.rowcount > 0
 
 
+def update_ai_guarded(tid, fields, base_version):
+    """失败/状态类写回的权威路径：原子检查版本与人工保护，不推进版本。
+
+    与 apply_ai_result 的区别：这是状态写回（ai_status/ai_error 等），不推进版本；
+    但同样必须在提交时原子确认「版本未变且未被人工接管」——迟到失败不得覆盖
+    期间新增的人工状态或更新的成功结果（2026-11-09 缺陷 B 修复）。
+    返回 (applied, reason)。
+    """
+    if not fields:
+        return True, "applied"
+    with _lock:
+        row = get_conn().execute(
+            "SELECT analysis_version, ai_modified FROM tweets WHERE id=?", (int(tid),)).fetchone()
+        if not row:
+            return False, "tweet_not_found"
+        cur_ver = int(row["analysis_version"] or 0)
+        if int(row["ai_modified"] or 0) == 1 or int(base_version) != cur_ver:
+            reason = ("status_manual_protected" if int(row["ai_modified"] or 0) == 1
+                      else "status_version_changed")
+            try:
+                payload = json.dumps(fields, ensure_ascii=False, default=str)[:4000]
+            except Exception:
+                payload = "{}"
+            get_conn().execute(
+                "INSERT INTO ai_result_conflicts (tweet_id, base_version, current_version,"
+                " reason, result_json, created_at) VALUES (?,?,?,?,?,?)",
+                (int(tid), int(base_version), cur_ver, reason, payload, now()))
+            get_conn().commit()
+            return False, reason
+        sets = ", ".join(f"{k}=?" for k in fields)
+        args = list(fields.values()) + [int(tid), cur_ver]
+        # 注意：ai_modified 为 TEXT 列（默认 ''），不能用 =0 比较（台账 B47 同源坑）
+        not_modified = "(ai_modified IS NULL OR ai_modified='' OR ai_modified='0')"
+        cur = get_conn().execute(
+            f"UPDATE tweets SET {sets} WHERE id=? AND analysis_version=? AND {not_modified}",
+            args)
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return False, "race_lost"
+        return True, "applied"
+
+
 def list_conflicts(limit=50):
     return [dict(r) for r in get_conn().execute(
         "SELECT * FROM ai_result_conflicts ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]

@@ -106,11 +106,12 @@ db.get_conn().execute("UPDATE ai_tasks SET status='已取消' WHERE status IN ('
 db.get_conn().commit()
 task5 = db.create_ai_task("analyze_backlog", {"limit": 1}, total=0)
 # 故障注入：模型成功、落库失败（engine 引用 aimod.process_tweet）
+# 2026-11-09：process_tweet 改为纯计算，返回 (fields, error, quota_hit)
 orig_update = db.update_ai
 calls = {"model": 0, "db": 0}
 def _mock_process(tweet, cfg):
     calls["model"] += 1
-    return {"ai_status": "ok"}
+    return ({"ai_status": "ok"}, None, False)
 def _flaky_update(tid_, fields):
     calls["db"] += 1
     raise RuntimeError("模拟落库失败")
@@ -153,7 +154,8 @@ except ai.AIModifiedError:
 check("A6-2 引擎路径阻止自动研判覆盖", blocked)
 # 恢复人工值并验证 update_ai 的并发保护缺口
 db.update_ai(t6, {"geo_country": "人工指定"})
-check("A6-3 约束：update_ai 无版本检查（已知缺口，见台账）", True)
+check("A6-3 约束：update_ai 无版本检查（B 组已闭合：引擎路径全部改走"
+      " apply_ai_result/update_ai_guarded，raw update_ai 仅剩低层管理写）", True)
 
 # ============================================================
 print("== A7 修复/截断结果状态 ==")

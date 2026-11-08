@@ -18,6 +18,7 @@ PY = sys.executable
 SUITES = [
     "tests/test_isolation.py",
     "tests/test_entry_exit.py",
+    "tests/test_batch7_b.py",
     "tests/test_batch1.py",
     "tests/test_batch2.py",
     "tests/test_batch3.py",
