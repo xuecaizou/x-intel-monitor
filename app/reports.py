@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from urllib.parse import quote
 
@@ -190,9 +191,17 @@ def abort(tid, note=""):
 
 # ---------- 系统复跑门禁脚本验收 ----------
 
+def _gate_python():
+    """门禁脚本解释器：runtime.json report.gate_python 可显式配置；
+    默认当前解释器（sys.executable）——跨平台可靠，不依赖 Windows py launcher
+    （历史缺陷：硬编码 ["py","-3.13"] 在 Ubuntu 无 py、Windows CI 无 3.13 注册时
+    门禁恒 999，交付永远落回"待人工"，且被入口 exit 0 掩盖）。"""
+    return ((load().get("report") or {}).get("gate_python") or "").strip() or sys.executable
+
+
 def _run_gate(docx_path, tier, word_limit=None):
     """复跑机械门禁，返回 (exit_code, gate_summary)"""
-    cmd = ["py", "-3.13", _gate_script(), docx_path, "--档位", tier]
+    cmd = [_gate_python(), _gate_script(), docx_path, "--档位", tier]
     if word_limit:
         cmd += ["--字数上限", str(word_limit)]
     try:
@@ -205,7 +214,7 @@ def _run_gate(docx_path, tier, word_limit=None):
     except subprocess.TimeoutExpired:
         exit_code, summary = 999, "门禁脚本超时（>180s）"
     except FileNotFoundError as e:
-        exit_code, summary = 999, f"py launcher 不可用: {e}"
+        exit_code, summary = 999, f"门禁解释器不可用: {e}"
     except Exception as e:
         exit_code, summary = 999, f"复跑异常: {type(e).__name__}: {str(e)[:120]}"
     return exit_code, summary

@@ -2,6 +2,7 @@
 import copy
 import datetime
 import threading
+import time
 import json
 import os
 import uuid
@@ -102,9 +103,26 @@ def ensure_instance_ids(cfg):
     return changed
 
 
+def _replace_with_retry(src, dst, attempts=6, delay=0.02):
+    """os.replace 带 Windows 瞬时占用重试。
+
+    Windows 上 Defender/索引服务可能短暂打开目标文件，导致 os.replace 抛
+    PermissionError(WinError 5)——这在并发保存时已被实测复现（T8-1）。
+    有界重试只吸收瞬时占用，目标被长期锁定时最终仍然抛出。"""
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay * (i + 1))
+
+
 def save_runtime(overrides):
     """页面改动持久化到 data/runtime.json。
-    并发保护：模块锁 + 文件锁；原子替换（tmp→os.replace）；写后校验；上一版本备份 .bak。"""
+    并发保护：模块锁（单进程）+ 原子替换（唯一 tmp→os.replace 带瞬时占用重试）；
+    写后校验；上一版本备份 .bak。"""
     DATA_DIR.mkdir(exist_ok=True)
     p = DATA_DIR / "runtime.json"
     with _rt_lock:
@@ -116,14 +134,23 @@ def save_runtime(overrides):
                 data = {}
         _deep_merge(data, overrides)
         payload = json.dumps(data, ensure_ascii=False, indent=2)
-        tmp = p.with_suffix(".json.tmp")
+        # 唯一临时名：同进程由模块锁串行；唯一名避免多进程/残留 .tmp 互踩
+        tmp = p.with_suffix(f".json.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(payload, encoding="utf-8")
         if json.loads(tmp.read_text(encoding="utf-8")) != data:
             tmp.unlink(missing_ok=True)
             raise RuntimeError("runtime.json 写后校验失败")
         try:
             if p.exists():
-                (p.with_suffix(".json.bak")).write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
-            os.replace(tmp, p)
+                bak = p.with_suffix(".json.bak")
+                for i in range(3):
+                    try:
+                        bak.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+                        break
+                    except PermissionError:
+                        if i == 2:
+                            raise
+                        time.sleep(0.02 * (i + 1))
+            _replace_with_retry(tmp, p)
         finally:
             tmp.unlink(missing_ok=True)
