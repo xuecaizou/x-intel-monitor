@@ -1593,7 +1593,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/iocs.json" target="_blank">IOC JSON</a>'+
           '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/iocs.csv" target="_blank">IOC CSV</a>'+
         '</div>'+
-        '<div class="rtmeta" style="margin-top:6px">审核：'+(st?esc(st.decision)+' @v'+st.event_version+' · '+esc(st.operator):'未审核')+'</div>'+
+        '<div class="rtmeta" style="margin-top:6px">审核：'+(function(){
+          /* E 组语义：stale=历史决定，不得冒充当前批准（以 API review_state 为准） */
+          var st2=e.review_state||{};
+          if(!st) return '未审核';
+          if(st2.state==='stale') return '<span style="color:#b45309">历史决定（v'+st.event_version+'）：'+esc(st.decision)+' —— 当前已是 v'+st2.current_version+'，需重新审核</span> · '+esc(st.operator);
+          return esc(st.decision)+' @v'+st.event_version+' · '+esc(st.operator);
+        })()+'</div>'+
         '</div>'+
         '<div class="rtitem" style="margin-top:10px"><div class="rttop"><span class="rttitle">证据</span></div>'+
         '<table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr>'+
