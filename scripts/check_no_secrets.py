@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 PATTERNS = [
     (r"qyapi\.weixin\.qq\.com/cgi-bin/webhook/send\?key=[a-f0-9]{8}-", "企微 webhook"),
     (r"sk-[A-Za-z0-9]{20,}", "OpenAI key"),
