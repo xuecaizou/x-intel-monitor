@@ -4,12 +4,13 @@ import os
 import re
 import time
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.params import Query
 from pydantic import BaseModel
 
-from app import db, engine, ai as aimod, twitter, reports, rssfetch
+from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth
 from app.config import load, save_runtime
 from app.notify import CHANNELS
 from app.scheduler import instance as scheduler_instance
@@ -62,7 +63,7 @@ def _mask(value):
 
 # ---------- 推文流 ----------
 
-@router.get("/api/tweets")
+@router.get("/api/tweets", dependencies=[Depends(auth.require("read"))])
 def api_tweets(screen_name: str = "all", severity: str = "all", q: str = "",
                country: str = "all", industry: str = "all", category: str = "all",
                status: str = "all", tag: str = "",
@@ -72,7 +73,7 @@ def api_tweets(screen_name: str = "all", severity: str = "all", q: str = "",
     return {"total": total, "items": items}
 
 
-@router.get("/api/facets")
+@router.get("/api/facets", dependencies=[Depends(auth.require("read"))])
 def api_facets(severity: str = "all", screen_name: str = "all", q: str = "",
                country: str = "all", industry: str = "all", category: str = "all",
                status: str = "all", tag: str = ""):
@@ -82,7 +83,7 @@ def api_facets(severity: str = "all", screen_name: str = "all", q: str = "",
                      industry=industry, category=category, status=status, tag=tag.strip())
 
 
-@router.get("/api/categories")
+@router.get("/api/categories", dependencies=[Depends(auth.require("read"))])
 def api_categories():
     """情报分类去重计数"""
     return {"items": db.category_facets()}
@@ -108,14 +109,14 @@ class CleanupBody(BaseModel):
     keep_days: int = 7
 
 
-@router.post("/api/tweets/{tid}/flag")
+@router.post("/api/tweets/{tid}/flag", dependencies=[Depends(auth.require("write"))])
 def api_tweet_flag(tid: int, body: FlagBody):
     if not db.set_tweet_flags(tid, read=body.read, ignored=body.ignored, starred=body.starred):
         raise HTTPException(400, "无变更字段")
     return {"ok": True}
 
 
-@router.post("/api/tweets/batch")
+@router.post("/api/tweets/batch", dependencies=[Depends(auth.require("write"))])
 def api_tweets_batch(body: BatchBody):
     if body.op == "ai_analyze":
         r = aimod.batch_process(body.ids, "analyze")
@@ -127,7 +128,7 @@ def api_tweets_batch(body: BatchBody):
     return {"ok": True, "op": body.op, "affected": n}
 
 
-@router.post("/api/tweets/cleanup")
+@router.post("/api/tweets/cleanup", dependencies=[Depends(auth.require("write"))])
 def api_tweets_cleanup(body: CleanupBody):
     if body.keep_days not in (1, 2, 3, 7, 30):
         raise HTTPException(400, "keep_days 仅支持 1/2/3/7/30")
@@ -138,13 +139,18 @@ def api_tweets_cleanup(body: CleanupBody):
 MEDIA_HOSTS = {"pbs.twimg.com", "ton.twimg.com"}
 
 
-@router.get("/api/media")
+@router.get("/api/media", dependencies=[Depends(auth.require("read"))])
 def api_media(url: str):
     """推文截图代理：经抓取代理拉取 pbs.twimg.com 原图（解决客户端网络无法直连的问题）"""
     from urllib.parse import urlparse as _up
     host = (_up(url).netloc or "").lower()
     if host not in MEDIA_HOSTS:
         raise HTTPException(400, "仅允许代理 pbs.twimg.com / ton.twimg.com 图片")
+    try:
+        from app.safefetch import validate_url
+        validate_url(url, purpose="media")   # 协议/解析/IP 校验（域名已白名单，双重防护）
+    except Exception as e:
+        raise HTTPException(400, f"URL 未通过校验：{str(e)[:80]}")
     try:
         from app.twitter import _http_get
         cfg = load().get("x", {})
@@ -161,7 +167,7 @@ def api_media(url: str):
         raise HTTPException(502, f"图片拉取失败：{type(e).__name__}: {str(e)[:120]}")
 
 
-@router.post("/api/tweets/{tid}/ai")
+@router.post("/api/tweets/{tid}/ai", dependencies=[Depends(auth.require("write"))])
 def api_tweet_ai(tid: int, body: AiActionBody):
     if body.action not in ("analyze", "translate"):
         raise HTTPException(400, "action 只支持 analyze / translate")
@@ -231,7 +237,7 @@ def _sources_health(accounts):
     }
 
 
-@router.get("/api/stats")
+@router.get("/api/stats", dependencies=[Depends(auth.require("read"))])
 def api_stats():
     push_ok, push_total, push_sim = db.push_stats_today()
     a = db.ai_stats()
@@ -270,13 +276,13 @@ def _effective_interval_and_reschedule():
         pass
 
 
-@router.post("/api/fetch/run")
+@router.post("/api/fetch/run", dependencies=[Depends(auth.require("write"))])
 def api_fetch_run(bg: BackgroundTasks):
     bg.add_task(engine.run_fetch, True)
     return {"ok": True, "msg": "抓取任务已启动"}
 
 
-@router.get("/api/fetch/logs")
+@router.get("/api/fetch/logs", dependencies=[Depends(auth.require("read"))])
 def api_fetch_logs(limit: int = Query(30, ge=1, le=200)):
     """抓取日志：每轮的触发方式/到期与成功账号数/新增与 AI 数/分层追踪明细"""
     return {"items": db.list_fetch_logs(limit)}
@@ -284,12 +290,12 @@ def api_fetch_logs(limit: int = Query(30, ge=1, le=200)):
 
 # ---------- X 账号管理 ----------
 
-@router.get("/api/x/accounts")
+@router.get("/api/x/accounts", dependencies=[Depends(auth.require("read"))])
 def api_x_accounts():
     return {"items": db.list_x_accounts()}
 
 
-@router.post("/api/x/accounts")
+@router.post("/api/x/accounts", dependencies=[Depends(auth.require("write"))])
 def api_x_add(body: XAccountBody):
     name = body.screen_name.strip().lstrip("@")
     if not twitter.X_ACC_RE.match(name):
@@ -300,7 +306,7 @@ def api_x_add(body: XAccountBody):
     return {"ok": True, "screen_name": name}
 
 
-@router.post("/api/x/accounts/{acc_id}/toggle")
+@router.post("/api/x/accounts/{acc_id}/toggle", dependencies=[Depends(auth.require("write"))])
 def api_x_toggle(acc_id: int, body: ToggleBody):
     if not db.update_x_account(acc_id, enabled=body.enabled):
         raise HTTPException(404, "账号不存在")
@@ -308,7 +314,7 @@ def api_x_toggle(acc_id: int, body: ToggleBody):
     return {"ok": True, "enabled": body.enabled}
 
 
-@router.put("/api/x/accounts/{acc_id}")
+@router.put("/api/x/accounts/{acc_id}", dependencies=[Depends(auth.require("write"))])
 def api_x_update(acc_id: int, body: XAccountBody):
     name = body.screen_name.strip().lstrip("@") if body.screen_name else None
     if name and not twitter.X_ACC_RE.match(name):
@@ -321,7 +327,7 @@ def api_x_update(acc_id: int, body: XAccountBody):
     return {"ok": True}
 
 
-@router.delete("/api/x/accounts/{acc_id}")
+@router.delete("/api/x/accounts/{acc_id}", dependencies=[Depends(auth.require("write"))])
 def api_x_delete(acc_id: int):
     if not db.delete_x_account(acc_id):
         raise HTTPException(404, "账号不存在")
@@ -338,12 +344,12 @@ class RssBody(BaseModel):
     fetch_minutes: int | None = None
 
 
-@router.get("/api/rss/sources")
+@router.get("/api/rss/sources", dependencies=[Depends(auth.require("read"))])
 def api_rss_list():
     return {"items": db.list_rss_sources()}
 
 
-@router.post("/api/rss/sources")
+@router.post("/api/rss/sources", dependencies=[Depends(auth.require("write"))])
 def api_rss_add(body: RssBody):
     url = body.url.strip()
     if not url.startswith(("http://", "https://")):
@@ -359,13 +365,13 @@ def api_rss_add(body: RssBody):
     return {"ok": True, "name": name}
 
 
-@router.post("/api/rss/test")
+@router.post("/api/rss/test", dependencies=[Depends(auth.require("write"))])
 def api_rss_test(body: RssBody):
     """连通性测试（不入库）：返回条目数与样例标题"""
     return rssfetch.test_source(body.url.strip())
 
 
-@router.post("/api/rss/sources/{src_id}/toggle")
+@router.post("/api/rss/sources/{src_id}/toggle", dependencies=[Depends(auth.require("write"))])
 def api_rss_toggle(src_id: int, body: ToggleBody):
     if not db.update_rss_source(src_id, enabled=body.enabled):
         raise HTTPException(404, "源不存在")
@@ -373,7 +379,7 @@ def api_rss_toggle(src_id: int, body: ToggleBody):
     return {"ok": True, "enabled": body.enabled}
 
 
-@router.put("/api/rss/sources/{src_id}")
+@router.put("/api/rss/sources/{src_id}", dependencies=[Depends(auth.require("write"))])
 def api_rss_update(src_id: int, body: RssBody):
     if not db.update_rss_source(src_id,
                                 name=(body.name.strip() or None) if body.name else None,
@@ -384,7 +390,7 @@ def api_rss_update(src_id: int, body: RssBody):
     return {"ok": True}
 
 
-@router.delete("/api/rss/sources/{src_id}")
+@router.delete("/api/rss/sources/{src_id}", dependencies=[Depends(auth.require("write"))])
 def api_rss_delete(src_id: int):
     if not db.delete_rss_source(src_id):
         raise HTTPException(404, "源不存在")
@@ -397,13 +403,13 @@ def api_rss_delete(src_id: int):
 X_SETTINGS_FIELDS = {"first_fetch_limit", "max_items", "show_replies"}
 
 
-@router.get("/api/x/settings")
+@router.get("/api/x/settings", dependencies=[Depends(auth.require("read"))])
 def api_x_settings():
     x = dict(load().get("x", {}))
     return {"values": {k: x.get(k) for k in X_SETTINGS_FIELDS}}
 
 
-@router.put("/api/x/settings")
+@router.put("/api/x/settings", dependencies=[Depends(auth.require("write"))])
 def api_x_settings_put(body: ValuesBody):
     values = {}
     for k, v in (body.values or {}).items():
@@ -423,7 +429,7 @@ def api_x_settings_put(body: ValuesBody):
 
 # ---------- AI 设置 ----------
 
-@router.get("/api/ai/config")
+@router.get("/api/ai/config", dependencies=[Depends(auth.require("read"))])
 def api_ai_config():
     ai = dict(load().get("ai", {}))
     out = {k: ai.get(k) for k in ("enabled", "base_url", "model", "auto_analyze", "auto_limit")}
@@ -432,7 +438,7 @@ def api_ai_config():
     return {"values": out}
 
 
-@router.put("/api/ai/config")
+@router.put("/api/ai/config", dependencies=[Depends(auth.require("write"))])
 def api_ai_config_put(body: ValuesBody):
     allowed = {"enabled", "base_url", "model", "api_key", "auto_analyze", "auto_limit"}
     values = {k: v for k, v in (body.values or {}).items() if k in allowed}
@@ -442,7 +448,7 @@ def api_ai_config_put(body: ValuesBody):
     return {"ok": True, "saved": list(clean.keys())}
 
 
-@router.post("/api/ai/test")
+@router.post("/api/ai/test", dependencies=[Depends(auth.require("write"))])
 def api_ai_test():
     try:
         return aimod.test_ai()
@@ -450,7 +456,7 @@ def api_ai_test():
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}"}
 
 
-@router.get("/api/ai/models")
+@router.get("/api/ai/models", dependencies=[Depends(auth.require("read"))])
 def api_ai_models():
     """拉取 AI 厂商 /models 模型列表（OpenAI 兼容端点，按当前已保存配置）"""
     try:
@@ -460,20 +466,20 @@ def api_ai_models():
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}", "models": []}
 
 
-@router.get("/api/ai/logs")
+@router.get("/api/ai/logs", dependencies=[Depends(auth.require("read"))])
 def api_ai_logs(limit: int = Query(100, ge=1, le=500), action: str = Query("")):
     """AI 调用审计日志：动作（研判/翻译/分类/测试）/模型/耗时/状态；附今日统计"""
     return {"items": db.list_ai_logs(limit, action.strip()), "stats": db.ai_log_stats()}
 
 
-@router.post("/api/ai/classify")
+@router.post("/api/ai/classify", dependencies=[Depends(auth.require("write"))])
 def api_ai_classify(bg: BackgroundTasks, limit: int = Query(200, ge=10, le=200)):
     """对近期未分类推文做情报分类：脚本规则优先，AI 批量兜底（后台执行）"""
     bg.add_task(engine.classify_recent, limit)
     return {"ok": True, "msg": f"分类任务已启动（本轮最多 {limit} 条）"}
 
 
-@router.post("/api/ai/backfill")
+@router.post("/api/ai/backfill", dependencies=[Depends(auth.require("write"))])
 def api_ai_backfill(bg: BackgroundTasks, limit: int = Query(10, ge=1, le=50)):
     """为缺地区标签的旧推文批量补跑 AI 打标（后台执行）"""
     bg.add_task(engine.backfill_tags, limit)
@@ -506,7 +512,7 @@ def _normalize_ai_fields(f):
     }
 
 
-@router.post("/api/ai/analyze")
+@router.post("/api/ai/analyze", dependencies=[Depends(auth.require("write"))])
 def api_ai_analyze(body: AiTextBody):
     """研判任意文本（不需要先入库）：返回结构化威胁研判结果"""
     if not body.text.strip():
@@ -518,7 +524,7 @@ def api_ai_analyze(body: AiTextBody):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
-@router.post("/api/ai/translate")
+@router.post("/api/ai/translate", dependencies=[Depends(auth.require("write"))])
 def api_ai_translate(body: AiTextBody):
     """翻译任意文本为中文：返回 {title_zh, text_zh}"""
     if not body.text.strip():
@@ -530,7 +536,7 @@ def api_ai_translate(body: AiTextBody):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
-@router.post("/api/ai/tag")
+@router.post("/api/ai/tag", dependencies=[Depends(auth.require("write"))])
 def api_ai_tag(body: AiTextBody):
     """地理/实体标签抽取：返回 国家/省州/城市/涉事单位/行业"""
     if not body.text.strip():
@@ -552,7 +558,7 @@ class AiTaskBody(BaseModel):
     limit: int = 20
 
 
-@router.post("/api/ai/tasks")
+@router.post("/api/ai/tasks", dependencies=[Depends(auth.require("write"))])
 def api_ai_task_submit(body: AiTaskBody):
     """提交后台 AI 任务（页面只提交与查询进度，不再承担长批量请求）。
     op: analyze_backlog=未研判+首败重试；retry_failed=研判失败积压。"""
@@ -567,14 +573,14 @@ def api_ai_task_submit(body: AiTaskBody):
     return {"ok": True, "id": tid, "op": body.op, "limit": limit}
 
 
-@router.get("/api/ai/tasks")
+@router.get("/api/ai/tasks", dependencies=[Depends(auth.require("read"))])
 def api_ai_tasks(limit: int = 20):
     items = db.list_ai_tasks(limit)
     active = [t for t in items if t["status"] in ("待处理", "处理中")]
     return {"items": items, "active": len(active)}
 
 
-@router.post("/api/ai/tasks/{task_id}/cancel")
+@router.post("/api/ai/tasks/{task_id}/cancel", dependencies=[Depends(auth.require("write"))])
 def api_ai_task_cancel(task_id: int):
     with db._lock:
         cur = db.get_conn().execute(
@@ -599,7 +605,7 @@ class ManualBody(BaseModel):
     note: str = ""
 
 
-@router.post("/api/tweets/{tid}/manual")
+@router.post("/api/tweets/{tid}/manual", dependencies=[Depends(auth.require("write"))])
 def api_tweet_manual(tid: int, body: ManualBody):
     """人工修订：写入人工有效值并置 ai_modified=1；
     此后自动研判/批量补标跳过该推文（有效值在列表/筛选/推送/报告/导出读取一致）。"""
@@ -630,7 +636,7 @@ def api_tweet_manual(tid: int, body: ManualBody):
 PUSH_FILTER_FIELDS = {"mode", "min_severity", "categories", "countries", "industries", "tags", "keywords"}
 
 
-@router.get("/api/push/filters")
+@router.get("/api/push/filters", dependencies=[Depends(auth.require("read"))])
 def api_push_filters():
     f = dict(load().get("push", {}).get("filters", {}))
     return {"values": {k: f.get(k, "") for k in PUSH_FILTER_FIELDS}}
@@ -657,7 +663,7 @@ def _save_rules(rules):
     save_runtime({"push": {"rules": rules}})
 
 
-@router.get("/api/push/rules")
+@router.get("/api/push/rules", dependencies=[Depends(auth.require("read"))])
 def api_push_rules():
     cfg = load()
     rules = _rules(cfg)
@@ -671,7 +677,7 @@ def api_push_rules():
     return {"items": [{**r, "refs": ref.get(r.get("id"), 0)} for r in rules]}
 
 
-@router.post("/api/push/rules")
+@router.post("/api/push/rules", dependencies=[Depends(auth.require("write"))])
 def api_push_rules_add(body: RuleBody):
     cfg = load()
     rules = _rules(cfg)
@@ -696,7 +702,7 @@ def api_push_rules_add(body: RuleBody):
     return {"ok": True, "id": rule["id"]}
 
 
-@router.put("/api/push/rules/{rid}")
+@router.put("/api/push/rules/{rid}", dependencies=[Depends(auth.require("write"))])
 def api_push_rules_update(rid: str, body: RuleBody):
     cfg = load()
     rules = _rules(cfg)
@@ -718,7 +724,7 @@ def api_push_rules_update(rid: str, body: RuleBody):
     raise HTTPException(404, "规则不存在")
 
 
-@router.delete("/api/push/rules/{rid}")
+@router.delete("/api/push/rules/{rid}", dependencies=[Depends(auth.require("write"))])
 def api_push_rules_del(rid: str):
     cfg = load()
     rules = _rules(cfg)
@@ -743,7 +749,7 @@ def api_push_rules_del(rid: str):
     return {"ok": True, "unbound": len(changed)}
 
 
-@router.put("/api/push/filters")
+@router.put("/api/push/filters", dependencies=[Depends(auth.require("write"))])
 def api_push_filters_put(body: ValuesBody):
     values = {k: str(v).strip() for k, v in (body.values or {}).items() if k in PUSH_FILTER_FIELDS}
     if values:
@@ -778,7 +784,7 @@ def _save_channel(key, cc):
     save_runtime({"channels": {key: cc}})
 
 
-@router.get("/api/channels")
+@router.get("/api/channels", dependencies=[Depends(auth.require("read"))])
 def api_channels():
     cfg = load()
     items = []
@@ -807,7 +813,7 @@ class InstanceBody(BaseModel):
     filter_rule: str = ""  # 绑定的推送规则 id；空=使用默认规则
 
 
-@router.post("/api/channels/{key}/instances")
+@router.post("/api/channels/{key}/instances", dependencies=[Depends(auth.require("write"))])
 def api_channel_add(key: str, body: InstanceBody):
     if key not in CHANNEL_SECRET_FIELDS:
         raise HTTPException(404, "通道不存在")
@@ -824,7 +830,7 @@ def api_channel_add(key: str, body: InstanceBody):
     return {"ok": True, "idx": len(cc["instances"]) - 1}
 
 
-@router.put("/api/channels/{key}/instances/{idx}")
+@router.put("/api/channels/{key}/instances/{idx}", dependencies=[Depends(auth.require("write"))])
 def api_channel_update(key: str, idx: int, body: InstanceBody):
     if key not in CHANNEL_SECRET_FIELDS:
         raise HTTPException(404, "通道不存在")
@@ -843,7 +849,7 @@ def api_channel_update(key: str, idx: int, body: InstanceBody):
     return {"ok": True}
 
 
-@router.delete("/api/channels/{key}/instances/{idx}")
+@router.delete("/api/channels/{key}/instances/{idx}", dependencies=[Depends(auth.require("write"))])
 def api_channel_del(key: str, idx: int):
     if key not in CHANNEL_SECRET_FIELDS:
         raise HTTPException(404, "通道不存在")
@@ -855,7 +861,7 @@ def api_channel_del(key: str, idx: int):
     return {"ok": True}
 
 
-@router.get("/api/channels/{key}/instances/{idx}/config")
+@router.get("/api/channels/{key}/instances/{idx}/config", dependencies=[Depends(auth.require("read"))])
 def api_channel_inst_config(key: str, idx: int):
     """实例配置（凭据脱敏回显，含 filter_rule 绑定）"""
     if key not in CHANNEL_SECRET_FIELDS:
@@ -872,7 +878,7 @@ def api_channel_inst_config(key: str, idx: int):
             "iid": str(inst.get("iid") or ""), "enabled_since": inst.get("enabled_since", "")}
 
 
-@router.post("/api/channels/{key}/instances/{idx}/test")
+@router.post("/api/channels/{key}/instances/{idx}/test", dependencies=[Depends(auth.require("write"))])
 def api_channel_inst_test(key: str, idx: int):
     """单实例测试推送"""
     if key not in CHANNEL_SECRET_FIELDS:
@@ -900,7 +906,7 @@ def api_channel_inst_test(key: str, idx: int):
 
 
 # 兼容旧前端/外部调用：按类型整体测试（第一个实例）
-@router.post("/api/channels/{key}/test")
+@router.post("/api/channels/{key}/test", dependencies=[Depends(auth.require("write"))])
 def api_channel_test(key: str):
     r = engine.test_channel(key, load())
     if r is None:
@@ -918,7 +924,7 @@ class BackfillBody(BaseModel):
     preview: bool = True
 
 
-@router.post("/api/channels/{key}/instances/{idx}/backfill")
+@router.post("/api/channels/{key}/instances/{idx}/backfill", dependencies=[Depends(auth.require("write"))])
 def api_instance_backfill(key: str, idx: int, body: BackfillBody):
     """历史补发：为指定实例按入库时间窗创建投递记录（预览或执行）。
     显式操作——默认迁移不补发历史；执行受 limit 限速限范围。"""
@@ -953,7 +959,7 @@ def api_instance_backfill(key: str, idx: int, body: BackfillBody):
             "since": since, "until": until}
 
 
-@router.get("/api/admin/migration/preview")
+@router.get("/api/admin/migration/preview", dependencies=[Depends(auth.require("admin"))])
 def api_migration_preview():
     """迁移预览（只读）：涉及记录数、历史截止点（enabled_since）、投递状态分布、未知数量。
     迁移本身幂等可重复执行：新表 IF NOT EXISTS + report_refs 回填 INSERT OR IGNORE + iid 补齐。"""
@@ -1010,7 +1016,7 @@ class ReportDeliverBody(BaseModel):
     word_limit: int | None = None
 
 
-@router.post("/api/reports/tasks")
+@router.post("/api/reports/tasks", dependencies=[Depends(auth.require("write"))])
 def api_reports_create(body: ReportTaskBody):
     if not body.title.strip():
         raise HTTPException(400, "title 不能为空")
@@ -1019,14 +1025,14 @@ def api_reports_create(body: ReportTaskBody):
     return r
 
 
-@router.get("/api/reports/tasks")
+@router.get("/api/reports/tasks", dependencies=[Depends(auth.require("read"))])
 def api_reports_list(status: str = "", limit: int = Query(20, ge=1, le=100),
                      offset: int = Query(0, ge=0)):
     total, items = reports.list_tasks(status, limit, offset)
     return {"tasks": items, "total": total}
 
 
-@router.get("/api/reports/tasks/{tid}/package")
+@router.get("/api/reports/tasks/{tid}/package", dependencies=[Depends(auth.require("read"))])
 def api_reports_package(tid: int):
     t = reports.get_task(tid)
     if not t:
@@ -1037,7 +1043,7 @@ def api_reports_package(tid: int):
     return FileResponse(ppath, media_type="application/json", filename=os.path.basename(ppath))
 
 
-@router.post("/api/reports/tasks/{tid}/status")
+@router.post("/api/reports/tasks/{tid}/status", dependencies=[Depends(auth.require("write"))])
 def api_reports_status(tid: int, body: ReportStatusBody):
     if body.action == "claim":
         ok = reports.claim(tid, body.assignee)
@@ -1056,7 +1062,7 @@ def api_reports_status(tid: int, body: ReportStatusBody):
     raise HTTPException(400, "action 仅支持 claim/heartbeat/abort")
 
 
-@router.post("/api/reports/tasks/{tid}/deliver")
+@router.post("/api/reports/tasks/{tid}/deliver", dependencies=[Depends(auth.require("write"))])
 def api_reports_deliver(tid: int, body: ReportDeliverBody):
     r = reports.deliver(tid, body.model_dump())
     if r is None:
@@ -1066,7 +1072,7 @@ def api_reports_deliver(tid: int, body: ReportDeliverBody):
     return r
 
 
-@router.post("/api/reports/tasks/{tid}/push")
+@router.post("/api/reports/tasks/{tid}/push", dependencies=[Depends(auth.require("write"))])
 def api_reports_push(tid: int):
     r = reports.push_task(tid)
     if r is None:
@@ -1076,7 +1082,7 @@ def api_reports_push(tid: int):
     return r
 
 
-@router.delete("/api/reports/tasks/{tid}")
+@router.delete("/api/reports/tasks/{tid}", dependencies=[Depends(auth.require("write"))])
 def api_reports_delete(tid: int):
     ok = reports.delete_task(tid)
     if not ok:
@@ -1086,6 +1092,74 @@ def api_reports_delete(tid: int):
     return {"ok": True, "deleted": tid}
 
 
-@router.get("/api/push/logs")
+@router.get("/api/push/logs", dependencies=[Depends(auth.require("read"))])
 def api_push_logs(limit: int = Query(20, ge=1, le=100)):
     return {"items": db.list_push_logs(limit)}
+
+
+# ---------- 认证（第四批） ----------
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class TokenBody(BaseModel):
+    name: str
+    role: str = "read"
+
+
+@router.post("/api/auth/login")
+def api_auth_login(body: LoginBody, response: Response):
+    if not auth.init_ready():
+        raise HTTPException(503, "系统未初始化管理员：请在本机创建 data/admin_init.txt 后重启")
+    u = auth.authenticate(body.username.strip(), body.password)
+    if not u:
+        raise HTTPException(401, "用户名或密码错误")
+    sid, csrf = auth.new_session(u["username"])
+    response.set_cookie(
+        auth.COOKIE_NAME, sid, max_age=auth.SESSION_HOURS * 3600,
+        httponly=True, samesite="lax", secure=False, path="/")
+    return {"ok": True, "username": u["username"], "role": u["role"], "csrf": csrf}
+
+
+@router.post("/api/auth/logout")
+def api_auth_logout(request: Request):
+    sid = request.cookies.get(auth.COOKIE_NAME, "")
+    if sid:
+        auth.drop_session(sid)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE_NAME, path="/")
+    return resp
+
+
+@router.get("/api/auth/me")
+def api_auth_me(request: Request):
+    p = auth._extract_principal(request)
+    if not p:
+        raise HTTPException(401, "未认证")
+    return {"ok": True, "username": p.get("username", ""), "role": p.get("role", ""),
+            "kind": p.get("kind", ""), "csrf": p.get("csrf", "")}
+
+
+@router.get("/api/auth/tokens", dependencies=[Depends(auth.require("admin"))])
+def api_auth_tokens():
+    return {"items": auth.list_tokens()}
+
+
+@router.post("/api/auth/tokens", dependencies=[Depends(auth.require("admin"))])
+def api_auth_token_add(body: TokenBody):
+    if not body.name.strip():
+        raise HTTPException(400, "Token 名称不能为空")
+    try:
+        raw = auth.create_token(body.name.strip(), body.role)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "token": raw, "note": "完整 Token 仅显示这一次，请立即保存"}
+
+
+@router.post("/api/auth/tokens/{tid}/revoke", dependencies=[Depends(auth.require("admin"))])
+def api_auth_token_revoke(tid: int):
+    if not auth.revoke_token(tid):
+        raise HTTPException(404, "Token 不存在")
+    return {"ok": True}

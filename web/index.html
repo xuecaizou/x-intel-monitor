@@ -671,7 +671,33 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     clearTimeout(snT);snT=setTimeout(function(){el.classList.remove('show');},3800);}
   function countUp(el,to){if(lastToday===to){el.textContent=to;return;}lastToday=to;
     el.textContent=to;}
-  function jget(url){return fetch(url).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});}
+  /* 认证（第四批）：读取 CSRF，401 统一跳登录，写请求自动带 X-CSRF-Token */
+  var XCSRF = '';
+  function ensureCsrf(){
+    if(XCSRF)return Promise.resolve(XCSRF);
+    return fetch('/api/auth/me').then(function(r){
+      if(r.status===401){location.href='/login';throw new Error('401');}
+      return r.json();
+    }).then(function(d){XCSRF=d.csrf||'';return XCSRF;}).catch(function(){return '';});
+  }
+  function apiFetch(url,opts){
+    opts=opts||{};
+    var m=(opts.method||'GET').toUpperCase();
+    return ensureCsrf().then(function(tok){
+      opts.headers=Object.assign({},opts.headers||{});
+      if(tok&&m!=='GET')opts.headers['X-CSRF-Token']=tok;
+      return fetch(url,opts).then(function(r){
+        if(r.status===401){location.href='/login';throw new Error('401');}
+        return r;
+      });
+    });
+  }
+  window.__logout=function(){
+    ensureCsrf().then(function(tok){
+      return fetch('/api/auth/logout',{method:'POST',headers:{'X-CSRF-Token':tok}});
+    }).then(function(){location.href='/login';});
+  };
+  function jget(url){return apiFetch(url).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});}
   function shortTime(s){
     if(!s)return '';
     /* 库存的是 GMT 裸值（如 '2026-10-30 15:18'），转本地时区再显示 */
@@ -758,7 +784,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }
   window.__flag=function(id,fields,btn){
     if(btn)btn.disabled=true;
-    fetch('/api/tweets/'+id+'/flag',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/tweets/'+id+'/flag',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(fields)}).then(function(){
         if(btn)btn.disabled=false;loadTweets();loadStats();
     }).catch(function(){if(btn)btn.disabled=false;snack('操作失败');});
@@ -841,7 +867,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }
   window.__ai=function(tid,action,btn){
     var old=btn.textContent;btn.disabled=true;btn.textContent='…';
-    fetch('/api/tweets/'+tid+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/tweets/'+tid+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:action})})
       .then(function(r){return r.json();})
       .then(function(r){
@@ -937,7 +963,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       }).join(''):'<div class="empty">暂无账号，请在上方添加</div>';
       document.querySelectorAll('#xaccounts .freqsel').forEach(function(sel){
         sel.addEventListener('change',function(){
-          fetch('/api/x/accounts/'+sel.getAttribute('data-id'),{method:'PUT',
+          apiFetch('/api/x/accounts/'+sel.getAttribute('data-id'),{method:'PUT',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({fetch_minutes:parseInt(sel.value,10)})})
             .then(function(){snack('监控频率已更新');loadAccounts();});
@@ -945,14 +971,14 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       });
       document.querySelectorAll('#xaccounts .xsw').forEach(function(sw){
         sw.addEventListener('change',function(){
-          fetch('/api/x/accounts/'+sw.getAttribute('data-id')+'/toggle',{method:'POST',
+          apiFetch('/api/x/accounts/'+sw.getAttribute('data-id')+'/toggle',{method:'POST',
             headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:sw.checked})})
             .then(function(){snack(sw.checked?'账号已启用，下轮抓取生效':'账号已停用');loadAccounts();loadStats();});
         });
       });
       document.querySelectorAll('#xaccounts .xdel').forEach(function(b){
         b.addEventListener('click',function(){
-          fetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'DELETE'})
+          apiFetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'DELETE'})
             .then(function(){snack('已删除监控账号');loadAccounts();loadStats();});
         });
       });
@@ -960,7 +986,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         b.addEventListener('click',function(){
           var nn=window.prompt('修改用户名（不含 @）：',b.getAttribute('data-name'));
           if(!nn)return;
-          fetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'PUT',
+          apiFetch('/api/x/accounts/'+b.getAttribute('data-id'),{method:'PUT',
             headers:{'Content-Type':'application/json'},body:JSON.stringify({screen_name:nn.trim(),display:nn.trim()})})
             .then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
             .then(function(res){snack(res.ok?('已更新为 @'+nn.trim()):('修改失败：'+((res.d&&res.d.detail)||'')));loadAccounts();});
@@ -970,7 +996,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }
   document.getElementById('xaddbtn').addEventListener('click',function(){
     var v=document.getElementById('xnew').value.trim();if(!v)return;
-    fetch('/api/x/accounts',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/x/accounts',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({screen_name:v})})
       .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
       .then(function(res){
@@ -1000,7 +1026,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var b=this,u=document.getElementById('rurl').value.trim();
     if(!u){snack('请先填 RSS 地址');return;}
     b.disabled=true;b.textContent='…';
-    fetch('/api/rss/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})})
+    apiFetch('/api/rss/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})})
       .then(function(r){return r.json();})
       .then(function(r){
         b.disabled=false;b.textContent='测试';
@@ -1011,7 +1037,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   document.getElementById('raddbtn').addEventListener('click',function(){
     var u=document.getElementById('rurl').value.trim();
     if(!u){snack('请先填 RSS 地址（可先点「测试」）');return;}
-    fetch('/api/rss/sources',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/rss/sources',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({name:document.getElementById('rname').value.trim(),url:u})})
       .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
       .then(function(res){
@@ -1023,18 +1049,18 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   });
   document.getElementById('rssources').addEventListener('change',function(e){
     var w=e.target.closest('.rssw');
-    if(w){fetch('/api/rss/sources/'+w.getAttribute('data-id')+'/toggle',{method:'POST',
+    if(w){apiFetch('/api/rss/sources/'+w.getAttribute('data-id')+'/toggle',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:w.checked})})
       .then(function(){snack(w.checked?'源已启用':'源已停用');});return;}
     var fs=e.target.closest('.freqsel');
-    if(fs){fetch('/api/rss/sources/'+fs.getAttribute('data-rss'),{method:'PUT',
+    if(fs){apiFetch('/api/rss/sources/'+fs.getAttribute('data-rss'),{method:'PUT',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({fetch_minutes:parseInt(fs.value,10)})})
       .then(function(){snack('抓取频率已保存');});}
   });
   document.getElementById('rssources').addEventListener('click',function(e){
     var d=e.target.closest('.rssdel');
     if(d){if(!confirm('删除该 RSS 源？'))return;
-      fetch('/api/rss/sources/'+d.getAttribute('data-id'),{method:'DELETE'})
+      apiFetch('/api/rss/sources/'+d.getAttribute('data-id'),{method:'DELETE'})
         .then(function(r){return r.json();})
         .then(function(r){snack(r.ok?'源已删除':'删除失败');loadRss();});}
   });
@@ -1046,7 +1072,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }).catch(function(){});
   document.getElementById('firstlimit').addEventListener('change',function(){
     var val=parseInt(this.value,10);
-    fetch('/api/x/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/x/settings',{method:'PUT',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({values:{first_fetch_limit:val}})})
       .then(function(r){return r.json();})
       .then(function(res){snack(res.ok?('初次抓取条数已设为 '+val+' 条（新账号生效）'):'保存失败');});
@@ -1097,7 +1123,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         var key=document.getElementById('ai-key').value.trim();
         if(key&&key.indexOf('****')<0)values.api_key=key;
         // 先保存（保证服务端用最新地址/Key 拉取），再取 /models
-        fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+        apiFetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({values:values})})
           .then(function(r){return r.json();})
           .then(function(){return fetch('/api/ai/models').then(function(r){return r.json();});})
@@ -1121,21 +1147,21 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           auto_analyze:document.getElementById('ai-auto').checked};
         var key=document.getElementById('ai-key').value.trim();
         if(key&&key.indexOf('****')<0)values.api_key=key;
-        fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+        apiFetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({values:values})})
           .then(function(r){return r.json();})
           .then(function(res){snack(res.ok?'AI 设置已保存':'保存失败');loadAiConfig();});
       });
       document.getElementById('ai-test').addEventListener('click',function(){
         var b=document.getElementById('ai-test');b.disabled=true;b.textContent='…';
-        fetch('/api/ai/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+        apiFetch('/api/ai/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
           b.disabled=false;b.textContent='测试连通';
           snack(r.ok?('AI 连通正常（'+r.model+'）：'+r.reply):('AI 连通失败：'+(r.error||'')));
         }).catch(function(){b.disabled=false;b.textContent='测试连通';snack('请求失败');});
       });
       document.getElementById('ai-classify').addEventListener('click',function(){
         var b=document.getElementById('ai-classify');b.disabled=true;b.textContent='…';
-        fetch('/api/ai/classify?limit=200',{method:'POST'}).then(function(r){return r.json();}).then(function(res){
+        apiFetch('/api/ai/classify?limit=200',{method:'POST'}).then(function(r){return r.json();}).then(function(res){
           b.disabled=false;b.textContent='AI 分类';
           if(res.ok){snack('分类任务已启动（后台执行，200 条约 3-6 分钟），完成后自动按分类更新');}
           else snack('启动失败');
@@ -1143,7 +1169,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       });
       document.getElementById('ai-backfill').addEventListener('click',function(){
         var b=document.getElementById('ai-backfill');b.disabled=true;b.textContent='…';
-        fetch('/api/ai/backfill?limit=10',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+        apiFetch('/api/ai/backfill?limit=10',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
           b.disabled=false;b.textContent='补齐地区标签';
           if(r.ok){snack('补标任务已启动（后台执行，每批 10 条），稍后刷新查看');setTimeout(loadTweets,8000);}
           else snack('启动失败');
@@ -1226,7 +1252,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           '<span class="hint">对摘要与即时推送同时生效；命名规则供通道实例按需绑定</span></div>';
         ['pf-cat','pf-ctry','pf-ind','pf-tags'].forEach(bindTokenField);
         document.getElementById('pf-save').addEventListener('click',function(){
-          fetch('/api/push/filters',{method:'PUT',headers:{'Content-Type':'application/json'},
+          apiFetch('/api/push/filters',{method:'PUT',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({values:{
               mode:document.getElementById('pf-mode').value,
               min_severity:document.getElementById('pf-sev').value,
@@ -1280,7 +1306,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       box.querySelectorAll('.pfrdel').forEach(function(b){
         b.addEventListener('click',function(){
           if(!confirm('删除该规则？绑定的实例将回退默认规则。'))return;
-          fetch('/api/push/rules/'+b.getAttribute('data-id'),{method:'DELETE'})
+          apiFetch('/api/push/rules/'+b.getAttribute('data-id'),{method:'DELETE'})
             .then(function(r){return r.json();})
             .then(function(r){snack(r.ok?'规则已删除（'+(r.unbound||0)+' 个实例回退默认）':'删除失败');loadPushRules();loadChannels();});
         });
@@ -1371,7 +1397,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           jget('/api/channels/'+sw.getAttribute('data-key')+'/instances/'+sw.getAttribute('data-idx')+'/config')
             .then(function(d2){
               var v=d2.values||{};
-              fetch('/api/channels/'+sw.getAttribute('data-key')+'/instances/'+sw.getAttribute('data-idx'),
+              apiFetch('/api/channels/'+sw.getAttribute('data-key')+'/instances/'+sw.getAttribute('data-idx'),
                 {method:'PUT',headers:{'Content-Type':'application/json'},
                  body:JSON.stringify({name:v.name||'',enabled:sw.checked,values:{},filter_rule:v.filter_rule||''})})
                 .then(function(){loadChannels();});
@@ -1382,7 +1408,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         b.addEventListener('click',function(){
           var key=b.getAttribute('data-key'),idx=b.getAttribute('data-idx');
           if(b.disabled)return;b.disabled=true;b.textContent='…';
-          fetch('/api/channels/'+key+'/instances/'+idx+'/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
+          apiFetch('/api/channels/'+key+'/instances/'+idx+'/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
             b.disabled=false;b.textContent='测试';
             snack((r.simulated?'[模拟] ':'')+'实例测试推送'+(r.ok?'成功':'失败')+(r.detail?'：'+r.detail.slice(0,80):''));
             loadLogs();
@@ -1392,7 +1418,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       document.querySelectorAll('#chlist .chidel').forEach(function(b){
         b.addEventListener('click',function(){
           if(!confirm('删除该推送实例？'))return;
-          fetch('/api/channels/'+b.getAttribute('data-key')+'/instances/'+b.getAttribute('data-idx'),{method:'DELETE'})
+          apiFetch('/api/channels/'+b.getAttribute('data-key')+'/instances/'+b.getAttribute('data-idx'),{method:'DELETE'})
             .then(function(){snack('实例已删除');loadChannels();});
         });
       });
@@ -1454,7 +1480,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
             var newIdx=(idx<0&&res.idx!=null)?res.idx:idx;
             if(!andTest){snack(idx<0?'实例已添加':'实例已保存');form.classList.remove('open');loadChannels();return null;}
             /* 保存并测试：行内「测试」只测已保存配置，这里先存后测避免"填了没保存测旧值" */
-            return fetch('/api/channels/'+key+'/instances/'+newIdx+'/test',{method:'POST'})
+            return apiFetch('/api/channels/'+key+'/instances/'+newIdx+'/test',{method:'POST'})
               .then(function(r){return r.json();})
               .then(function(t){
                 var ok=t.get&&t.get('status')==='成功';
@@ -1668,7 +1694,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       this.checked=false;
       snack('请先在右侧「AI 设置」中配置 Key 并启用 AI');return;
     }
-    fetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({values:{auto_analyze:on}})})
       .then(function(){snack(on?'AI 实时研判/翻译已开启（新推文自动处理）':'AI 实时研判/翻译已关闭（手动按钮仍可用）');});
   });
@@ -1732,7 +1758,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       if(op==='delete'&&!confirm('确认删除选中的 '+ids.length+' 条推文？（收藏的不会被本操作删除，勾选含收藏项时请留意）'))return;
       if((op==='ai_translate'||op==='ai_analyze')&&!confirm('对选中 '+ids.length+' 条执行 AI '+(op==='ai_translate'?'翻译':'研判')+'？每次最多处理 20 条，耗时较长。'))return;
       b.disabled=true;
-      fetch('/api/tweets/batch',{method:'POST',headers:{'Content-Type':'application/json'},
+      apiFetch('/api/tweets/batch',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({ids:ids,op:op})})
         .then(function(r){return r.json();})
         .then(function(res){
@@ -1823,7 +1849,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var kws=document.getElementById('rt-kw').value.split('\n').map(function(s){return s.trim();}).filter(Boolean);
     if(kws.length<3&&!confirm('关键词不足 3 组（当前 '+kws.length+' 组），规范要求 ≥3 组检索关键词，仍要创建吗？'))return;
     b.disabled=true;
-    fetch('/api/reports/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/reports/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({title:title,keywords:kws,tier:document.getElementById('rt-tier').value,
         notes:document.getElementById('rt-notes').value.trim(),tweet_ids:ids,
         auto_push:document.getElementById('rt-auto').checked?1:0})})
@@ -1857,7 +1883,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     }else if(act==='push'){
       if(!confirm('确认推送「'+t.title+'」？\n将按已启用通道分发（上次成功实例自动跳过）：企微附报告交付附件；钉钉/PushPlus/WxPusher 按能力发摘要。'))return;
       b.disabled=true;
-      fetch('/api/reports/tasks/'+id+'/push',{method:'POST'})
+      apiFetch('/api/reports/tasks/'+id+'/push',{method:'POST'})
         .then(function(r){return r.json();})
         .then(function(r){
           loadReportTasks();
@@ -1866,7 +1892,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         }).catch(function(){b.disabled=false;snack('请求失败');});
     }else if(act==='del'){
       if(!confirm('删除任务 #'+id+'「'+t.title+'」？'))return;
-      fetch('/api/reports/tasks/'+id,{method:'DELETE'})
+      apiFetch('/api/reports/tasks/'+id,{method:'DELETE'})
         .then(function(r){return r.json();})
         .then(function(r){
           if(r.ok)snack('任务已删除');else snack('删除失败：'+(r.detail||'写作中不可删'));
@@ -1880,7 +1906,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var days=document.getElementById('cleandays').value;
     if(!confirm('确认删除 '+days+' 天前的全部推文？（★ 收藏的永久保留）'))return;
     var b=document.getElementById('cleanbtn');b.disabled=true;
-    fetch('/api/tweets/cleanup',{method:'POST',headers:{'Content-Type':'application/json'},
+    apiFetch('/api/tweets/cleanup',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({keep_days:parseInt(days,10)})})
       .then(function(r){return r.json();})
       .then(function(res){
@@ -1894,7 +1920,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     if(busy)return;
     busy=true;setBusy(true);
     document.getElementById('livetext').textContent='抓取中…';
-    fetch('/api/fetch/run',{method:'POST'}).catch(function(){busy=false;setBusy(false);});
+    apiFetch('/api/fetch/run',{method:'POST'}).catch(function(){busy=false;setBusy(false);});
     loadStats();
   });
 

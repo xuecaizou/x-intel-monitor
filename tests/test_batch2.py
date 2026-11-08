@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8")
 
-TMP = Path(tempfile.mkdtemp(prefix="xintel-batch2-"))
+from tests.testenv import TestEnv  # noqa: E402
+env = TestEnv(forbid_network=False).start()
+TMP = env.tmp
 import app.db as db  # noqa: E402
 
 db.DATA_DIR = TMP

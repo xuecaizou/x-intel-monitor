@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>X-Intel 登录</title>
+<style>
+:root{--bg:#f6f8fb;--panel:#fff;--line:#e2e8f0;--txt:#0f172a;--mut:#64748b;--acc:#0891b2;--bad:#be123c}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(1200px 600px at 50% -10%,#e0f2fe,transparent),var(--bg);
+  font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--txt)}
+.card{width:min(380px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:26px 24px;box-shadow:0 18px 50px rgba(15,23,42,.07)}
+h1{margin:0 0 4px;font-size:20px;letter-spacing:.3px}
+.sub{color:var(--mut);font-size:12.5px;margin-bottom:20px}
+label{display:block;font-size:12.5px;color:var(--mut);margin:14px 0 6px}
+input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font:inherit;outline:none}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(8,145,178,.12)}
+button{width:100%;margin-top:20px;padding:11px;border:0;border-radius:10px;background:var(--acc);
+  color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+.err{margin-top:12px;color:var(--bad);font-size:12.5px;min-height:18px}
+.hint{margin-top:16px;font-size:12px;color:var(--mut);line-height:1.65;
+  border-top:1px dashed var(--line);padding-top:12px}
+code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>X-Intel 控制台</h1>
+  <div class="sub">威胁情报监控台 · 请登录后使用</div>
+  <form id="f">
+    <label for="u">用户名</label>
+    <input id="u" name="username" autocomplete="username" required>
+    <label for="p">密码</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button id="btn" type="submit">登录</button>
+    <div class="err" id="err"></div>
+  </form>
+  <div class="hint">
+    自动化调用可使用 API Token：<code>Authorization: Bearer xintel_…</code><br>
+    首次部署：在本机创建 <code>data/admin_init.txt</code>（用户名:密码，密码≥8 位）后重启服务。
+  </div>
+</div>
+<script>
+var f = document.getElementById('f'), btn = document.getElementById('btn'), err = document.getElementById('err');
+f.addEventListener('submit', function (e) {
+  e.preventDefault();
+  btn.disabled = true; err.textContent = '';
+  fetch('/api/auth/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: document.getElementById('u').value,
+                          password: document.getElementById('p').value})
+  }).then(function (r) {
+    return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+  }).then(function (res) {
+    if (res.ok) { location.href = '/'; return; }
+    err.textContent = (res.d && res.d.detail) || '登录失败';
+    btn.disabled = false;
+  }).catch(function () {
+    err.textContent = '网络错误，请重试';
+    btn.disabled = false;
+  });
+});
+</script>
+</body>
+</html>

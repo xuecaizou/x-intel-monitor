@@ -87,3 +87,34 @@
 3. 冒烟测试必须用 Python 3.14（G6 import engine → feedparser）。
 4. smoke 的 get() 内部已 URL 编码，测试代码不得预编码中文参数。
 5. 多标签页浏览器自动化必须按 URL 匹配标签，tabs.list()[0] 未必是目标。
+
+## 6. 认证与访问控制（第四批）
+
+```
+浏览器 → /login → POST /api/auth/login → HttpOnly Cookie(SameSite=Lax,12h) + CSRF token
+脚本/Agent → Authorization: Bearer xintel_xxx → 角色 read/write/admin
+```
+
+- 所有 API 路由在装饰器上挂 `dependencies=[Depends(auth.require("<role>"))]`：
+  read 20 个 / write 40 个 / admin 1 个；认证端点 3 个免依赖。
+- 会话写请求必须带 `X-CSRF-Token`（与登录返回的 csrf 比对）。
+- 未初始化（无管理员）时一律 503；不存在"匿名兜底"。
+- `db.update_ai()` 无版本检查（已知限制 L1）。
+
+## 7. 出站与文件安全（第四批）
+
+- `app/safefetch.py`：
+  - `safe_join(root, *parts)`：拒绝绝对路径/盘符/UNC/../URL 编码变体/符号链接逃逸
+  - `safe_report_path(deliver_dir, filename)`：deliver_dir 必须在 data/report_tasks 下，filename 必须纯文件名
+  - `validate_url(url, allow_private)`：协议白名单 + DNS 解析 + 私网/回环/链路本地/保留段拦截
+  - `fetch_limited`：禁自动重定向（逐跳校验）、≤3 次重定向、≤8MB
+- RSS 抓取与媒体代理均接入；`fetch.allow_private_urls` 为管理员显式例外。
+- **代理场景**：SOCKS 代理下 DNS 由代理解析，本层校验基于本地解析结果——
+  已记录限制：代理解析目标可能与本地不同，管理员配代理时应确保代理侧出口策略。
+
+## 8. 备份与恢复（第四批）
+
+- SQLite `journal_mode=WAL`；备份用 `sqlite3.Connection.backup()`（含 WAL 未检查点事务）
+- manifest：created_at / schema_version / code_commit / sqlite_integrity / files[sha256]
+- 恢复：仅到空目录（拒绝覆盖）+ integrity_check + 关键表计数 + 人工修订保留校验
+- 恢复后**不自动启动调度**（由部署脚本控制）；待发送/结果不明任务需人工处置

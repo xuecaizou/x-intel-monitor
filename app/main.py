@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import Request
+from fastapi.responses import FileResponse, RedirectResponse
 
-from . import db, engine
+from . import db, engine, auth
 from .config import load
 from .scheduler import start as start_scheduler
 from api.routes import router
@@ -19,6 +20,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 async def lifespan(app):
     db.init_db()
     db.ensure_default_x_accounts()
+    auth.init_auth_tables()
+    msg = auth.try_consume_init_file()
+    if msg:
+        print("[auth]", msg)
+    auth.seed_initial_admin_if_needed()
     start_scheduler(engine.run_fetch, load()["fetch"]["interval_minutes"])
     yield
 
@@ -33,17 +39,23 @@ def _no_cache(resp):
 
 
 @app.get("/")
-def index():
+def index(request: Request):
+    if not _page_authed(request):
+        return _no_cache(RedirectResponse("/login", status_code=302))
     return _no_cache(FileResponse(WEB_DIR / "index.html", media_type="text/html"))
 
 
 @app.get("/help")
-def help_page():
+def help_page(request: Request):
+    if not _page_authed(request):
+        return _no_cache(RedirectResponse("/login", status_code=302))
     return _no_cache(FileResponse(WEB_DIR / "help.html", media_type="text/html"))
 
 
 @app.get("/arch")
-def arch_page():
+def arch_page(request: Request):
+    if not _page_authed(request):
+        return _no_cache(RedirectResponse("/login", status_code=302))
     return _no_cache(FileResponse(WEB_DIR / "arch.html", media_type="text/html"))
 
 
@@ -57,6 +69,27 @@ def readme_md():
     return _no_cache(FileResponse(BASE_DIR / "README.md", media_type="text/markdown"))
 
 
+def _page_authed(request: Request) -> bool:
+    """页面鉴权：auth 关闭时放行；否则需要会话或 Bearer Token"""
+    if not (load().get("auth") or {}).get("enabled", True):
+        return True
+    if not auth.init_ready():
+        return False
+    sid = request.cookies.get(auth.COOKIE_NAME, "")
+    if auth.get_session(sid):
+        return True
+    a = request.headers.get("authorization", "")
+    if a.lower().startswith("bearer ") and auth.verify_token(a[7:].strip()):
+        return True
+    return False
+
+
+@app.get("/login")
+def login_page():
+    return _no_cache(FileResponse(WEB_DIR / "login.html", media_type="text/html"))
+
+
 @app.get("/api/healthz")
 def healthz():
+    """健康检查：最小信息，不含配置/路径/版本细节（匿名可访问）"""
     return {"ok": True}

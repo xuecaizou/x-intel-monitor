@@ -86,7 +86,14 @@ def fetch_source(src, cfg, limit=15):
     if not xcfg.get("proxy"):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
     try:
-        r = _http_get(url, xcfg, timeout=20)
+        # SSRF 校验（第四批）：仅 http/https；禁止回环/私网/链路本地（可用 fetch.allow_private_urls 显式放行）
+        from .safefetch import validate_url, UnsafeUrlError
+        allow_priv = bool((cfg.get("fetch") or {}).get("allow_private_urls"))
+        try:
+            validate_url(url, allow_private=allow_priv, purpose="rss")
+        except UnsafeUrlError as ue:
+            return 0, "", f"URL 拒绝（SSRF 防护）：{ue}"
+        r = _http_get(url, xcfg, timeout=max(20, int((src.get("_timeout") or 20))))
         if r.status_code != 200:
             return 0, f"HTTP {r.status_code}", f"HTTP {r.status_code}"
         if not (r.content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in r.content[:600]

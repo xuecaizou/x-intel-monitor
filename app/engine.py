@@ -170,7 +170,7 @@ def process_ai_tasks(cfg, batch=5):
     kind = t["kind"]
     params = json.loads(t.get("params") or "{}")
     limit = max(1, int(params.get("limit") or 20))
-    acfg = dict((load().get("ai") or {}))
+    acfg = dict(((cfg or {}).get("ai") or load().get("ai") or {}))
     if not (acfg.get("enabled") and acfg.get("api_key")):
         db.finish_ai_task(t["id"], "失败", note="AI 未启用")
         return "后台AI任务：AI 未启用"

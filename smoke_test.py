@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """X-Intel 系统冒烟测试：七组链路一次跑完，输出 PASS/FAIL 汇总。
-用法：C:/Python314/python.exe smoke_test.py [--nolive]（--nolive 跳过真实抓取/真实推送）
-副作用分类（--nolive 不是完全离线）：真实调用=AI 连通测试（G5）；模拟外发=钉钉测试（G6，写 push_logs）；
-数据库写入=建删冒烟报告任务（G7）；完全离线=tests/test_batch1.py 与 tests/test_batch2.py（临时库+替身）。
+用法：C:/Python314/python.exe smoke_test.py [--nolive]
+【重要】本脚本对**运行中的服务**做集成验收，不是离线测试：
+  - G5 必定真实调用 AI（/api/ai/test + /api/ai/models）→ 产生真实 API 费用
+  - G6 写 push_logs（--nolive 仅跳过真实发送，仍会调用测试端点）
+  - G7 在生产库建删冒烟报告任务
+  - G4（--nolive 跳过）
+真正离线的入口：C:/Python314/python.exe offline_test.py（临时库+替身，零外联、零生产写入）。
 必须用与服务相同解释器（Python 3.14）：G6 单元断言 from app import engine 连带导入 feedparser，py -3.13 会 ModuleNotFoundError
 G1 服务与页面 | G2 API 全端点（复用 healthcheck）| G3 数据完整性
 G4 采集链路 | G5 AI 链路 | G6 推送链路 | G7 报告任务闭环
@@ -21,21 +25,33 @@ NOLIVE = '--nolive' in sys.argv
 GROUP, PASS, FAIL = '', 0, []
 
 
+import os as _os
+
+
+def _hdr(extra=None):
+    h = dict(extra or {})
+    tok = _os.environ.get("XINTEL_TOKEN", "")
+    if tok:
+        h["Authorization"] = "Bearer " + tok
+    return h
+
+
 def get(path, timeout=15):
-    with urllib.request.urlopen(BASE + quote(path, safe='/?&=_'), timeout=timeout) as r:
+    req = urllib.request.Request(BASE + quote(path, safe='/?&=_'), headers=_hdr())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, json.loads(r.read().decode('utf-8'))
 
 
 def post(path, payload=None, timeout=60):
     data = json.dumps(payload or {}).encode('utf-8')
     req = urllib.request.Request(BASE + quote(path, safe='/?&=_'), data=data, method='POST',
-                                 headers={'Content-Type': 'application/json'})
+                                 headers=_hdr({'Content-Type': 'application/json'}))
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8'))
 
 
 def delete(path, timeout=15):
-    req = urllib.request.Request(BASE + quote(path, safe='/?&=_'), method='DELETE')
+    req = urllib.request.Request(BASE + quote(path, safe='/?&=_'), method='DELETE', headers=_hdr())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8'))
 
@@ -73,7 +89,7 @@ finally:
 for path, kw in [('/', 'X-Intel'), ('/help', '报告任务与 report-writer'), ('/arch', 'report_tasks'),
                  ('/readme.md', '监控源'), ('/docs', 'swagger')]:
     try:
-        with urllib.request.urlopen(BASE + path, timeout=10) as r:
+        with urllib.request.urlopen(urllib.request.Request(BASE + path, headers=_hdr()), timeout=10) as r:
             body = r.read().decode('utf-8')
             check(f'页面 {path}', kw.lower() in body.lower(), f'缺关键字 {kw}')
     except Exception as e:

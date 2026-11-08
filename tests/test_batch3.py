@@ -35,7 +35,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8")
 
-TMP = Path(tempfile.mkdtemp(prefix="xintel-batch3-"))
+from tests.testenv import TestEnv  # noqa: E402
+env = TestEnv(forbid_network=False).start()   # 允许既有替身路径（AI/通道均已 monkeypatch）
+TMP = env.tmp
 import app.db as db  # noqa: E402
 
 db.DATA_DIR = TMP
@@ -279,7 +281,6 @@ check("T7-2 仅待发送不置 pushed（回退后旧代码可接管补发）",
 
 # ============================================================
 print("== T8 runtime.json 并发保存 ==")
-import app.config as _cfgmod  # noqa: E402
 from app.config import save_runtime  # noqa: E402
 errors_c = []
 def _save(tag):
@@ -288,7 +289,6 @@ def _save(tag):
             save_runtime({"_conc_test": {tag: i}})
     except Exception as e:
         errors_c.append(str(e))
-_cfgmod.DATA_DIR = TMP  # 测试隔离
 ths = [threading.Thread(target=_save, args=(f"t{i}",)) for i in range(4)]
 [t.start() for t in ths]
 [t.join() for t in ths]

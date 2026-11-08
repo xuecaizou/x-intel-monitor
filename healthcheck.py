@@ -10,12 +10,24 @@ BASE = 'http://127.0.0.1:8083'
 PASS, FAIL = 0, []
 
 
-def get(path):
-    """单端点故障（超时/拒绝/非 JSON）返回 0 状态标记 FAIL，不炸整个套件"""
+import os as _os
+
+
+def _req(path):
     from urllib.parse import quote
     safe = quote(path, safe='/?&=')
+    req = urllib.request.Request(BASE + safe)
+    tok = _os.environ.get("XINTEL_TOKEN", "")
+    if tok:
+        req.add_header("Authorization", "Bearer " + tok)
+    return req
+
+
+def get(path):
+    """单端点故障（超时/拒绝/非 JSON）返回 0 状态标记 FAIL，不炸整个套件。
+    认证（第四批）：需设置环境变量 XINTEL_TOKEN=<API Token>（admin 角色）。"""
     try:
-        with urllib.request.urlopen(BASE + safe, timeout=30) as r:
+        with urllib.request.urlopen(_req(path), timeout=30) as r:
             return r.status, json.loads(r.read().decode('utf-8'))
     except Exception as e:
         return 0, {"_error": f"{type(e).__name__}: {str(e)[:90]}"}
@@ -23,7 +35,7 @@ def get(path):
 
 def page(path, kw):
     try:
-        with urllib.request.urlopen(BASE + path, timeout=15) as r:
+        with urllib.request.urlopen(_req(path), timeout=15) as r:
             body = r.read().decode('utf-8')
     except Exception as e:
         return f'请求失败:{type(e).__name__}'

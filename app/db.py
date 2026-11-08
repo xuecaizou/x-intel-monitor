@@ -23,6 +23,12 @@ def get_conn():
         DATA_DIR.mkdir(exist_ok=True)
         _conn = sqlite3.connect(DATA_DIR / "xintel.db", check_same_thread=False)
         _conn.row_factory = sqlite3.Row
+        # WAL（第四批）：单写多读并发更稳；备份必须用 backup API（含 WAL 未检查点数据）
+        try:
+            _conn.execute("PRAGMA journal_mode=WAL")
+            _conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
     return _conn
 
 
@@ -1026,14 +1032,16 @@ def list_ai_tasks(limit=20):
 
 def ai_task_items(task_id, kind, limit):
     """任务候选集：analyze_backlog=未研判+首败待重试；retry_failed=研判失败积压。均排除人工修订。"""
+    # ai_modified 为 TEXT 列（默认 ''），必须兼容空串——`ai_modified=0` 会永久匹配不到（2026-11-08 修复）
+    not_modified = "(ai_modified IS NULL OR ai_modified='' OR ai_modified='0')"
     if kind == "retry_failed":
         rows = get_conn().execute(
-            "SELECT id FROM tweets WHERE ai_status='error' AND ai_modified=0"
+            f"SELECT id FROM tweets WHERE ai_status='error' AND {not_modified}"
             " ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
     else:
         rows = get_conn().execute(
-            "SELECT id FROM tweets WHERE (ai_status='' OR (ai_status='error' AND ai_retries<2))"
-            " AND ai_modified=0 ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+            f"SELECT id FROM tweets WHERE (ai_status='' OR (ai_status='error' AND ai_retries<2))"
+            f" AND {not_modified} ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
     return [r["id"] for r in rows]
 
 

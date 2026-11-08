@@ -60,6 +60,36 @@
 | R38 | runtime.json 并发安全（完整读-改-写加锁 + 原子替换） | config.save_runtime（\_rt_lock + os.replace + 校验 + .bak） | T8-1 |
 | R39 | 回退兼容标记语义明确（已过滤/模拟/永久/不明 → pushed=1；仅待发送不置） | db.sync_pushed_compat | T7-1~T7-2 |
 
+
+## 第四批已实现（2026-11-08）
+
+| ID | 需求 | 实现位置 | 验证 |
+|----|------|---------|------|
+| R40 | 统一测试环境入口（临时目录/禁外联/生产路径守卫） | tests/testenv.py | test_isolation 9/9 |
+| R41 | 真正离线测试入口（CI 可用） | offline_test.py | 9 套件 202 断言 |
+| R42 | 认证：会话 + API Token + read/write/admin | app/auth.py、routes 依赖 | test_batch4_auth 32/32 |
+| R43 | CSRF（会话写请求）+ HttpOnly Cookie + 会话过期 | auth.require、login.html | auth A5/A6 |
+| R44 | 首次初始化仅本机文件（禁止匿名远程） | auth.try_consume_init_file | auth A1、实机验证 |
+| R45 | 路由权限分级（敏感修改需 write/admin） | 64 路由 dependencies | auth A3 全矩阵 |
+| R46 | 文件路径限制（穿越/盘符/UNC/编码/符号链接） | app/safefetch.safe_join | security 7 断言 |
+| R47 | SSRF 防护（私网/回环/链路本地/IPv6/重定向） | app/safefetch.validate_url/fetch_limited | security 13 断言 |
+| R48 | 管理员显式内网例外（AI 网关） | validate_url(allow_private) | security |
+| R49 | 备份：SQLite online backup + manifest + 哈希 | app/backup.create_backup | backup 15/15 |
+| R50 | 恢复演练（隔离目录 + 完整性 + 计数校验） | app/backup.restore_to/verify_backup | backup 15/15 |
+| R51 | 降级导出（未完成/不明任务） | backup.export_pending_deliveries | T7/backup |
+| R52 | 离线 CI（Ubuntu+Windows，秘密守卫） | .github/workflows/ci.yml、scripts/check_no_secrets.py | 本地脚本通过；远端未运行 |
+
+## 待解决限制（如实记录）
+
+| ID | 限制 | 影响 | 状态 |
+|----|------|------|------|
+| L1 | `db.update_ai()` 无版本检查/条件更新 | 迟到 AI 结果可直接覆盖人工值（绕过引擎路径） | 待第五批或专项 |
+| L2 | `ai_repair` 非空未强制降级下游 | 修复/截断结果仍可能被当完整结果推送 | 待确认业务规则 |
+| L3 | 跨进程并发未验证（模块锁仅单进程） | 多 worker 部署需外部锁 | 单进程部署下无影响 |
+| L4 | 远端 CI 未实际运行 | 仅本地脚本验证 | 推送后待观察 |
+| L5 | 54 条历史 source_id 为空 | 统计归属缺失（不猜测） | 保留待处理 |
+| L6 | 真实 AI/群发送未在本轮执行 | 认证后需 Token 才能调用 | 按授权边界 |
+
 ## 待确认/候选需求（不擅自实现）
 
 | ID | 内容 | 背景 | 状态 |
