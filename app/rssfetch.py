@@ -144,6 +144,10 @@ def run_rss_round(trigger="schedule"):
     srcs = db.list_rss_sources(enabled_only=True)
     gmin = _global_minutes(cfg)
     due, ok, total_new, traces, errs = 0, 0, 0, [], []
+    try:
+        tmo = max(20, int((cfg.get("fetch") or {}).get("timeout_seconds") or 20))
+    except Exception:
+        tmo = 20
     for s in srcs:
         minutes = int(s.get("fetch_minutes") or 0) or gmin
         k = f"rss_last_{s['id']}"
@@ -153,7 +157,7 @@ def run_rss_round(trigger="schedule"):
             continue  # 未到期
         db.set_kv(k, str(_t.time()))
         due += 1
-        new, trace, err = fetch_source(s, cfg)
+        new, trace, err = fetch_source({**s, "_timeout": tmo}, cfg)
         total_new += new
         if err:
             errs.append(f"{s['name']}: {err}")

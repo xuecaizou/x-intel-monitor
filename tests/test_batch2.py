@@ -263,7 +263,7 @@ db.get_conn().execute("UPDATE delivery_msgs SET state='待发送' WHERE id=?", (
 db.get_conn().commit()
 c1 = db.claim_msg(mid)
 c2 = db.claim_msg(mid)
-check("S9 并发双领仅一个成功", c1 is True and c2 is False, f"{c1}/{c2}")
+check("S9 并发双领仅一个成功", c1 is not None and c2 is None, f"{c1}/{c2}")
 db.finish_msg(mid, "成功", "场景9收尾")  # 清理发送中残留，避免污染场景16状态分布
 
 # ============================================================
@@ -434,8 +434,8 @@ t16 = add_tweet("S16Src", "unknown sample", severity="high", geo="S16")
 db.create_delivery(t16, iid_s16, "wecom", "", "{}", "待发送")
 m16 = db.create_msg(iid_s16, "wecom", "instant", "", "{}", "T16", "c", [t16])
 db.link_deliveries(iid_s16, [t16], m16)
-db.claim_msg(m16)
-db.finish_msg(m16, "结果不明", "结果不明样例")
+_tk16 = db.claim_msg(m16)
+db.finish_msg(m16, "结果不明", "结果不明样例", token=_tk16)
 states = msg_states()
 need = ["成功", "模拟成功", "等待重试", "永久失败", "结果不明"]
 check("S16 状态分布独立可见（成功/模拟/重试/永久/不明）",

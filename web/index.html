@@ -711,7 +711,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var ind=t.industry||'';
     geo.push(chip(ind&&ind!=='未知'?'violet':'dim','🏭 '+esc(ind||'未知'),
       'industry',(ind&&ind!=='未知')?ind:''));
-    try{var orgs=JSON.parse(t.org||'[]');if(orgs.length)geo.push('<span class="geo blue">🏢 '+esc(orgs.slice(0,2).join('、'))+'</span>');}catch(e){}
+    try{var orgs=Array.isArray(t.org)?t.org:(function(){try{return JSON.parse(t.org||'[]');}catch(e){return [];}})();if(orgs&&orgs.length)geo.push('<span class="geo blue">🏢 '+esc(orgs.slice(0,2).join('、'))+'</span>');}catch(e){}
     (t.tags||[]).forEach(function(tg){
       geo.push(chip('orange','🏷 '+esc(tg),'tag',tg));
     });

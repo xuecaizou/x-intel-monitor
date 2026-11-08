@@ -140,15 +140,83 @@ def run_ai_stage(new_tweets, cfg):
             aimod.process_tweet(t, acfg)
             done += 1
             time.sleep(0.5)
+        except aimod.AIModifiedError:
+            pass  # 人工修订保护：跳过，不算失败
         except Exception as e:
             db.update_ai(t["id"], {"ai_status": "error",
                                    "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
                                    "ai_analyzed_at": db.now()})
     for t in new_tweets:  # 新推文不限量——推送门控依赖它们完成研判
+        if int(t.get("ai_modified") or 0) == 1:
+            continue  # 人工修订保护：跳过自动研判，人工有效值保留
         _run(t)
-    for t in db.tweets_pending_ai(int(acfg.get("auto_limit", 10))):  # 历史遗留限额补
+    for t in db.tweets_pending_ai(int(acfg.get("auto_limit", 10))):  # 历史遗留限额补（不含人工修订）
         _run(t)
     return done
+
+
+def process_ai_tasks(cfg, batch=5):
+    """后台 AI 任务（第三批）：每轮领取一个到期任务，批量 ≤batch 条处理。
+    模型调用失败与落库失败分开计数；租约防并发；重启后处理中任务按陈旧回收。"""
+    rows = db.get_conn().execute(
+        "SELECT * FROM ai_tasks WHERE status IN ('待处理','处理中')"
+        " AND (lease_until IS NULL OR lease_until < ?)"
+        " ORDER BY id ASC LIMIT 1", (time.time(),)).fetchall()
+    if not rows:
+        return ""
+    t = dict(rows[0])
+    if not db.claim_ai_task(t["id"], lease_minutes=10):
+        return ""
+    kind = t["kind"]
+    params = json.loads(t.get("params") or "{}")
+    limit = max(1, int(params.get("limit") or 20))
+    acfg = dict((load().get("ai") or {}))
+    if not (acfg.get("enabled") and acfg.get("api_key")):
+        db.finish_ai_task(t["id"], "失败", note="AI 未启用")
+        return "后台AI任务：AI 未启用"
+    ids = db.ai_task_items(t["id"], kind, limit)
+    done = fail = skip = 0
+    for tid in ids:
+        row = db.get_tweet(tid)
+        if not row or int(row.get("ai_modified") or 0) == 1:
+            skip += 1
+            continue
+        try:
+            aimod.process_tweet(row, acfg)   # 模型调用
+        except Exception as e:
+            fail += 1
+            db.update_ai(tid, {"ai_status": "error",
+                               "ai_error": f"task {t['id']}: {type(e).__name__}: {str(e)[:150]}",
+                               "ai_analyzed_at": db.now()})
+            continue
+        try:
+            db.update_ai(tid, {"ai_analyzed_at": db.now()})  # 结果落库（与模型调用分开记录）
+            done += 1
+        except Exception as e:
+            fail += 1
+            db.add_ai_log("任务落库失败", str(e)[:120], tweet_id=tid)
+    db.finish_ai_task(t["id"], "完成" if fail == 0 else ("完成(部分)" if done else "失败"),
+                      done=done, fail=fail, skip=skip)
+    return f"后台AI任务#{t['id']}：提交{len(ids)} 成功{done} 失败{fail} 跳过{skip}"
+
+
+def effective_interval_minutes(cfg):
+    """有效调度周期 = min(全局 fetch.interval, 启用 X 账号独立频率, 启用 RSS 源频率)，下限 1 分钟。
+    保证"来源配置 5 分钟"不被 15 分钟主调度限制。"""
+    vals = []
+    try:
+        vals.append(int((cfg.get("fetch") or {}).get("interval_minutes") or 15))
+    except Exception:
+        vals.append(15)
+    for a in db.list_x_accounts(enabled_only=True):
+        fm = int(a.get("fetch_minutes") or 0)
+        if fm > 0:
+            vals.append(fm)
+    for r0 in db.list_rss_sources(enabled_only=True):
+        fm = int(r0.get("fetch_minutes") or 0)
+        if fm > 0:
+            vals.append(fm)
+    return max(1, min(vals))
 
 
 def _ai_realtime(cfg):
@@ -239,8 +307,10 @@ BACKOFF_MINUTES = [2, 5, 15, 60]
 
 
 def _process_msg(ch, cc, sim, mid, title, content, image, st, touched):
-    """原子领取 → 发送 → 结果分类 → 终态/退避。模拟：独立记录，不改真实资格。"""
-    if not db.claim_msg(mid, LEASE_SECONDS):
+    """原子领取（持有 owner 令牌）→ 发送 → 结果分类 → 终态/退避（写回校验令牌）。
+    模拟：独立记录，不改真实资格。"""
+    token = db.claim_msg(mid, LEASE_SECONDS)
+    if not token:
         return
     db.msg_attempt_text(mid, "claimed")
     unknown = False
@@ -261,18 +331,18 @@ def _process_msg(ch, cc, sim, mid, title, content, image, st, touched):
     attempts = db.msg_by_id(mid)["attempts"]
     if cls == "success":
         state = "模拟成功" if sim else "成功"
-        db.finish_msg(mid, state, detail)
+        db.finish_msg(mid, state, detail, token=token)
         st["sim" if sim else "sent"] += 1
     elif cls == "permanent" or attempts >= MAX_ATTEMPTS:
         why = "无效配置" if cls == "permanent" else f"重试 {attempts} 次仍失败"
-        db.finish_msg(mid, "永久失败", f"{detail} ⚠ {why}，已停止自动重试")
+        db.finish_msg(mid, "永久失败", f"{detail} ⚠ {why}，已停止自动重试", token=token)
         st["failed"] += 1
     elif cls == "unknown":
-        db.finish_msg(mid, "结果不明", f"{detail} ⚠ 对端可能已收到；请在推送记录中人工重试")
+        db.finish_msg(mid, "结果不明", f"{detail} ⚠ 对端可能已收到；请在推送记录中人工重试", token=token)
         st["unknown"] += 1
     else:
         wait_min = BACKOFF_MINUTES[min(attempts - 1, len(BACKOFF_MINUTES) - 1)]
-        db.msg_retry_wait(mid, time.time() + wait_min * 60, f"{detail} ⚠ {wait_min} 分钟后重试")
+        db.msg_retry_wait(mid, time.time() + wait_min * 60, f"{detail} ⚠ {wait_min} 分钟后重试", token=token)
         st["retry_wait"] += 1
     touched.update(db.msg_members(mid))
 
@@ -365,7 +435,11 @@ def run_fetch(manual=False, cfg=None):
     trigger = "manual" if manual else "schedule"
     try:
         cfg = cfg or load()
-        new_tweets, errors, trace, ok_acc, due_acc = twitter.fetch_all_accounts(cfg)
+        # 来源故障隔离（第三批）：X 段异常（如未配置账号）不得阻断 RSS
+        try:
+            new_tweets, errors, trace, ok_acc, due_acc = twitter.fetch_all_accounts(cfg)
+        except Exception as xe:
+            new_tweets, errors, trace, ok_acc, due_acc = [], [f"X 段异常：{xe}"], [], 0, 0
         before_ids = {t["id"] for t in new_tweets}
         # RSS 源（监控源 02）：独立到期调度，条目入库复用 tweets 管道
         rss_round = rssfetch.run_rss_round(trigger)
@@ -389,6 +463,9 @@ def run_fetch(manual=False, cfg=None):
         if dst["filtered"] or dst["retry_wait"] or dst["failed"] or dst["unknown"]:
             trace.append(f"投递:建{dst['created']}/滤{dst['filtered']}/发{dst['sent']}"
                          f"/模拟{dst['sim']}/重试等待{dst['retry_wait']}/失败{dst['failed']}/不明{dst['unknown']}")
+        ai_task_note = process_ai_tasks(cfg)   # 后台 AI 任务（第三批）：领取/限额/进度
+        if ai_task_note:
+            trace.append(ai_task_note)
         db.add_fetch_log(trigger, due_acc, ok_acc, len(new_tweets), ai_done,
                          "；".join(errors[-3:]), "｜".join(trace))
         # 新推文分类兜底：AI 研判失败导致无分类的，用脚本规则补（零成本）

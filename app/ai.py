@@ -77,6 +77,9 @@ def _parse_json_loose(text):
     raise ValueError("AI 未返回有效 JSON（前 80 字: " + str(text)[:80] + "）")
 
 
+LAST_PARSE_META = {"repaired": False, "truncated": False}
+
+
 def _chat(cfg, messages, json_mode=False, action="", tweet_id=None, ref=""):
     """计时外壳：一次 AI 调用（含内部重试）写一条 ai_logs 审计日志（动作/模型/耗时/状态）"""
     t0 = time.time()
@@ -130,6 +133,7 @@ def _chat_call(cfg, messages, json_mode=False):
                 continue
             rc = msg.get("reasoning_content") or ""
             if json_mode and rc:
+                LAST_PARSE_META["repaired"] = True
                 return _parse_json_loose(rc)  # 兜底：从思维链文本里抠 JSON
             raise RuntimeError(f"模型返回空内容（finish_reason={finish}）")
         if not json_mode:
@@ -139,6 +143,7 @@ def _chat_call(cfg, messages, json_mode=False):
         if m:
             text = m.group(1)
         try:
+            LAST_PARSE_META["repaired"] = True
             return _parse_json_loose(text)
         except Exception:
             if attempt == 0 and finish == "length":
@@ -268,8 +273,85 @@ ANALYZE_PROMPT = (
 )
 
 
+class AIModifiedError(RuntimeError):
+    """人工修订保护：该推文已由人工修订，自动研判跳过"""
+
+
+class AIResultError(ValueError):
+    """AI 结果未通过严格校验（进入可重试 error 状态，附脱敏诊断）"""
+
+
+VALID_SEVERITY = ("critical", "high", "medium", "low", "info")
+VALID_CATEGORIES = set(CATEGORIES)
+
+
+def _as_str_list(v, maxn, field, issues):
+    """列表字段规范化：字符串→单元素列表（记容错），逐字符拆分被禁止；非列表/字符串→空"""
+    if v is None or v == "":
+        return []
+    if isinstance(v, list):
+        out = []
+        for x in v[:maxn]:
+            x = str(x).strip()
+            if x:
+                out.append(x)
+        return out
+    if isinstance(v, str):
+        sv = v.strip()
+        if sv:
+            issues.append(f"{field}:字符串按单值容错")
+            return [sv[:80]]
+        return []
+    issues.append(f"{field}:类型异常已丢弃({type(v).__name__})")
+    return []
+
+
+def _validate_result(result, last_parse):
+    """严格校验。返回 (clean, issues, fatal)：
+    fatal=True → 结果不可信（{}、缺 assessment、severity 非法且无法纠正），调用方按失败处理"""
+    issues = []
+    if not isinstance(result, dict) or not result:
+        return {}, ["结果为空或非对象"], True
+    # 必需字段
+    if not str(result.get("assessment") or "").strip():
+        issues.append("缺少 assessment")
+        fatal = True
+    else:
+        fatal = False
+    # severity 枚举
+    sev = str(result.get("severity") or "").strip().lower()
+    if sev not in VALID_SEVERITY:
+        if sev:
+            issues.append(f"severity 非法({sev})→info")
+        result["severity"] = "info"
+    # confidence 类型与范围
+    try:
+        conf = int(result.get("confidence"))
+    except Exception:
+        if str(result.get("confidence") or "").strip():
+            issues.append("confidence 非整数→0")
+        conf = 0
+    conf = max(0, min(100, conf))
+    result["confidence"] = conf
+    # 列表字段
+    result["actors"] = _as_str_list(result.get("actors"), 6, "actors", issues)
+    result["iocs"] = _as_str_list(result.get("iocs"), 12, "iocs", issues)
+    result["recommendations"] = _as_str_list(result.get("recommendations"), 4, "recommendations", issues)
+    orgs = result.get("organizations")
+    result["organizations"] = _as_str_list(orgs, 6, "organizations", issues)
+    # 截断/修复来源标注
+    if last_parse.get("repaired"):
+        issues.append("JSON 经修复解析（repaired）")
+    if last_parse.get("truncated"):
+        issues.append("响应被截断（truncated）")
+    return result, issues, fatal
+
+
 def analyze_tweet(tweet, cfg=None):
-    """返回结构化研判结果 dict（含 intel_category 分类；prompt 携带中英对照与媒体备注）"""
+    """返回结构化研判结果 dict（含 intel_category 分类；prompt 携带中英对照与媒体备注）。
+    ai_modified=1（人工修订过）的推文抛出跳过标记，由调用方决定保留人工有效值。"""
+    if int(tweet.get("ai_modified") or 0) == 1:
+        raise AIModifiedError("人工修订保护：跳过自动研判")
     cfg = cfg or _cfg()
     _require_key(cfg)
     prompt = (ANALYZE_PROMPT
@@ -280,9 +362,14 @@ def analyze_tweet(tweet, cfg=None):
     if tweet.get("media_url"):
         prompt += (NL + "（注：该推文附有截图媒体 " + tweet["media_url"]
                    + "，当前为文本模型无法查看图片内容，请仅基于文字研判）")
+    LAST_PARSE_META["repaired"] = False
+    LAST_PARSE_META["truncated"] = False
     result = _chat(cfg, [{"role": "user", "content": prompt}], json_mode=True,
                    action="研判", tweet_id=tweet.get("id"),
                    ref="@" + str(tweet.get("screen_name", "")))
+    result, issues, fatal = _validate_result(result, dict(LAST_PARSE_META))
+    if fatal:
+        raise AIResultError("; ".join(issues)[:200] or "结果未通过校验")
     sev = str(result.get("severity", "info")).lower()
     if sev not in ("critical", "high", "medium", "low", "info"):
         sev = "info"
@@ -329,6 +416,7 @@ def analyze_tweet(tweet, cfg=None):
                           ensure_ascii=False) if isinstance(result.get("organizations"), list) else "[]",
         "industry": _geo_text(result.get("industry"), 20),
         "tags": json.dumps(tag_list, ensure_ascii=False),
+        "ai_repair": "; ".join(issues)[:200],
         "geo_basis": geo_basis,
     }
 
@@ -460,16 +548,17 @@ def classify_batch(tweets, cfg=None):
             result = _chat(cfg, [{"role": "user", "content": prompt}], json_mode=True,
                            action="分类", ref=f"{len(grp)}条批量")
             results = result.get("results") or []
-            # id 双兼容：AI 可能返回序号（1-10）或提示词中的库内 id
-            byid = {}
-            for i, t in enumerate(grp, 1):
-                byid[str(i)] = t
-                byid[str(t["id"])] = t
+            # 单一身份：仅接受库内真实 id（序号映射已移除——序号与 id 撞号会写错情报）
+            byid = {str(t["id"]): t for t in grp}
             hit = 0
+            seen = set()
             for r0 in results:
                 t = byid.get(str(r0.get("id", "")).strip())
                 if not t:
                     continue
+                if t["id"] in seen:
+                    continue  # 重复结果忽略
+                seen.add(t["id"])
                 cat = str(r0.get("category", "其他")).strip()[:14]
                 if cat not in CATEGORIES:
                     cat = "其他"

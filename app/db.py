@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 import time
 
 from .config import DATA_DIR
@@ -161,6 +162,26 @@ def init_db():
             UNIQUE(report_id, tweet_id)
         );
         CREATE INDEX IF NOT EXISTS idx_rrefs_tweet ON report_refs(tweet_id);
+        CREATE TABLE IF NOT EXISTS delivery_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            msg_id INTEGER NOT NULL,
+            attempt_no INTEGER NOT NULL,
+            started_at TEXT, finished_at TEXT,
+            result TEXT DEFAULT '',          -- success / retry / permanent / unknown / simulated
+            detail TEXT DEFAULT '',          -- 脱敏后对端响应标识
+            next_attempt_at REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_datt_msg ON delivery_attempts(msg_id);
+        CREATE TABLE IF NOT EXISTS ai_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,              -- analyze_backlog / retry_failed
+            params TEXT DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT '待处理',  -- 待处理/处理中/完成/失败/已取消
+            total INTEGER DEFAULT 0, done INTEGER DEFAULT 0, fail INTEGER DEFAULT 0, skip INTEGER DEFAULT 0,
+            claimed_at TEXT, lease_until REAL,
+            note TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS ai_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -174,6 +195,42 @@ def init_db():
         );
         """)
         os.makedirs(os.path.join(DATA_DIR, "report_tasks"), exist_ok=True)
+        # 来源身份：局部唯一索引（同来源内幂等）+ 存量回填（可重复；无法映射的记录留空=待处理）
+        try:
+            get_conn().execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_tweets_src_tid"
+                " ON tweets(source_id, tweet_id) WHERE source_id!=''")
+            get_conn().execute(
+                "UPDATE tweets SET source_id=(SELECT id FROM x_accounts x WHERE x.screen_name=tweets.screen_name)"
+                " WHERE source_id='' AND screen_name IN (SELECT screen_name FROM x_accounts)")
+            get_conn().execute(
+                "UPDATE tweets SET source_id=(SELECT 'rss:' || id FROM rss_sources r"
+                " WHERE r.name=substr(tweets.screen_name,5))"
+                " WHERE source_id='' AND screen_name LIKE 'RSS:%'")
+            get_conn().execute(
+                "UPDATE tweets SET text_hash=(CASE WHEN text='' THEN ''"
+                " ELSE substr(hex(sha256(CAST(text AS BLOB))),1,32) END)"
+                " WHERE text_hash='' AND text!=''") if False else None
+            get_conn().commit()
+        except Exception:
+            pass
+        # 内容哈希：Python 侧回填（sha3 不依赖 sqlite 编译项），可重复
+        try:
+            import hashlib as _hl
+            rows = get_conn().execute(
+                "SELECT id, text FROM tweets WHERE text_hash='' AND text!='' LIMIT 2000").fetchall()
+            for r in rows:
+                h = _hl.sha256(r["text"].encode("utf-8", "ignore")).hexdigest()[:32]
+                get_conn().execute("UPDATE tweets SET text_hash=? WHERE id=?", (h, r["id"]))
+            if rows:
+                get_conn().commit()
+        except Exception:
+            pass
+        # delivery_msgs 补列（幂等）：claim_token（owner 令牌）
+        try:
+            get_conn().execute("ALTER TABLE delivery_msgs ADD COLUMN claim_token TEXT DEFAULT ''")
+        except Exception:
+            pass
         # 迁移（可重复）：既有报告任务的推文引用回填到 report_refs（UNIQUE 幂等）
         try:
             get_conn().execute(
@@ -191,6 +248,7 @@ def init_db():
                     "ai_confidence", "ai_analyzed_at", "title_zh", "text_zh", "translated_at",
                     "geo_country", "geo_province", "geo_city", "org", "industry",
                     "geo_basis", "tags", "media_url", "starred", "read", "ignored", "pushed", "ai_retries",
+                    "source_id", "text_hash", "ai_modified", "ai_repair",
                     "category"):
             try:
                 get_conn().execute(f"ALTER TABLE tweets ADD COLUMN {col} "
@@ -224,14 +282,28 @@ def init_db():
 # ---------- 推文 ----------
 
 def insert_tweet(t):
-    """幂等入库；成功返回行 id，重复返回 None"""
+    """幂等入库；成功返回行 id，重复返回 None。
+    第三批：text 保存完整原文（上限 10000，展示/模型输入另行裁剪）；
+    source_id 稳定来源身份（来源改名不丢归属）；text_hash 内容完整性；
+    同 source_id+tweet_id 已存在（来源改名场景）视为重复。"""
+    text = (t.get("text", "") or "")[:10000]
+    import hashlib as _hl
+    thash = _hl.sha256(text.encode("utf-8", "ignore")).hexdigest()[:32] if text else ""
+    sid = str(t.get("source_id") or "")
     with _lock:
+        if sid:
+            dup = get_conn().execute(
+                "SELECT 1 FROM tweets WHERE source_id=? AND tweet_id=?",
+                (sid, t["tweet_id"])).fetchone()
+            if dup:
+                return None
         cur = get_conn().execute(
-            "INSERT OR IGNORE INTO tweets (screen_name, tweet_id, text, url, published_at, is_retweet, is_reply, media_url, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            (t["screen_name"], t["tweet_id"], t.get("text", ""), t.get("url", ""),
+            "INSERT OR IGNORE INTO tweets (screen_name, tweet_id, text, url, published_at,"
+            " is_retweet, is_reply, media_url, created_at, source_id, text_hash)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (t["screen_name"], t["tweet_id"], text, t.get("url", ""),
              t.get("published_at", ""), int(t.get("is_retweet", 0)), int(t.get("is_reply", 0)),
-             t.get("media_url", ""), now()))
+             t.get("media_url", ""), now(), sid, thash))
         get_conn().commit()
         if cur.rowcount > 0:
             return cur.lastrowid
@@ -680,6 +752,13 @@ def last_push_for(channel):
     return dict(r) if r else None
 
 
+def cnt24_by_source(source_id):
+    return get_conn().execute(
+        "SELECT COUNT(*) AS n FROM tweets WHERE source_id=?"
+        " AND created_at>=datetime('now','-24 hours','localtime')",
+        (str(source_id),)).fetchone()["n"]
+
+
 def push_stats_today():
     """今日推送统计（口径：ok=成功+模拟成功；sim 单列模拟次数，供首页区分真实/模拟口径）"""
     row = get_conn().execute(
@@ -764,35 +843,76 @@ def link_deliveries(iid, tweet_ids, msg_id):
 
 
 def claim_msg(msg_id, lease_seconds=120):
-    """原子领取：仅 待发送/等待重试 可领取；领取后 发送中 + 租约。返回是否领取成功"""
+    """原子领取：仅 待发送/等待重试 可领取；领取后 发送中 + 租约 + owner 令牌。
+    返回令牌（成功）或 None（已被其他工作者领取/状态不允许）。完成写回必须携带该令牌。"""
+    token = uuid.uuid4().hex
     with _lock:
         cur = get_conn().execute(
-            "UPDATE delivery_msgs SET state='发送中', lease_until=?, attempts=attempts+1, updated_at=?"
+            "UPDATE delivery_msgs SET state='发送中', lease_until=?, attempts=attempts+1,"
+            " claim_token=?, updated_at=?"
             " WHERE id=? AND state IN ('待发送','等待重试')",
-            (time.time() + lease_seconds, now(), int(msg_id)))
+            (time.time() + lease_seconds, token, now(), int(msg_id)))
+        if cur.rowcount == 0:
+            get_conn().commit()
+            return None
+        get_conn().execute(
+            "INSERT INTO delivery_attempts (msg_id, attempt_no, started_at)"
+            " SELECT ?, attempts, ? FROM delivery_msgs WHERE id=?",
+            (int(msg_id), now(), int(msg_id)))
         get_conn().commit()
-        return cur.rowcount > 0
+    return token
 
 
-def finish_msg(msg_id, state, detail="", mirror=True):
-    """终态写回；digest/instant 成功或永久失败时镜像成员逻辑投递状态"""
+def finish_msg(msg_id, state, detail="", mirror=True, token=None, next_attempt_at=None):
+    """终态/退避写回。令牌规则：消息处于 发送中 时，必须匹配 claim 令牌，
+    旧工作者（租约过期后被接管）写回会被拒绝（返回 False，不覆盖新状态）。"""
     with _lock:
+        row = get_conn().execute(
+            "SELECT state, claim_token, lease_until FROM delivery_msgs WHERE id=?", (int(msg_id),)).fetchone()
+        if not row:
+            return False
+        if row["state"] == "发送中" and (
+            (row["lease_until"] is not None and row["lease_until"] > time.time())
+        ) and (token or "") != (row["claim_token"] or ""):
+            return False  # 租约仍有效 → 仅持令牌者可写回；租约已过期 → 允许 sweep 收尸（结果不明）  # 令牌不匹配：旧工作者或并发写回，拒绝覆盖
+        if row["state"] in ("成功", "模拟成功", "部分成功", "永久失败", "已取消"):
+            return False  # 已终态，不覆盖
         get_conn().execute(
             "UPDATE delivery_msgs SET state=?, detail=?, lease_until=NULL, updated_at=? WHERE id=?",
             (state, detail[:400], now(), int(msg_id)))
+        get_conn().execute(
+            "UPDATE delivery_attempts SET finished_at=?, result=?, detail=?, next_attempt_at=?"
+            " WHERE msg_id=? AND finished_at IS NULL",
+            (now(), "simulated" if state == "模拟成功" else
+             ("success" if state == "成功" else
+              ("retry" if state == "等待重试" else
+               ("permanent" if state == "永久失败" else
+                ("unknown" if state == "结果不明" else state)))), detail[:200],
+             next_attempt_at, int(msg_id)))
         if mirror and state in ("成功", "模拟成功", "永久失败", "结果不明"):
             get_conn().execute(
                 "UPDATE deliveries SET state=?, msg_id=?, updated_at=? WHERE msg_id=?",
                 (state, int(msg_id), now(), int(msg_id)))
         get_conn().commit()
+        return True
 
 
-def msg_retry_wait(msg_id, next_ts, detail=""):
+def msg_retry_wait(msg_id, next_ts, detail="", token=None):
     with _lock:
+        row = get_conn().execute(
+            "SELECT state, claim_token FROM delivery_msgs WHERE id=?", (int(msg_id),)).fetchone()
+        if not row or (row["state"] == "发送中" and (token or "") != (row["claim_token"] or "")):
+            return False
         get_conn().execute(
-            "UPDATE delivery_msgs SET state='等待重试', next_attempt_at=?, detail=?, updated_at=? WHERE id=?",
+            "UPDATE delivery_msgs SET state='等待重试', next_attempt_at=?, detail=?, lease_until=NULL,"
+            " updated_at=? WHERE id=?",
             (next_ts, detail[:400], now(), int(msg_id)))
+        get_conn().execute(
+            "UPDATE delivery_attempts SET finished_at=?, result='retry', detail=?, next_attempt_at=?"
+            " WHERE msg_id=? AND finished_at IS NULL",
+            (now(), detail[:200], next_ts, int(msg_id)))
         get_conn().commit()
+        return True
 
 
 def msg_attempt_text(msg_id, text):
@@ -864,3 +984,64 @@ def protected_tweet_ids():
         " JOIN delivery_msgs m ON m.id=di.msg_id WHERE m.state IN ('待发送','发送中','等待重试')"
     ).fetchall()
     return {r["id"] for r in rows}
+
+# ---------- 后台 AI 任务（第三批） ----------
+
+
+def create_ai_task(kind, params, total=0):
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT INTO ai_tasks (kind, params, total, status, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (kind, json.dumps(params or {}, ensure_ascii=False), int(total), "待处理", now(), now()))
+        get_conn().commit()
+        return cur.lastrowid
+
+
+def claim_ai_task(task_id, lease_minutes=10):
+    """原子领取 + 租约（处理中 10 分钟陈旧可被重新领取——重启恢复）"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE ai_tasks SET status='处理中', claimed_at=?, lease_until=?, updated_at=?"
+            " WHERE id=? AND (status='待处理'"
+            "  OR (status='处理中' AND lease_until < ?))",
+            (now(), time.time() + lease_minutes * 60, now(), int(task_id), time.time()))
+        get_conn().commit()
+        return cur.rowcount > 0
+
+
+def finish_ai_task(task_id, status, done=0, fail=0, skip=0, note=""):
+    with _lock:
+        get_conn().execute(
+            "UPDATE ai_tasks SET status=?, done=done+?, fail=fail+?, skip=skip+?,"
+            " note=?, lease_until=NULL, updated_at=? WHERE id=?",
+            (status, int(done), int(fail), int(skip), note[:200], now(), int(task_id)))
+        get_conn().commit()
+
+
+def list_ai_tasks(limit=20):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM ai_tasks ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]
+
+
+def ai_task_items(task_id, kind, limit):
+    """任务候选集：analyze_backlog=未研判+首败待重试；retry_failed=研判失败积压。均排除人工修订。"""
+    if kind == "retry_failed":
+        rows = get_conn().execute(
+            "SELECT id FROM tweets WHERE ai_status='error' AND ai_modified=0"
+            " ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    else:
+        rows = get_conn().execute(
+            "SELECT id FROM tweets WHERE (ai_status='' OR (ai_status='error' AND ai_retries<2))"
+            " AND ai_modified=0 ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def reevaluate_filtered():
+    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
+            " WHERE state='已过滤'", (now(),))
+        get_conn().commit()
+        return cur.rowcount

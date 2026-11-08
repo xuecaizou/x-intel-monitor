@@ -52,7 +52,20 @@ def _http_get(url, cfg, headers=None, timeout=None):
     return r
 
 
-def _clean(s, n=400):
+def _layer_cap(cfg):
+    """单层拉取上限：保证首抓 first_fetch_limit 可达（不被 max_items 静默压制）"""
+    try:
+        mi = int(cfg.get("max_items") or 20)
+    except Exception:
+        mi = 20
+    try:
+        fl = int(cfg.get("first_fetch_limit") or 0)
+    except Exception:
+        fl = 0
+    return max(mi, fl)
+
+
+def _clean(s, n=10000):
     return _HTML_RE.sub("", s or "").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").strip()[:n]
 
 
@@ -103,7 +116,7 @@ def _syndication_media(obj):
 
 def _fetch_syndication(name, cfg):
     url = (f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{name}?showReplies=true")
-    r = _http_get(url, cfg, headers={"Referer": "https://twitter.com/"}, timeout=15)
+    r = _http_get(url, cfg, headers={"Referer": "https://twitter.com/"}, timeout=int(cfg.get("_timeout") or 15))
     if "json" not in (r.headers.get("content-type") or ""):
         raise RuntimeError("syndication 返回非 JSON（可能被限流）")
     out = []
@@ -121,7 +134,7 @@ def _fetch_syndication(name, cfg):
                 walk(v)
     walk(r.json())
     items = []
-    for tid, text, obj in out[: int(cfg.get("max_items", 20))]:
+    for tid, text, obj in out[: _layer_cap(cfg)]:
         items.append(_tweet(name, tid, text, obj.get("created_at", ""),
                             "retweeted_status" in obj or text.startswith("RT @"),
                             bool(obj.get("in_reply_to_status_id_str")),
@@ -142,7 +155,7 @@ def _fetch_nitter(name, cfg, kv_get, kv_set):
     last_err = "无可用实例"
     for url in urls:
         try:
-            r = _http_get(url, cfg, timeout=15)
+            r = _http_get(url, cfg, timeout=int(cfg.get("_timeout") or 15))
             host = url.split("/")[2]
             if r.status_code == 200 and r.content.lstrip().startswith(b"<?xml"):
                 feed = feedparser.parse(r.content)
@@ -151,7 +164,7 @@ def _fetch_nitter(name, cfg, kv_get, kv_set):
                     if final_host != "twiiit.com":
                         kv_set("x_nitter_instance", final_host)
                     items = []
-                    for e in feed.entries[: int(cfg.get("max_items", 20))]:
+                    for e in feed.entries[: _layer_cap(cfg)]:
                         m = _TWEET_ID_RE.search(e.get("link", ""))
                         if not m:
                             continue
@@ -193,11 +206,11 @@ def _fetch_cookie(name, cfg, kv_get, kv_set):
     qid = kv_get("x_gql_queryid")
     uid = kv_get(f"x_uid_{name.lower()}")
     if not qid:
-        html = _http_get("https://x.com/home", cfg, headers=headers, timeout=20).text
+        html = _http_get("https://x.com/home", cfg, headers=headers, timeout=int(cfg.get("_timeout") or 20)).text
         srcs = re.findall(r'src="(https://abs\.twimg\.com/responsive-web/client-web/main\.[^"]+\.js)"', html)
         if not srcs:
             raise RuntimeError("未能定位 x.com 主 bundle")
-        bundle = _http_get(srcs[0], cfg, headers=headers, timeout=30).text
+        bundle = _http_get(srcs[0], cfg, headers=headers, timeout=int(cfg.get("_timeout") or 30)).text
         m = re.search(r'queryId:"([0-9a-f]{20,})",operationName:"UserTweets"', bundle)
         if not m:
             raise RuntimeError("bundle 中未找到 UserTweets queryId")
@@ -228,7 +241,7 @@ def _fetch_cookie(name, cfg, kv_get, kv_set):
                     "retweeted_status" in obj or text.startswith("RT @"),
                     bool(obj.get("in_reply_to_status_id_str")),
                     _syndication_media(obj))
-             for tid, text, obj in out[: int(cfg.get("max_items", 20))]]
+             for tid, text, obj in out[: _layer_cap(cfg)]]
     if not items:
         raise RuntimeError("GraphQL 返回 0 条（Cookie/queryId 可能已失效）")
     return items
@@ -275,6 +288,15 @@ def fetch_all_accounts(cfg=None):
     # 代理回退：x.proxy 未配置时回退 network.proxy（保证 X 采集永远走代理）
     if not xcfg.get("proxy"):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
+    # fetch.timeout_seconds / fetch.retries 实际生效（此前为可配置但不读取）
+    try:
+        xcfg["_timeout"] = max(5, int((cfg.get("fetch") or {}).get("timeout_seconds") or 25))
+    except Exception:
+        xcfg["_timeout"] = 25
+    try:
+        xcfg["_retries"] = max(0, int((cfg.get("fetch") or {}).get("retries") or 0))
+    except Exception:
+        xcfg["_retries"] = 0
     kv_get, kv_set = db.get_kv, db.set_kv
     accounts = [a for a in db.list_x_accounts(enabled_only=True) if X_ACC_RE.match(a["screen_name"])]
     if not accounts:
@@ -297,8 +319,8 @@ def fetch_all_accounts(cfg=None):
         name = acc["screen_name"]
         items = None
         attempts = []
-        # 整体重试两次：代理抖动常在秒级恢复（实测 0.5s 正常→下一秒超时），隔 4 秒再试
-        for overall in range(3):
+        # 整体重试：retries 配置为额外重试次数（默认 0，总次数=1+retries）；隔 4 秒再试
+        for overall in range(1 + int(xcfg.get("_retries", 0))):
             for layer in layers:
                 t0 = time.time()
                 try:
@@ -325,7 +347,7 @@ def fetch_all_accounts(cfg=None):
                             kv_set("syn_skip_until", str(time.time() + 1800))
             if items is not None:
                 break
-            if overall < 2:
+            if overall < int(xcfg.get("_retries", 0)):
                 time.sleep(4)
         trace.append(f"@{name}: " + " → ".join(attempts))
         if items is None:
@@ -335,18 +357,21 @@ def fetch_all_accounts(cfg=None):
         # 增量短路：只处理上次置顶 id 之后的新推文
         known_top = kv_get(f"acc_top_{name.lower()}")
         items = _truncate_incremental(items, known_top)
-        # 首次抓取（无位点）：按「初次抓取条数」设置回溯，避免新账号一次性灌入过多
+        # 首次抓取（无位点）：按「初次抓取条数」设置回溯，避免新账号一次性灌入过多；
+        # 上游层已按 max(first_limit, max_items) 拉取，不再被 max_items=20 静默压制
         if not known_top and len(items) > first_limit:
             items = items[:first_limit]
-        if items:
-            kv_set(f"acc_top_{name.lower()}", items[0]["tweet_id"])
         if not xcfg.get("show_replies", True):
             items = [t for t in items if not t["is_reply"]]
+        # 位点在入库之后推进：入库失败/进程中断不漏抓（位点仅表示"已尝试入库到此"）
         for t in items:
+            t["source_id"] = str(acc["id"])
             row_id = db.insert_tweet(t)
             if row_id:
                 t["id"] = row_id
                 new_tweets.append(t)
+        if items:
+            kv_set(f"acc_top_{name.lower()}", items[0]["tweet_id"])
         kv_set(f"acc_last_{name.lower()}", str(time.time()))
     for e in errors:
         print("[x-intel]", e)

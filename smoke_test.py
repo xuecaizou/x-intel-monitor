@@ -181,7 +181,7 @@ check('AI 日志落库', len(al.get('items', [])) >= 1 and al['items'][0]['actio
 # 地理规则兜底（可控替身：拦截 _chat 强制 AI country 为空，验证强地理词兜底分支，2026-11-07）
 from app import ai as _ai
 _orig_chat = _ai._chat
-_ai._chat = lambda *a, **k: {"severity": "low", "intel_category": "参考情报", "country": "", "tags": []}
+_ai._chat = lambda *a, **k: {"severity": "low", "intel_category": "参考情报", "assessment": "stub", "country": "", "tags": []}
 try:
     _f = _ai.analyze_tweet({"id": -1, "screen_name": "stub", "text": "Spanish developers have been gatekeeping this"},
                            {"enabled": True, "api_key": "stub", "model": "stub"})
@@ -192,7 +192,7 @@ finally:
 check('AI漏判-强地理规则兜底', _f.get('geo_country') == '西班牙' and _f.get('geo_basis') == 'geo',
       f"{_f.get('geo_country')}/{_f.get('geo_basis')}")
 # AI 判出国家时不兜底、basis=ai
-_ai._chat = lambda *a, **k: {"severity": "low", "intel_category": "参考情报", "country": "日本", "tags": []}
+_ai._chat = lambda *a, **k: {"severity": "low", "intel_category": "参考情报", "assessment": "stub", "country": "日本", "tags": []}
 try:
     _f2 = _ai.analyze_tweet({"id": -1, "screen_name": "stub", "text": "totally unrelated English text"},
                             {"enabled": True, "api_key": "stub", "model": "stub"})

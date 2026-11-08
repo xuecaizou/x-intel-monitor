@@ -259,6 +259,17 @@ def api_stats():
     }
 
 
+def _effective_interval_and_reschedule():
+    """来源频率/全局周期变更后，把调度器重设为有效最小周期"""
+    try:
+        from .scheduler import instance
+        sch = instance()
+        if sch is not None:
+            sch.reschedule(effective_interval_minutes(load()))
+    except Exception:
+        pass
+
+
 @router.post("/api/fetch/run")
 def api_fetch_run(bg: BackgroundTasks):
     bg.add_task(engine.run_fetch, True)
@@ -285,6 +296,7 @@ def api_x_add(body: XAccountBody):
         raise HTTPException(400, "非法 X 用户名（1-15 位字母/数字/下划线）")
     if not db.add_x_account(name, body.display.strip() or name):
         raise HTTPException(409, f"@{name} 已存在")
+    _effective_interval_and_reschedule()
     return {"ok": True, "screen_name": name}
 
 
@@ -292,6 +304,7 @@ def api_x_add(body: XAccountBody):
 def api_x_toggle(acc_id: int, body: ToggleBody):
     if not db.update_x_account(acc_id, enabled=body.enabled):
         raise HTTPException(404, "账号不存在")
+    _effective_interval_and_reschedule()
     return {"ok": True, "enabled": body.enabled}
 
 
@@ -304,6 +317,7 @@ def api_x_update(acc_id: int, body: XAccountBody):
                                display=(body.display.strip() or None) if body.display else None,
                                fetch_minutes=body.fetch_minutes):
         raise HTTPException(404, "账号不存在或无变更")
+    _effective_interval_and_reschedule()
     return {"ok": True}
 
 
@@ -311,6 +325,7 @@ def api_x_update(acc_id: int, body: XAccountBody):
 def api_x_delete(acc_id: int):
     if not db.delete_x_account(acc_id):
         raise HTTPException(404, "账号不存在")
+    _effective_interval_and_reschedule()
     return {"ok": True}
 
 
@@ -340,6 +355,7 @@ def api_rss_add(body: RssBody):
         name = {"feeds.feedburner.com": "TheHackersNews"}.get(host, host.split(".")[0].title())
     if not db.add_rss_source(name, url):
         raise HTTPException(409, f"该 RSS 地址已存在（{name}）")
+    _effective_interval_and_reschedule()
     return {"ok": True, "name": name}
 
 
@@ -353,6 +369,7 @@ def api_rss_test(body: RssBody):
 def api_rss_toggle(src_id: int, body: ToggleBody):
     if not db.update_rss_source(src_id, enabled=body.enabled):
         raise HTTPException(404, "源不存在")
+    _effective_interval_and_reschedule()
     return {"ok": True, "enabled": body.enabled}
 
 
@@ -363,6 +380,7 @@ def api_rss_update(src_id: int, body: RssBody):
                                 url=(body.url.strip() or None) if body.url else None,
                                 fetch_minutes=body.fetch_minutes):
         raise HTTPException(404, "源不存在或无变更")
+    _effective_interval_and_reschedule()
     return {"ok": True}
 
 
@@ -370,6 +388,7 @@ def api_rss_update(src_id: int, body: RssBody):
 def api_rss_delete(src_id: int):
     if not db.delete_rss_source(src_id):
         raise HTTPException(404, "源不存在")
+    _effective_interval_and_reschedule()
     return {"ok": True}
 
 
@@ -525,6 +544,87 @@ def api_ai_tag(body: AiTextBody):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+# ---------- 后台 AI 任务（第三批） ----------
+
+
+class AiTaskBody(BaseModel):
+    op: str = "analyze_backlog"     # analyze_backlog / retry_failed
+    limit: int = 20
+
+
+@router.post("/api/ai/tasks")
+def api_ai_task_submit(body: AiTaskBody):
+    """提交后台 AI 任务（页面只提交与查询进度，不再承担长批量请求）。
+    op: analyze_backlog=未研判+首败重试；retry_failed=研判失败积压。"""
+    if body.op not in ("analyze_backlog", "retry_failed"):
+        raise HTTPException(400, "op 仅支持 analyze_backlog/retry_failed")
+    limit = max(1, min(500, int(body.limit)))
+    active = db.get_conn().execute(
+        "SELECT COUNT(*) n FROM ai_tasks WHERE status IN ('待处理','处理中')").fetchone()["n"]
+    if active >= 3:
+        raise HTTPException(409, "已有后台 AI 任务在队列中，请等待完成")
+    tid = db.create_ai_task(body.op, {"limit": limit}, total=0)
+    return {"ok": True, "id": tid, "op": body.op, "limit": limit}
+
+
+@router.get("/api/ai/tasks")
+def api_ai_tasks(limit: int = 20):
+    items = db.list_ai_tasks(limit)
+    active = [t for t in items if t["status"] in ("待处理", "处理中")]
+    return {"items": items, "active": len(active)}
+
+
+@router.post("/api/ai/tasks/{task_id}/cancel")
+def api_ai_task_cancel(task_id: int):
+    with db._lock:
+        cur = db.get_conn().execute(
+            "UPDATE ai_tasks SET status='已取消', lease_until=NULL, updated_at=?"
+            " WHERE id=? AND status IN ('待处理','处理中')", (db.now(), task_id))
+        db.get_conn().commit()
+        if cur.rowcount == 0:
+            raise HTTPException(409, "任务不在可取消状态")
+    return {"ok": True}
+
+
+# ---------- 人工修订（第三批：ai_modified 保护） ----------
+
+
+class ManualBody(BaseModel):
+    geo_country: str | None = None
+    geo_province: str | None = None
+    geo_city: str | None = None
+    industry: str | None = None
+    category: str | None = None
+    tags: list[str] | None = None
+    note: str = ""
+
+
+@router.post("/api/tweets/{tid}/manual")
+def api_tweet_manual(tid: int, body: ManualBody):
+    """人工修订：写入人工有效值并置 ai_modified=1；
+    此后自动研判/批量补标跳过该推文（有效值在列表/筛选/推送/报告/导出读取一致）。"""
+    t = db.get_tweet(tid)
+    if not t:
+        raise HTTPException(404, "推文不存在")
+    fields = {}
+    for k in ("geo_country", "geo_province", "geo_city", "industry", "category"):
+        v = getattr(body, k)
+        if v is not None:
+            fields[k] = str(v).strip()[:60]
+    if body.tags is not None:
+        tags = [str(x).strip()[:40] for x in body.tags if str(x).strip()][:10]
+        fields["tags"] = json.dumps(tags, ensure_ascii=False)
+    if not fields and not body.note:
+        raise HTTPException(400, "无可修订字段")
+    fields["ai_modified"] = 1
+    fields["geo_basis"] = "manual" if "geo_country" in fields else t.get("geo_basis", "")
+    fields["ai_analyzed_at"] = db.now()
+    db.update_ai(tid, fields)
+    db.add_ai_log("人工修订", detail=(body.note or "manual override")[:180], tweet_id=tid,
+                  status="ok")
+    return {"ok": True, "modified": fields}
+
+
 # ---------- 推送过滤 ----------
 
 PUSH_FILTER_FIELDS = {"mode", "min_severity", "categories", "countries", "industries", "tags", "keywords"}
@@ -592,6 +692,7 @@ def api_push_rules_add(body: RuleBody):
             "keywords": body.keywords.strip()}
     rules.append(rule)
     _save_rules(rules)
+    db.reevaluate_filtered()
     return {"ok": True, "id": rule["id"]}
 
 
@@ -612,6 +713,7 @@ def api_push_rules_update(rid: str, body: RuleBody):
             r["tags"] = body.tags.strip()
             r["keywords"] = body.keywords.strip()
             _save_rules(rules)
+            db.reevaluate_filtered()
             return {"ok": True}
     raise HTTPException(404, "规则不存在")
 
@@ -624,6 +726,7 @@ def api_push_rules_del(rid: str):
     if len(rest) == len(rules):
         raise HTTPException(404, "规则不存在")
     _save_rules(rest)
+    db.reevaluate_filtered()
     # 清除各实例对该规则的绑定（回退默认）
     changed = {}
     for ch in CHANNELS:
@@ -645,6 +748,7 @@ def api_push_filters_put(body: ValuesBody):
     values = {k: str(v).strip() for k, v in (body.values or {}).items() if k in PUSH_FILTER_FIELDS}
     if values:
         save_runtime({"push": {"filters": values}})
+    db.reevaluate_filtered()   # 规则变更：已过滤投递重新评估（不永久跳过）
     return {"ok": True, "saved": list(values.keys())}
 
 

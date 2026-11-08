@@ -36,6 +36,15 @@ class FetchScheduler:
         except Exception as e:
             print("[scheduler] 抓取失败:", e)
 
+    def reschedule(self, interval_minutes):
+        """配置变更后重设调度周期（取各来源频率的最小值，保证 5 分钟来源可达）"""
+        self.interval = max(1, int(interval_minutes))
+        if self.sched is not None:
+            try:
+                self.sched.reschedule_job("fetch", minutes=self.interval)
+            except Exception as e:
+                print("[scheduler] 重设周期失败:", e)
+
     def next_run_in(self):
         if self.sched is not None:
             try:

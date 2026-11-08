@@ -303,7 +303,16 @@ def push_task(tid):
         pkg_url = f"{base}/api/reports/tasks/{tid}/package"
 
         # 上次各实例结果：部分补发跳过已成功实例
-        prev = {m["instance_id"]: m["state"] for m in db.msgs_report(tid)}
+        prev_msgs = db.msgs_report(tid)
+        prev = {m["instance_id"]: m["state"] for m in prev_msgs}
+        # 分项明细：实例→{item: ok}（部分补发时跳过已成功分项）
+        prev_items = {}
+        for m in prev_msgs:
+            try:
+                det = json.loads(m.get("detail") or "{}")
+                prev_items[m["instance_id"]] = {i["item"]: i["ok"] for i in det.get("items") or []}
+            except Exception:
+                prev_items[m["instance_id"]] = {}
         results, any_fail = [], False
         sim_any = False
         from .engine import _iid_channels
@@ -312,9 +321,13 @@ def push_task(tid):
                 results.append({"channel": ch.display, "status": "跳过（上次已成功）", "iid": iid})
                 continue
             items, attach_note = [], ""
+            prev_it = prev_items.get(iid) or {}
+            skip_body = prev_it.get("正文") is True and prev.get(iid) == "部分成功"
             try:
                 if sim:
                     ok, detail = True, "模拟模式（未配置凭据）"
+                elif skip_body:
+                    ok, detail = True, "跳过（上次正文已成功）"
                 elif ch.key == "pushplus":
                     ok, detail = ch.send(cc, title_h, md_ext, html=html_body)
                 elif ch.key == "wxpusher":
@@ -323,7 +336,9 @@ def push_task(tid):
                     ok, detail = ch.send(cc, title_h, md_ext if "file" not in ch.caps else md)
             except Exception as e:
                 ok, detail = False, f"{type(e).__name__}: {e}"[:200]
-            items.append({"item": "正文", "ok": bool(ok), "detail": str(detail)[:120] if not ok else ""})
+            items.append({"item": "正文", "ok": bool(ok),
+                          "detail": ("跳过（上次已成功）" if skip_body else
+                                     str(detail)[:120] if not ok else "")})
             # 附件分项（仅企微真实模式；模块缺失/单附件失败→分项失败，不得被正文成功掩盖）
             if ch.key == "wecom" and "file" in ch.caps and not sim and t.get("deliver_dir") and t.get("docx"):
                 _push_file = None
@@ -335,6 +350,11 @@ def push_task(tid):
                     for suffix_name in (t["docx"].rsplit(".", 1)[0] + "_批注.docx",
                                         t["docx"].rsplit(".", 1)[0] + "_审阅.html"):
                         fp = os.path.join(t["deliver_dir"], suffix_name)
+                        if prev_it.get(suffix_name) is True:
+                            items.append({"item": suffix_name, "ok": True,
+                                          "detail": "跳过（上次已成功）"})
+                            attach_note += f" +{suffix_name}:跳过"
+                            continue
                         if not os.path.isfile(fp):
                             items.append({"item": suffix_name, "ok": False, "detail": "交付目录中不存在"})
                             attach_note += f" +{suffix_name}:缺失"

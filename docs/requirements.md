@@ -35,6 +35,31 @@
 - **模拟隔离**：模拟发送仍会标记全局 pushed（消费真实资格）——第二批修复（验收场景：模拟后转真实，真实资格仍在）。
 - **smoke 竞态加固的性质**：AI 积压"超 15 分钟"窗口与分类"10 分钟在途容差"是**有依据的时间窗不变量**（能证明：窗口内不误报、窗口外真实丢失会暴露），不能证明"第一次失败确为竞态"——根因标**待确认**（已缓解）。
 
+
+## 第三批已实现（2026-11-08）
+
+| ID | 需求 | 实现位置 | 验证 |
+|----|------|---------|------|
+| R21 | 来源故障隔离：X 未配置/全失败不阻断 RSS | engine.run_fetch（X 段独立 try-except） | tests/test_batch3 S-A |
+| R22 | 采集位点后置：入库成功后才推进（中断不漏抓） | twitter.fetch_accounts（insert 后再 set_kv） | S-B（入库异常时位点未推进） |
+| R23 | RSS 逐条扫描去重（首条 GUID 不变仍发现后续新增） | rssfetch.fetch_source（移除整源短路） | S-C（首条不变仍发现新增） |
+| R24 | 稳定来源身份 source_id（改名不丢归属/不重复入库） | db 迁移 + rssfetch/twitter 注入 + 局部唯一索引 | S-D、实测 874/928 回填 |
+| R25 | 原文完整保存（上限 10000；预览/模型输入独立裁剪）+ 内容哈希 | twitter.\_clean(10000) + db.insert_tweet(text_hash) | S-E |
+| R26 | 配置实际生效：timeout/retries/first_fetch_limit/单源与全局周期 | twitter.fetch（\_timeout/\_retries/\_layer_cap）+ engine.effective_interval_minutes + scheduler.reschedule | S-F1~F4 |
+| R27 | 严格 AI Schema 校验（{}、错误类型、越界枚举、缺必需字段） | ai.\_validate_result + AIResultError | S-G1~G5 |
+| R28 | 修复/截断标注 ai_repair（不把语法可解析当完整研判） | ai.analyze_tweet（LAST_PARSE_META→ai_repair） | S-G5 |
+| R29 | 批量分类单一身份（仅库内 id，序号不撞号） | ai.classify_batch | S-H1 |
+| R30 | 持久后台 AI 任务（提交/查询/原子领取/租约/进度/分计） | db.ai_tasks + engine.process_ai_tasks + /api/ai/tasks | S-I1~I5 |
+| R31 | 人工修订保护（ai_modified；自动重分析不覆盖） | db / ai.AIModifiedError / route /api/tweets/{id}/manual | S-J1~J2 |
+| R32 | 规则变更后已过滤投递重新评估（不永久跳过） | db.reevaluate_filtered + PUT filters/rules 钩子 | T6-1~T6-3 |
+| R33 | 独立发送尝试记录（开始/结束/结果/下次重试，历史保留） | delivery_attempts 表 | T1-1~T1-3 |
+| R34 | owner 令牌：完成写回必须匹配；租约过期后旧工作者不可覆盖 | db.claim_msg/finish_msg/msg_retry_wait | T2-1~T2-3 |
+| R35 | 报告分项补发（正文成功仅补失败附件） | reports.push_task（prev_items 分项跳过） | T3-1~T3-3 |
+| R36 | 模拟/真实切换三态正确（不抹审计、不覆盖真实成功） | db.reset_sim_deliveries + finish_msg 终态保护 | T4-1~T4-6 |
+| R37 | enabled_since 稳定（改名/保存/重启不刷新） | config.ensure_instance_ids | T5-1 |
+| R38 | runtime.json 并发安全（完整读-改-写加锁 + 原子替换） | config.save_runtime（\_rt_lock + os.replace + 校验 + .bak） | T8-1 |
+| R39 | 回退兼容标记语义明确（已过滤/模拟/永久/不明 → pushed=1；仅待发送不置） | db.sync_pushed_compat | T7-1~T7-2 |
+
 ## 待确认/候选需求（不擅自实现）
 
 | ID | 内容 | 背景 | 状态 |
