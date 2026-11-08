@@ -355,6 +355,7 @@ import requests as _requests  # noqa: E402
 _orig_get3 = _requests.get
 _requests.get = lambda url, **kw: FakeResp()
 rssfetch.feedparser = types.SimpleNamespace(parse=lambda c: feed2)
+_r4id_real = db.get_conn().execute("SELECT id FROM rss_sources WHERE name='R4'").fetchone()["id"]
 _r1 = rssfetch.run_rss_round("test")
 n1 = _r1["new"]
 feed2.entries.insert(0, {"title": "Second NEW", "link": "https://e/f2",
@@ -363,7 +364,8 @@ db.set_kv(f"rss_last_{_r4id}", "0")  # 重设到期
 _r2 = rssfetch.run_rss_round("test")
 n2 = _r2["new"]
 check("S-C1 首条不变仍发现后续新增", n2 == 1, f"n2={n2}")
-db.get_conn().execute("UPDATE rss_sources SET name='R4改名' WHERE id=2")
+# 修复空洞夹具（历史 WHERE id=2 命中 0 行，改名从未发生、断言空洞通过）
+db.get_conn().execute("UPDATE rss_sources SET name='R4改名' WHERE id=?", (_r4id_real,))
 db.get_conn().commit()
 db.set_kv(f"rss_last_{_r4id}", "0")  # 重设到期
 feed2.entries.insert(0, {"title": "Third NEW", "link": "https://e/f3",
