@@ -42,10 +42,18 @@ _DOMAIN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$")
 
 
 def _classify_ioc(value, tweet):
-    """返回 (kind, role)。kind: cve/ip/domain/hash/other；role: attack/victim/unknown"""
+    """返回 (kind, role, hints)。
+
+    角色语义（2026-11-09 缺陷 F 修复）：
+      kind:  cve/ip/domain/hash/other
+      role:  vulnerability（CVE）/ attack / victim / unknown（缺角色证据一律 unknown）
+      hints: org_overlap（与涉事单位名重合）——仅人工复核线索，**不参与确定归类**
+             （历史实现默认 role=attack、组织名子串命中即 victim——invalid/无证据
+             指标被塞进攻击分组、企业名子串误判受害资产，均废除）。
+    """
     v = str(value).strip()
     if _CVE.match(v):
-        return "cve", "vulnerability"
+        return "cve", "vulnerability", {}
     if _IP.match(v):
         kind = "ip"
     elif _HASH.match(v):
@@ -54,16 +62,16 @@ def _classify_ioc(value, tweet):
         kind = "domain"
     else:
         kind = "other"
-    # 受害资产判定：与涉事单位域名重合 → victim
-    role = "attack"
+    role = "unknown"  # 缺乏角色证据：默认 unknown，绝不默认 attack
+    hints = {}
     orgs = _arr(tweet.get("org"))
     low = v.lower()
     for o in orgs:
         o = str(o).lower().strip()
         if o and (o in low or low in o):
-            role = "victim"
+            hints["org_overlap"] = True  # 仅提示，不定角色
             break
-    return kind, role
+    return kind, role, hints
 
 
 def _csv_safe(v):
@@ -151,31 +159,63 @@ def export_event_json(uid):
         return None
     ev = snap["event"]
     items = [_evidence_item(t) for t in snap["evidence"]]
-    # IOC 分类（含 CVE 单列、受害资产、攻击指标、普通引用）
-    iocs = {"cve": [], "attack": [], "victim": [], "other": []}
+    # IOC 分类（2026-11-09 F 修复）：
+    #   五桶分离 cve/attack/victim/reference/invalid——
+    #   reference=普通引用（ip/domain/hash 无角色证据，role=unknown）；
+    #   kind=other（非 IOC 形态）单独归 invalid 前的待审桶？否——other 属 unknown 桶。
+    #   事实核验 verified 只来自"人工审核绑定当前版本"，不由结构完整性推导。
+    iocs = {"cve": [], "attack": [], "victim": [], "reference": [], "unknown": [], "invalid": []}
     seen = set()
     for t in snap["evidence"]:
         raw = _arr(t.get("ai_iocs"))
+        structural = integ.structural_grade(t)
+        fact_verified = integ.review_state(t)[0] == "valid"  # 事实核验=人工认可当前版本
+        eff_grade = integ.effective_grade(t)
+        allowed, must_label, _r = integ.may_auto_downstream(t)
+        usable = bool(allowed and not must_label)
         for v in raw:
-            key = (str(v), int(t.get("tweet_id") or 0))
-            if str(v).strip() in seen:
+            key = (str(v).strip(), int(t.get("tweet_id") or 0))
+            if key in seen:
                 continue
-            seen.add(str(v).strip())
-            kind, role = _classify_ioc(v, t)
+            seen.add(key)
+            kind, role, hints = _classify_ioc(v, t)
             rec = {"value": str(v), "kind": kind, "role": role,
                    "tweet_id": int(t.get("tweet_id") or 0),
                    "evidence_id": int(t.get("evidence_id") or 0),
                    "source": t.get("screen_name", ""),
-                   "verified": integ.is_verified(t),
-                   "integrity": integ.effective_grade(t)}
-            if kind == "cve":
+                   "verified": bool(fact_verified),
+                   "integrity": eff_grade,
+                   "structural_integrity": structural,
+                   "usable_as_conclusion": bool(usable),
+                   "must_label_unfinished": bool(must_label),
+                   "hints": hints}
+            if structural == integ.INVALID:
+                # invalid AI 派生指标不进入可使用结论；审计保留并独立标注
+                rec["invalid_reason"] = "来源证据完整性 invalid，仅审计保留"
+                iocs["invalid"].append(rec)
+            elif kind == "cve":
                 iocs["cve"].append(rec)
             elif role == "victim":
                 iocs["victim"].append(rec)
             elif role == "attack":
                 iocs["attack"].append(rec)
+            elif kind in ("ip", "domain", "hash"):
+                iocs["reference"].append(rec)  # 普通引用：出现但角色未知
             else:
-                iocs["other"].append(rec)
+                iocs["unknown"].append(rec)    # kind=other：连 IOC 形态都未定
+    # 角色冲突标注：同一 value 出现在多个桶（如一条来源 valid 一条 invalid）
+    by_value = {}
+    for bucket, recs in iocs.items():
+        for rec in recs:
+            by_value.setdefault(rec["value"], set()).add(bucket)
+    count_by_value = {}
+    for recs in iocs.values():
+        for rec in recs:
+            count_by_value[rec["value"]] = count_by_value.get(rec["value"], 0) + 1
+    for recs in iocs.values():
+        for rec in recs:
+            rec["role_conflict"] = len(by_value[rec["value"]]) > 1
+            rec["source_count"] = count_by_value[rec["value"]]
     return {
         "schema_version": SCHEMA_VERSION,
         "exported_at": db.now(),
@@ -207,7 +247,9 @@ def export_event_json(uid):
                        "detail": r["detail"], "operator": r["operator"],
                        "created_at": r["created_at"]} for r in snap["revisions"]],
         "disclaimer": ("AI 字段为系统预研判，integrity=partial 表示研判未完成；"
-                       "usable_as_conclusion=false 的条目不得作为已核验结论引用。"),
+                       "usable_as_conclusion=false 的条目不得作为已核验结论引用；"
+                       "verified 为人工事实核验（绑定当前版本），不由结构完整性推导；"
+                       "invalid 桶仅审计保留，不进入可使用结论。"),
     }
 
 
@@ -242,13 +284,18 @@ def export_event_ioc_csv(uid):
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(["event_uid", "event_version", "value", "kind", "role", "tweet_id",
-                "source", "verified", "integrity"])
-    for group in ("cve", "attack", "victim", "other"):
+                "source", "verified", "integrity", "structural_integrity",
+                "usable_as_conclusion", "role_conflict", "source_count"])
+    for group in ("cve", "attack", "victim", "reference", "unknown", "invalid"):
         for rec in data["iocs"][group]:
             w.writerow([_csv_safe(data["event"]["event_uid"]), data["event"]["version"],
                         _csv_safe(rec["value"]), rec["kind"], rec["role"],
                         rec["tweet_id"], _csv_safe(rec["source"]),
-                        "true" if rec["verified"] else "false", rec["integrity"]])
+                        "true" if rec["verified"] else "false", rec["integrity"],
+                        rec["structural_integrity"],
+                        "true" if rec["usable_as_conclusion"] else "false",
+                        "true" if rec["role_conflict"] else "false",
+                        rec["source_count"]])
     return buf.getvalue()
 
 
