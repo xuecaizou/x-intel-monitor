@@ -133,3 +133,28 @@
   - 单进程下：调度互斥由 `engine._running` 保证（手动与定时不重叠）。
 - 验证方式：`netstat` 确认单 PID 监听、`ps` 确认仅一个 `run.py`；
   代码层无跨进程锁声明（已核实）。
+
+## 10. 事件聚合 / 审核 / 导出（最终收尾）
+
+```
+情报(tweets) ──event_evidence──> 事件(events)
+                    │                  │
+                    │                  ├─ event_revisions（每次变更留痕，version+1）
+                    │                  └─ event_reviews（绑定 event_version 的审核）
+                    │
+                    └─ 导出：export.json / timeline.csv / iocs.json / iocs.csv（单事务快照）
+```
+
+**关联依据分级与自动合并边界**：
+| basis | 含义 | 可自动合并 |
+|-------|------|-----------|
+| manual | 人工显式关联 | — |
+| official_same | 同一官方公告/同一事件 ID | 否（需人工） |
+| victim_same | 同一受害单位 | 否（需人工） |
+| shared_indicator | 仅共享 CVE/IP/组织名 | **绝不允许**（仅候选） |
+
+**证据独立性**：`source_kind=original` 才计入独立证据；`repost/translation` 单列，不冒充独立来源。
+
+**审核语义**：审核对象是「事件 + 版本」；版本推进后旧审核自动失效（查询时按 `event_version=当前version` 匹配）。
+
+**完整性 → 导出**：`verified/normalized` 可作结论；`partial` 逐条标注 `usable_as_conclusion=false`；`invalid` 不进入可用结论。

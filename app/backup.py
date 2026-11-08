@@ -111,7 +111,9 @@ def verify_backup(backup_dir: Path):
         with sqlite3.connect(str(dbp)) as c:
             checks["integrity"] = c.execute("PRAGMA integrity_check").fetchone()[0]
             for t in ("tweets", "deliveries", "delivery_msgs", "delivery_attempts",
-                      "ai_tasks", "report_refs", "report_tasks", "x_accounts", "rss_sources"):
+                      "ai_tasks", "report_refs", "report_tasks", "x_accounts", "rss_sources",
+                      "events", "event_evidence", "event_revisions", "event_reviews",
+                      "ai_result_conflicts", "auth_users", "auth_tokens"):
                 try:
                     checks[t] = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                 except Exception as e:

@@ -26,6 +26,7 @@ SUITES = [
     "tests/test_batch4_backup.py",
     "tests/test_batch5.py",
     "tests/test_batch5_restore.py",
+    "tests/test_batch6_events.py",
 ]
 
 sys.stdout.reconfigure(encoding="utf-8")

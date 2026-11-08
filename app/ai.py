@@ -119,6 +119,8 @@ def _chat_call(cfg, messages, json_mode=False):
         r = requests.post(base + "/chat/completions", json=body,
                           headers=headers, timeout=tmo, proxies=proxies)
         if r.status_code != 200:
+            if r.status_code == 429 or _is_quota_error(r.text):
+                raise AIQuotaError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
             raise RuntimeError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
         d = r.json()
         choice = (d.get("choices") or [{}])[0]
@@ -162,6 +164,14 @@ def _chat_call(cfg, messages, json_mode=False):
 
 def _cfg():
     return load().get("ai", {})
+
+
+_QUOTA_HINTS = ("429", "rate limit", "频率限制", "使用量已超出", "quota", "额度")
+
+
+def _is_quota_error(text) -> bool:
+    t = str(text or "").lower()
+    return any(h.lower() in t for h in _QUOTA_HINTS)
 
 
 def _require_key(cfg):
@@ -271,6 +281,10 @@ ANALYZE_PROMPT = (
     "如 APT（高级持续性威胁）、RMM（远程监控管理工具）；只收具体情报要素，泛化词不要；按相关度排序，最多10个。" + BSN +
     "推文原文：" + BSN + "{text}"
 )
+
+
+class AIQuotaError(RuntimeError):
+    """AI 配额/限流错误（429/额度耗尽）：应停止自动重试，等待配额重置"""
 
 
 class AIModifiedError(RuntimeError):

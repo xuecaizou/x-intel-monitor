@@ -197,6 +197,14 @@ exp = backup.export_pending_deliveries(target / "xintel.db")
 check("R4-6 可导出恢复后的待处理任务", len(exp["msgs"]) >= 1,
       f"msgs={len(exp['msgs'])}")
 
+# 事件数据也需随备份恢复（第六批）
+with sqlite3.connect(str(target / "xintel.db")) as c:
+    c.row_factory = sqlite3.Row
+    ev_tabs = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+check("R5-1 事件相关表存在", {"events", "event_evidence", "event_revisions",
+                              "event_reviews"} <= ev_tabs, str(sorted(ev_tabs))[:80])
+
 print(f"\n=== 演练耗时：备份 {bk_elapsed:.2f}s / 恢复 {rs_elapsed:.2f}s / 总计 {time.time()-T0:.2f}s ===")
 print("=== 限制：恢复后需人工清理 auth_sessions、复核 auth_tokens 吊销状态 ===")
 print(f"\n==== 恢复演练：{PASS} PASS / {len(FAIL)} FAIL ====")

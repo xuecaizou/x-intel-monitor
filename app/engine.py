@@ -142,6 +142,11 @@ def run_ai_stage(new_tweets, cfg):
             time.sleep(0.5)
         except aimod.AIModifiedError:
             pass  # 人工修订保护：跳过，不算失败
+        except aimod.AIQuotaError as e:
+            db.update_ai(t["id"], {"ai_status": "error",
+                                   "ai_error": f"AIQuotaError: {str(e)[:150]}",
+                                   "ai_analyzed_at": db.now()})
+            raise   # 配额问题：中止本轮 AI，避免继续烧额度
         except Exception as e:
             db.update_ai(t["id"], {"ai_status": "error",
                                    "ai_error": f"{type(e).__name__}: {str(e)[:180]}",

@@ -10,12 +10,21 @@ from fastapi.responses import FileResponse
 from fastapi.params import Query
 from pydantic import BaseModel
 
-from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth
+from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth, eventexport
 from app.config import load, save_runtime
 from app.notify import CHANNELS
 from app.scheduler import instance as scheduler_instance
 
 router = APIRouter()
+
+
+def _operator(request: Request) -> str:
+    """操作者标识（审计用）：优先会话用户名，其次 Token 名称"""
+    try:
+        p = auth._extract_principal(request) or {}
+        return str(p.get("username") or p.get("name") or "unknown")[:60]
+    except Exception:
+        return "unknown"
 
 X_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 CHANNEL_SECRET_FIELDS = {
@@ -1026,6 +1035,180 @@ def api_migration_preview():
         "note": "旧 pushed=1 不转换为'所有实例已发送'（历史实例级证据不存在）；"
                 "迁移后实例 enabled_since=迁移时刻，默认不补发历史；补发走 backfill 显式接口",
     }
+
+
+# ---------- 事件聚合 / 审核 / 导出（第六批） ----------
+
+
+class EventBody(BaseModel):
+    title: str
+    summary: str = ""
+    severity: str = ""
+    tweet_ids: list[int] = []
+
+
+class EventUpdateBody(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+    severity: str | None = None
+    status: str | None = None
+    expected_version: int | None = None
+
+
+class EvidenceBody(BaseModel):
+    tweet_id: int
+    basis: str = "manual"
+    source_kind: str = "original"
+    note: str = ""
+
+
+class MergeBody(BaseModel):
+    src_uid: str
+    dst_uid: str
+    reason: str = ""
+
+
+class SplitBody(BaseModel):
+    tweet_ids: list[int]
+    new_title: str = ""
+
+
+class ReviewBody2(BaseModel):
+    event_version: int
+    decision: str          # approved / rejected
+    note: str = ""
+
+
+@router.get("/api/events", dependencies=[Depends(auth.require("read"))])
+def api_events(status: str = "all", q: str = "", limit: int = Query(50, ge=1, le=200),
+               offset: int = Query(0, ge=0)):
+    total, items = db.list_events(status, q.strip(), limit, offset)
+    return {"total": total, "items": items}
+
+
+@router.post("/api/events", dependencies=[Depends(auth.require("write"))])
+def api_event_create(body: EventBody, request: Request):
+    if not body.title.strip():
+        raise HTTPException(400, "title 不能为空")
+    uid, v = db.create_event(body.title.strip(), body.summary.strip(), body.severity.strip(),
+                             _operator(request), body.tweet_ids, "manual")
+    return {"ok": True, "event_uid": uid, "version": v}
+
+
+@router.get("/api/events/{uid}", dependencies=[Depends(auth.require("read"))])
+def api_event_detail(uid: str):
+    ev = db.get_event(uid)
+    if not ev:
+        raise HTTPException(404, "事件不存在")
+    ev["evidence"] = db.event_evidence(uid)
+    ev["stats"] = db.evidence_stats(uid)
+    ev["revisions"] = db.event_revisions(uid)
+    ev["reviews"] = db.event_reviews(uid)
+    ev["review_latest"] = db.event_review_latest(uid)
+    ev["candidates"] = []   # 这里不返回候选（需按推文查）
+    return ev
+
+
+@router.put("/api/events/{uid}", dependencies=[Depends(auth.require("write"))])
+def api_event_update(uid: str, body: EventUpdateBody, request: Request):
+    ok, v = db.update_event(uid, body.title, body.summary, body.severity, body.status,
+                            _operator(request), body.expected_version)
+    if not ok:
+        raise HTTPException(409, f"更新失败（版本冲突或无效）。当前版本 {v}")
+    return {"ok": True, "version": v}
+
+
+@router.post("/api/events/{uid}/evidence", dependencies=[Depends(auth.require("write"))])
+def api_event_add_evidence(uid: str, body: EvidenceBody, request: Request):
+    ok, v = db.add_evidence(uid, body.tweet_id, body.basis, body.source_kind,
+                            body.note, _operator(request))
+    if not ok:
+        raise HTTPException(409, f"证据未添加（重复或依据非法）。当前版本 {v}")
+    return {"ok": True, "version": v}
+
+
+@router.delete("/api/events/{uid}/evidence/{tweet_id}", dependencies=[Depends(auth.require("write"))])
+def api_event_remove_evidence(uid: str, tweet_id: int, request: Request):
+    ok, v = db.remove_evidence(uid, tweet_id, _operator(request))
+    if not ok:
+        raise HTTPException(404, "证据不存在")
+    return {"ok": True, "version": v}
+
+
+@router.post("/api/events/merge", dependencies=[Depends(auth.require("write"))])
+def api_event_merge(body: MergeBody, request: Request):
+    ok, dst = db.merge_events(body.src_uid, body.dst_uid, _operator(request), body.reason)
+    if not ok:
+        raise HTTPException(400, "合并失败（事件不存在或相同）")
+    return {"ok": True, "target": dst}
+
+
+@router.post("/api/events/{uid}/split", dependencies=[Depends(auth.require("write"))])
+def api_event_split(uid: str, body: SplitBody, request: Request):
+    if not body.tweet_ids:
+        raise HTTPException(400, "tweet_ids 不能为空")
+    ok, new_uid = db.split_event(uid, body.tweet_ids, body.new_title, _operator(request))
+    if not ok:
+        raise HTTPException(404, "事件不存在")
+    return {"ok": True, "new_event": new_uid}
+
+
+@router.get("/api/tweets/{tid}/event-candidates", dependencies=[Depends(auth.require("read"))])
+def api_event_candidates(tid: int):
+    """候选关联：仅共享标识等弱信号，**不得自动合并**，由人工决定"""
+    return {"items": db.candidate_events(tid),
+            "note": "共享 CVE/IP/组织名等标识不构成自动合并依据，需人工确认"}
+
+
+@router.get("/api/events/review/queue", dependencies=[Depends(auth.require("read"))])
+def api_event_review_queue(status: str = "", limit: int = 50):
+    return {"items": db.review_queue(status, limit)}
+
+
+@router.post("/api/events/{uid}/review", dependencies=[Depends(auth.require("write"))])
+def api_event_review(uid: str, body: ReviewBody2, request: Request):
+    ok, reason = db.review_event(uid, body.event_version, body.decision, body.note,
+                                 _operator(request))
+    if not ok:
+        raise HTTPException(409 if reason.startswith("version") or reason == "already_reviewed" else 400,
+                            f"审核未通过：{reason}")
+    return {"ok": True, "decision": body.decision, "event_version": body.event_version}
+
+
+@router.get("/api/events/{uid}/export.json", dependencies=[Depends(auth.require("read"))])
+def api_event_export_json(uid: str):
+    data = eventexport.export_event_json(uid)
+    if data is None:
+        raise HTTPException(404, "事件不存在")
+    return JSONResponse(data, headers={"Content-Disposition":
+                                       f'attachment; filename="{uid}.json"'})
+
+
+@router.get("/api/events/{uid}/timeline.csv", dependencies=[Depends(auth.require("read"))])
+def api_event_timeline_csv(uid: str):
+    csv_text = eventexport.export_event_timeline_csv(uid)
+    if csv_text is None:
+        raise HTTPException(404, "事件不存在")
+    return Response(content=csv_text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{uid}-timeline.csv"'})
+
+
+@router.get("/api/events/{uid}/iocs.json", dependencies=[Depends(auth.require("read"))])
+def api_event_ioc_json(uid: str):
+    data = eventexport.export_event_ioc_json(uid)
+    if data is None:
+        raise HTTPException(404, "事件不存在")
+    return JSONResponse(data, headers={"Content-Disposition":
+                                       f'attachment; filename="{uid}-iocs.json"'})
+
+
+@router.get("/api/events/{uid}/iocs.csv", dependencies=[Depends(auth.require("read"))])
+def api_event_ioc_csv(uid: str):
+    csv_text = eventexport.export_event_ioc_csv(uid)
+    if csv_text is None:
+        raise HTTPException(404, "事件不存在")
+    return Response(content=csv_text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{uid}-iocs.csv"'})
 
 
 # ---------- 报告任务模块（桥接 ZCode report-writer Agent） ----------

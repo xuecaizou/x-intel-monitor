@@ -119,3 +119,21 @@
 | C4 | cleanup 是否保护被报告任务引用的推文 | ✅ 第二批已实现：cleanup/批量删除统一豁免 收藏+report_refs 引用+在途投递成员（db.protected_tweet_ids） |
 | C5 | 企微群1 实例遗留 `filters` 垃圾字符串字段 | v9.7 改版前残留，引擎不读取，无功能影响；可在下次触碰该配置时顺手清理 | 💭 低优先级清理候选 |
 | C6 | 推文流标签/单位 chip 点击筛选（已实现）扩展到 org chip | org chip 当前不可点击；若有需要再加 | 💭 待确认想法 |
+
+## 第六批（最终收尾）已实现（2026-11-08）
+
+| ID | 需求 | 实现位置 | 验证 |
+|----|------|---------|------|
+| R66 | 事件稳定 ID + 版本 + 证据关联 + 关联依据分级 | db.create_event/event_evidence/event_revisions | E1 |
+| R67 | 共享 CVE/IP/组织名仅作候选，禁止自动合并 | db.candidate_events（auto_merge=False） | E2 |
+| R68 | 转载不计独立证据 | db.evidence_stats（original/repost 分列） | E3 |
+| R69 | 人工合并/拆分/解除（版本化留痕） | db.merge_events/split_event/remove_evidence | E4 |
+| R70 | 版本化审核（旧版本不能批准新内容） | db.review_event/index_events | E5 |
+| R71 | 审核队列与操作者归属 | db.review_queue、_operator() | E5-7 |
+| R72 | 事件 JSON 导出（schema/版本/证据/分级/IOC 四分类） | app/eventexport.export_event_json | E6-1~E6-10 |
+| R73 | 时间线 CSV + IOC CSV（公式注入防护） | export_event_timeline_csv/export_event_ioc_csv | E6-11~E6-15 |
+| R74 | IOC JSON 与事件 JSON 口径一致 | export_event_ioc_json | E6-16 |
+| R75 | 一致性快照导出（单事务） | _snapshot BEGIN DEFERRED | 代码 + 导出测试 |
+| R76 | 事件引用进入删除保护 | protected_tweet_ids/cleanup_old/batch_tweet_op | E7 |
+| R77 | 事件全流程 UI（列表→详情→证据→纠错→审核→导出） | web/index.html events-panel | 浏览器实测 |
+| R78 | AI 配额/限流与系统错误区分（不无限重试） | ai.AIQuotaError + engine 中止 | 生产日志 + 代码 |

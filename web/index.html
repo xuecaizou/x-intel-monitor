@@ -354,6 +354,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     <button class="sb-item" data-view="watchlist-panel" title="监控源配置"><span>◉</span><em>监控源</em></button>
     <button class="sb-item" data-view="ai-panel" title="AI 设置"><span>✦</span><em>AI 设置</em></button>
     <button class="sb-item" data-view="task-panel" title="报告任务"><span>▣</span><em>报告任务</em></button>
+    <button class="sb-item" data-view="events-panel" title="事件聚合"><span>◇</span><em>事件聚合</em></button>
     <div class="sb-group" id="sb-ps-group">
       <button class="sb-item sb-parent" data-view="pf-panel" title="推送设置"><span>⚙</span><em>推送设置</em><i class="chev">›</i></button>
       <div class="sb-sub">
@@ -560,6 +561,25 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">AI ENGINE</div>
       <div style="font-size:14.5px;font-weight:600">AI 设置 <span class="cnt" id="aichip"></span></div></div></div>
       <div class="aiform" id="aiform">加载中…</div>
+    </section>
+
+    <section class="panel glass view" id="events-panel" aria-label="事件聚合">
+      <div class="phead"><div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">EVENTS</div>
+      <div style="font-size:14.5px;font-weight:600">事件聚合 <span class="cnt" id="evcount"></span></div></div>
+      <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--mut)">
+        <select id="evstatus" style="width:auto">
+          <option value="all">全部状态</option><option value="候选">候选</option>
+          <option value="已确认">已确认</option><option value="已归档">已归档</option>
+        </select>
+        <input id="evq" placeholder="搜索标题/摘要" style="width:170px">
+        <button class="btn btn-xs" id="evrefresh" type="button">刷新</button>
+        <button class="btn btn-xs" id="evnew" type="button">+ 新建事件</button>
+        <button class="btn btn-xs" id="evqueue" type="button">审核队列</button>
+      </span></div>
+      <div style="display:grid;grid-template-columns:minmax(280px,1fr) 2fr;gap:12px;padding:12px 16px">
+        <div id="evlist" style="max-height:62vh;overflow:auto"></div>
+        <div id="evdetail" style="min-height:200px"><div class="empty">选择左侧事件查看详情</div></div>
+      </div>
     </section>
 
     <section class="panel glass view" id="task-panel" aria-label="报告任务">
@@ -1496,6 +1516,174 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     }).catch(function(){snack('加载实例配置失败');});
   }
 
+  /* ---------- 事件聚合（第六批） ---------- */
+  var evCur = null, evCache = {};
+  function evBadge(st){
+    var m={'候选':'#d97706','已确认':'#047857','已归档':'#64748b'};
+    return '<span class="rtb" style="background:'+(m[st]||'#64748b')+'22;color:'+(m[st]||'#64748b')+'">'+esc(st)+'</span>';
+  }
+  function loadEvents(){
+    var st=document.getElementById('evstatus').value,q=document.getElementById('evq').value.trim();
+    var p=new URLSearchParams({status:st,q:q,limit:'100'});
+    apiFetch('/api/events?'+p).then(function(r){return r.json();}).then(function(d){
+      evCache={};(d.items||[]).forEach(function(x){evCache[x.event_uid]=x;});
+      document.getElementById('evcount').textContent='· '+(d.total||0)+' 个';
+      document.getElementById('evlist').innerHTML=(d.items||[]).length?d.items.map(function(e){
+        return '<div class="rtitem" data-ev="'+esc(e.event_uid)+'" style="cursor:pointer">'+
+          '<div class="rttop"><span class="rttitle">'+esc(e.title)+'</span>'+evBadge(e.status)+'</div>'+
+          '<div class="rtmeta">证据 '+e.n_evidence+'（独立 '+e.n_original+'）｜v'+e.version+
+          ' ｜ '+esc((e.updated_at||'').slice(5,16))+'</div></div>';
+      }).join(''):'<div class="empty">暂无事件</div>';
+      document.querySelectorAll('#evlist [data-ev]').forEach(function(el){
+        el.addEventListener('click',function(){openEvent(el.getAttribute('data-ev'));});
+      });
+    }).catch(function(){document.getElementById('evlist').innerHTML='<div class="empty">加载失败</div>';});
+  }
+  function openEvent(uid){
+    evCur=uid;
+    apiFetch('/api/events/'+uid).then(function(r){return r.json();}).then(function(e){
+      var evHtml=(e.evidence||[]).map(function(t){
+        var g=t.ai_integrity||'verified',gl=t.ai_review==='manual'?'人工已审':(g==='partial'?'部分结果':(g==='invalid'?'无效':(g==='normalized'?'规范化':'完整')));
+        return '<tr><td>'+t.id+'</td><td>'+esc(t.screen_name)+'</td>'+
+          '<td title="'+esc(t.text||'')+'">'+esc((t.title_zh||t.text||'').slice(0,40))+'</td>'+
+          '<td>'+esc(t.basis)+'/'+esc(t.source_kind)+'</td>'+
+          '<td>'+esc(gl)+'</td>'+
+          '<td><button class="btn btn-xs" data-unlink="'+t.id+'" type="button">解除</button>'+
+          '<button class="btn btn-xs" data-split="'+t.id+'" type="button">拆出</button></td></tr>';
+      }).join('');
+      var revs=(e.revisions||[]).slice(0,6).map(function(r){
+        return '<div class="rtmeta">v'+r.version+' · '+esc(r.action)+' · '+esc(r.operator||'')+' · '+esc((r.detail||'').slice(0,60))+'</div>';
+      }).join('');
+      var st=e.review_latest;
+      document.getElementById('evdetail').innerHTML=
+        '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(e.title)+'</span>'+evBadge(e.status)+
+        '<span class="rtb rtb-wait">v'+e.version+'</span></div>'+
+        '<div class="rtmeta">证据 '+e.stats.total+'（独立 '+e.stats.original+' · 转载 '+e.stats.repost+'）｜'+
+        esc(e.first_seen||'—')+' → '+esc(e.last_seen||'—')+'</div>'+
+        '<div class="rtmeta" style="margin-top:4px">'+esc(e.summary||'（无摘要）')+'</div>'+
+        '<div class="ops2" style="margin-top:8px">'+
+          '<input id="ev-tid" placeholder="推文ID" style="width:88px">'+
+          '<select id="ev-basis" style="width:auto">'+
+            '<option value="manual">人工确认</option>'+
+            '<option value="official_same">同一官方公告</option>'+
+            '<option value="victim_same">同一受害单位</option>'+
+            '<option value="shared_indicator">仅共享标识（候选）</option>'+
+          '</select>'+
+          '<label style="font-size:12px"><input type="checkbox" id="ev-repost"> 转载</label>'+
+          '<button class="btn btn-xs" id="ev-add" type="button">+ 关联证据</button>'+
+          '<button class="btn btn-xs" id="ev-cand" type="button">查候选关联</button>'+
+          '<button class="btn btn-xs" data-evact="approve" type="button">✓ 通过审核（v'+e.version+'）</button>'+
+          '<button class="btn btn-xs" data-evact="reject" type="button" style="border-color:rgba(225,29,72,.4);color:#be123c">✗ 驳回</button>'+
+          '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/export.json" target="_blank">事件 JSON</a>'+
+          '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/timeline.csv" target="_blank">时间线 CSV</a>'+
+          '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/iocs.json" target="_blank">IOC JSON</a>'+
+          '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/iocs.csv" target="_blank">IOC CSV</a>'+
+        '</div>'+
+        '<div class="rtmeta" style="margin-top:6px">审核：'+(st?esc(st.decision)+' @v'+st.event_version+' · '+esc(st.operator):'未审核')+'</div>'+
+        '</div>'+
+        '<div class="rtitem" style="margin-top:10px"><div class="rttop"><span class="rttitle">证据</span></div>'+
+        '<table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr>'+
+        '<th>ID</th><th>来源</th><th>标题</th><th>依据/类型</th><th>完整性</th><th>操作</th></tr></thead>'+
+        '<tbody>'+(evHtml||'<tr><td colspan="6">无证据</td></tr>')+'</tbody></table></div>'+
+        '<div class="rtitem" style="margin-top:10px"><div class="rttop"><span class="rttitle">候选关联</span></div><div id="ev-cands"><div class="rtmeta">输入推文 ID 后点「查候选关联」</div></div></div>'+
+        '<div class="rtitem" style="margin-top:10px"><div class="rttop"><span class="rttitle">版本历史</span></div>'+revs+'</div>';
+      document.querySelectorAll('#evdetail [data-split]').forEach(function(b){
+        b.addEventListener('click',function(){
+          var title=prompt('拆分出的新事件标题', e.title+'（拆分）');
+          if(!title)return;
+          apiFetch('/api/events/'+uid+'/split',{method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({tweet_ids:[+b.getAttribute('data-split')],new_title:title})})
+            .then(function(r){return r.json();}).then(function(d){
+              snack(d.ok?'已拆分':'拆分失败');loadEvents();
+              if(d.ok)openEvent(d.new_event);
+            });
+        });
+      });
+      document.querySelectorAll('#evdetail [data-unlink]').forEach(function(b){
+        b.addEventListener('click',function(){
+          if(!confirm('解除该证据与事件的关联？'))return;
+          apiFetch('/api/events/'+uid+'/evidence/'+b.getAttribute('data-unlink'),{method:'DELETE'})
+            .then(function(){snack('已解除');openEvent(uid);loadEvents();});
+        });
+      });
+      var addBtn=document.getElementById('ev-add');
+      if(addBtn)addBtn.addEventListener('click',function(){
+        var tid=parseInt(document.getElementById('ev-tid').value,10);
+        if(!tid){snack('请输入推文 ID');return;}
+        apiFetch('/api/events/'+uid+'/evidence',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({tweet_id:tid,basis:document.getElementById('ev-basis').value,
+            source_kind:document.getElementById('ev-repost').checked?'repost':'original'})})
+          .then(function(r){return r.json();}).then(function(d){
+            snack(d.ok?'证据已关联':'关联失败：'+(d.detail||''));
+            openEvent(uid);loadEvents();
+          });
+      });
+      var candBtn=document.getElementById('ev-cand');
+      if(candBtn)candBtn.addEventListener('click',function(){
+        var tid=parseInt(document.getElementById('ev-tid').value,10);
+        if(!tid){snack('先输入推文 ID 再查候选');return;}
+        apiFetch('/api/tweets/'+tid+'/event-candidates').then(function(r){return r.json();}).then(function(d){
+          var box=document.getElementById('ev-cands');
+          box.innerHTML=(d.items||[]).length?d.items.map(function(c){
+            return '<div class="rtmeta">候选：'+esc(c.title)+' ('+esc(c.event_uid)+')<br>'+
+              '依据：'+esc((c.reasons||[]).join('；'))+'　'+
+              '<button class="btn btn-xs" data-merge="'+esc(c.event_uid)+'" type="button">合并到该事件</button>'+
+              '<span style="color:#b45309">（共享标识不自动合并，需人工确认）</span></div>';
+          }).join(''):'<div class="rtmeta">无候选关联（不共享标识）</div>';
+          box.querySelectorAll('[data-merge]').forEach(function(b){
+            b.addEventListener('click',function(){
+              if(!confirm('确认把本事件合并到该候选事件？'))return;
+              apiFetch('/api/events/merge',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({src_uid:uid,dst_uid:b.getAttribute('data-merge'),
+                  reason:'人工确认共享标识'})}).then(function(r){return r.json();}).then(function(d){
+                    snack(d.ok?'已合并':'合并失败');
+                    loadEvents();if(d.ok)openEvent(d.target);
+                  });
+            });
+          });
+        });
+      });
+      document.querySelectorAll('#evdetail [data-evact]').forEach(function(b){
+        var act=b.getAttribute('data-evact');
+        b.addEventListener('click',function(){
+          var note=act==='approve'?'':'驳回';
+          apiFetch('/api/events/'+uid+'/review',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({event_version:e.version,decision:act==='approve'?'approved':'rejected',note:note})})
+            .then(function(r){return r.json();}).then(function(d){
+              snack(d.ok?('审核已记录（v'+d.event_version+'）'):('审核失败：'+(d.detail||'')));
+              openEvent(uid);loadEvents();
+            });
+        });
+      });
+    }).catch(function(){document.getElementById('evdetail').innerHTML='<div class="empty">加载失败</div>';});
+  }
+  document.getElementById('evrefresh').addEventListener('click',loadEvents);
+  document.getElementById('evstatus').addEventListener('change',loadEvents);
+  document.getElementById('evq').addEventListener('input',function(){clearTimeout(this._t);var s=this;this._t=setTimeout(loadEvents,350);});
+  document.getElementById('evnew').addEventListener('click',function(){
+    var title=prompt('事件标题');if(!title)return;
+    apiFetch('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:title})}).then(function(r){return r.json();}).then(function(d){
+        snack(d.ok?'事件已创建':'创建失败');loadEvents();
+        if(d.ok)openEvent(d.event_uid);
+    });
+  });
+  document.getElementById('evqueue').addEventListener('click',function(){
+    apiFetch('/api/events/review/queue?status=pending').then(function(r){return r.json();}).then(function(d){
+      document.getElementById('evdetail').innerHTML=
+        '<div class="rtitem"><div class="rttop"><span class="rttitle">待审核队列</span></div>'+
+        ((d.items||[]).length?d.items.map(function(e){
+          return '<div class="rtmeta" data-q="'+esc(e.event_uid)+'" style="cursor:pointer">'+
+            esc(e.title)+' · v'+e.version+' · 证据 '+e.n_evidence+'</div>';
+        }).join(''):'<div class="empty">队列为空</div>')+'</div>';
+      document.querySelectorAll('#evdetail [data-q]').forEach(function(el){
+        el.addEventListener('click',function(){openEvent(el.getAttribute('data-q'));});
+      });
+    });
+  });
+
   /* ---------- 日志审计：一级菜单展开 + 侧栏二级子项 ---------- */
   var flOpen=false;
   document.getElementById('fltoggle').addEventListener('click',function(){
@@ -1940,6 +2128,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   },1000);
 
   loadStats();loadTweets();loadAccounts();loadAiConfig();loadPushFilters();loadPushRules();loadChannels();loadLogs();loadFacets();loadReportTasks();
+  loadEvents();
 
   /* ---------- 侧边栏：视图切换 + 展开折叠（均持久化） ---------- */
   var sbBody = document.body;

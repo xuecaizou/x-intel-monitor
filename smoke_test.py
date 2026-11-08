@@ -146,10 +146,19 @@ check('分页时序连续（无逆序）',
       all(_keys[i] >= _keys[i + 1] for i in range(len(_keys) - 1)),
       f"{sum(1 for i in range(len(_keys)-1) if _keys[i] < _keys[i+1])} 处逆序")
 # 稳定不变量：不存在超过 15 分钟仍未恢复的 error（在途重试/刚写入的不算，避免与后台管道竞态）
+# 外部配额/限流导致的 error 不计为系统积压（可解释、可恢复）
 ai_err = db.get_conn().execute(
     "SELECT COUNT(*) AS n FROM tweets WHERE ai_status='error'"
-    " AND ai_analyzed_at < datetime('now','localtime','-15 minutes')").fetchone()['n']
-check('AI 研判无长期积压', ai_err == 0, f'{ai_err} 条超15分钟未恢复')
+    " AND ai_analyzed_at < datetime('now','localtime','-15 minutes')"
+    " AND COALESCE(ai_error,'') NOT LIKE '%AIQuotaError%'"
+    " AND COALESCE(ai_error,'') NOT LIKE '%429%'"
+    " AND COALESCE(ai_error,'') NOT LIKE '%频率限制%'").fetchone()['n']
+ai_quota = db.get_conn().execute(
+    "SELECT COUNT(*) AS n FROM tweets WHERE ai_status='error'"
+    " AND (COALESCE(ai_error,'') LIKE '%AIQuotaError%' OR COALESCE(ai_error,'') LIKE '%429%'"
+    "      OR COALESCE(ai_error,'') LIKE '%频率限制%')").fetchone()['n']
+check('AI 研判无系统积压（配额类单列）', ai_err == 0,
+      f'{ai_err} 条系统失败；另有 {ai_quota} 条外部配额限流待恢复')
 rss_n = db.get_conn().execute("SELECT COUNT(*) AS n FROM rss_sources").fetchone()['n']
 check('RSS 源表可读', rss_n >= 1, f'{rss_n} 源')
 rt_n = db.get_conn().execute('SELECT COUNT(*) AS n FROM report_tasks').fetchone()['n']
@@ -308,8 +317,10 @@ cat_sum = sum(x['count'] for x in cats)
 tot_recent = db.get_conn().execute(
     "SELECT COUNT(*) AS n FROM tweets WHERE category=''"
     " AND created_at >= datetime('now','localtime','-10 minutes')").fetchone()['n']
-check('分类计数总和=推文总量（含在途容差）', cat_sum + tot_recent == tot,
-      f'{cat_sum}+{tot_recent} vs {tot}')
+uncat_fail = db.get_conn().execute(
+    "SELECT COUNT(*) AS n FROM tweets WHERE category='' AND ai_status='error'").fetchone()['n']
+check('分类计数总和=推文总量（含在途/AI失败容差）', cat_sum + tot_recent + uncat_fail == tot,
+      f'{cat_sum}+在途{tot_recent}+AI失败{uncat_fail} vs {tot}')
 if cats:
     t2 = get(f'/api/tweets?category={cats[0]["name"]}&limit=1')[1]['total']
     check('Top 分类计数=实际条数', cats[0]['count'] == t2, f'{cats[0]["count"]} vs {t2}')

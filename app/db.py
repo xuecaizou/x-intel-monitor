@@ -198,6 +198,52 @@ def init_db():
             created_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_aiconf_tweet ON ai_result_conflicts(tweet_id);
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            summary TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT '候选',   -- 候选/已确认/已归档
+            version INTEGER DEFAULT 1,
+            severity TEXT DEFAULT '',
+            first_seen TEXT DEFAULT '',
+            last_seen TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+        CREATE TABLE IF NOT EXISTS event_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid TEXT NOT NULL,
+            tweet_id INTEGER NOT NULL,
+            basis TEXT NOT NULL DEFAULT 'manual',   -- manual/official_same/victim_same/shared_indicator
+            source_kind TEXT NOT NULL DEFAULT 'original',  -- original/repost/translation
+            note TEXT DEFAULT '',
+            created_at TEXT,
+            UNIQUE(event_uid, tweet_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evidev_tweet ON event_evidence(tweet_id);
+        CREATE INDEX IF NOT EXISTS idx_evidev_event ON event_evidence(event_uid);
+        CREATE TABLE IF NOT EXISTS event_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            action TEXT NOT NULL,          -- create/update/merge/split/unlink/review/status
+            detail TEXT DEFAULT '',
+            operator TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_evrev_uid ON event_revisions(event_uid);
+        CREATE TABLE IF NOT EXISTS event_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_uid TEXT NOT NULL,
+            event_version INTEGER NOT NULL,
+            decision TEXT NOT NULL,        -- approved/rejected
+            note TEXT DEFAULT '',
+            operator TEXT DEFAULT '',
+            created_at TEXT,
+            UNIQUE(event_uid, event_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evrevw_uid ON event_reviews(event_uid);
         CREATE TABLE IF NOT EXISTS ai_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -437,6 +483,7 @@ def batch_tweet_op(ids, op):
            "unignore": f"UPDATE tweets SET ignored=0 WHERE id IN ({ph})",
            "delete": f"DELETE FROM tweets WHERE id IN ({ph}) AND starred=0"
                      f" AND id NOT IN (SELECT tweet_id FROM report_refs)"
+                     f" AND id NOT IN (SELECT tweet_id FROM event_evidence)"
                      f" AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
                      f"   JOIN delivery_msgs m ON m.id=di.msg_id"
                      f"   WHERE m.state IN ('待发送','发送中','等待重试'))"}.get(op)
@@ -456,6 +503,7 @@ def cleanup_old(keep_days):
         cur = get_conn().execute(
             "DELETE FROM tweets WHERE starred=0"
             " AND id NOT IN (SELECT tweet_id FROM report_refs)"
+            " AND id NOT IN (SELECT tweet_id FROM event_evidence)"
             " AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
             "   JOIN delivery_msgs m ON m.id=di.msg_id"
             "   WHERE m.state IN ('待发送','发送中','等待重试'))"
@@ -1101,10 +1149,11 @@ def sync_pushed_compat(tweet_ids):
 
 
 def protected_tweet_ids():
-    """删除入口保护集：收藏 + 报告引用 + 在途投递成员"""
+    """删除入口保护集：收藏 + 报告引用 + 事件引用 + 在途投递成员"""
     rows = get_conn().execute(
         "SELECT id FROM tweets WHERE starred=1"
         " UNION SELECT tweet_id FROM report_refs"
+        " UNION SELECT tweet_id FROM event_evidence"
         " UNION SELECT di.tweet_id FROM delivery_items di"
         " JOIN delivery_msgs m ON m.id=di.msg_id WHERE m.state IN ('待发送','发送中','等待重试')"
     ).fetchall()
@@ -1172,3 +1221,346 @@ def reevaluate_filtered():
             " WHERE state='已过滤'", (now(),))
         get_conn().commit()
         return cur.rowcount
+
+# ---------- 事件聚合（第六批） ----------
+
+EVENT_BASIS_RANK = {"manual": 3, "official_same": 2, "victim_same": 1, "shared_indicator": 0}
+
+
+def create_event(title, summary="", severity="", operator="system", tweet_ids=None,
+                 basis="manual"):
+    """创建事件并可选关联证据。返回 (event_uid, version)。"""
+    import secrets as _secrets
+    uid = "evt_" + _secrets.token_hex(6)
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO events (event_uid, title, summary, status, version, severity,"
+            " first_seen, last_seen, created_at, updated_at) VALUES (?,?,?,'候选',1,?,?,?,?,?)",
+            (uid, title[:200], summary[:1000], severity[:20],
+             now(), now(), now(), now()))
+        for tid in (tweet_ids or []):
+            c.execute("INSERT OR IGNORE INTO event_evidence"
+                      " (event_uid, tweet_id, basis, source_kind, note, created_at)"
+                      " VALUES (?,?,?,'original','',?)", (uid, int(tid), basis, now()))
+        c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
+                  " created_at) VALUES (?,1,'create',?,?,?)",
+                  (uid, f"title={title[:80]} basis={basis} n={len(tweet_ids or [])}",
+                   operator[:60], now()))
+        c.commit()
+        _refresh_event_times(uid)
+    return uid, 1
+
+
+def get_event(uid):
+    r = get_conn().execute("SELECT * FROM events WHERE event_uid=?", (uid,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_events(status="", q="", limit=50, offset=0):
+    conds, args = [], []
+    if status and status != "all":
+        conds.append("e.status=?")
+        args.append(status)
+    if q:
+        conds.append("(e.title LIKE ? OR e.summary LIKE ?)")
+        args += [f"%{q}%"] * 2
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    c = get_conn()
+    total = c.execute("SELECT COUNT(*) n FROM events e" + where, args).fetchone()["n"]
+    rows = c.execute(
+        "SELECT e.*, (SELECT COUNT(*) FROM event_evidence v WHERE v.event_uid=e.event_uid) n_evidence,"
+        " (SELECT COUNT(*) FROM event_evidence v WHERE v.event_uid=e.event_uid"
+        "   AND v.source_kind='original') n_original"
+        " FROM events e" + where + " ORDER BY e.updated_at DESC, e.id DESC LIMIT ? OFFSET ?",
+        args + [int(limit), int(offset)]).fetchall()
+    return total, [dict(r) for r in rows]
+
+
+def event_evidence(uid):
+    """证据列表（联推文内容 + 完整性分级），用于详情页"""
+    rows = get_conn().execute(
+        "SELECT v.*, t.id AS tweet_id_only, t.screen_name, t.text, t.title_zh, t.text_zh, t.url,"
+        " t.published_at, t.created_at, t.text_hash, t.ai_severity, t.ai_type,"
+        " t.category, t.geo_country, t.geo_province, t.geo_city, t.industry, t.ai_integrity,"
+        " t.ai_review, t.analysis_version, t.org, t.tags, t.ai_iocs, t.ai_assessment,"
+        " t.ai_confidence, t.ai_repair"
+        " FROM event_evidence v JOIN tweets t ON t.id=v.tweet_id"
+        " WHERE v.event_uid=? ORDER BY v.id", (uid,)).fetchall()
+    return [_row_tweet(r) for r in rows]
+
+
+def evidence_stats(uid):
+    """独立证据统计：original 才算独立；repost 单列（转载不冒充独立证据）"""
+    rows = get_conn().execute(
+        "SELECT source_kind, COUNT(*) n FROM event_evidence WHERE event_uid=?"
+        " GROUP BY source_kind", (uid,)).fetchall()
+    d = {r["source_kind"]: r["n"] for r in rows}
+    return {"original": d.get("original", 0), "repost": d.get("repost", 0),
+            "translation": d.get("translation", 0), "total": sum(d.values())}
+
+
+def _bump_event(uid, action, detail, operator):
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE events SET version=version+1, updated_at=? WHERE event_uid=?",
+                  (now(), uid))
+        v = c.execute("SELECT version FROM events WHERE event_uid=?", (uid,)).fetchone()["version"]
+        c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
+                  " created_at) VALUES (?,?,?,?,?,?)",
+                  (uid, v, action, detail[:500], operator[:60], now()))
+        c.commit()
+        return v
+
+
+def _refresh_event_times(uid):
+    """重建事件首末时间。**调用方必须已持有 _lock**（_lock 不可重入，此处不再加锁）。"""
+    r = get_conn().execute(
+        "SELECT MIN(t.published_at) a, MAX(t.published_at) b FROM event_evidence v"
+        " JOIN tweets t ON t.id=v.tweet_id WHERE v.event_uid=?", (uid,)).fetchone()
+    if r and r["a"]:
+        get_conn().execute("UPDATE events SET first_seen=?, last_seen=? WHERE event_uid=?",
+                           (r["a"] or "", r["b"] or "", uid))
+        get_conn().commit()
+
+
+def add_evidence(uid, tweet_id, basis="manual", source_kind="original", note="",
+                 operator="system"):
+    """添加证据。返回 (ok, event_version)。共享标识依据会被强制降级为候选不可自动合并。"""
+    if basis not in EVENT_BASIS_RANK:
+        return False, 0
+    if not get_event(uid) or not get_tweet(tweet_id):
+        return False, 0
+    with _lock:
+        cur = get_conn().execute(
+            "INSERT OR IGNORE INTO event_evidence"
+            " (event_uid, tweet_id, basis, source_kind, note, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (uid, int(tweet_id), basis, source_kind, note[:200], now()))
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return False, get_event(uid)["version"]
+    v = _bump_event(uid, "update", f"add_evidence tweet={tweet_id} basis={basis}"
+                                   f" kind={source_kind}", operator)
+    with _lock:
+        _refresh_event_times(uid)
+    return True, v
+
+
+def remove_evidence(uid, tweet_id, operator="system"):
+    with _lock:
+        cur = get_conn().execute("DELETE FROM event_evidence WHERE event_uid=? AND tweet_id=?",
+                                 (uid, int(tweet_id)))
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return False, get_event(uid)["version"] if get_event(uid) else 0
+    v = _bump_event(uid, "unlink", f"remove_evidence tweet={tweet_id}", operator)
+    with _lock:
+        _refresh_event_times(uid)
+    return True, v
+
+
+def merge_events(src_uid, dst_uid, operator="system", reason=""):
+    """人工合并：把 src 的证据并入 dst（重复 tweet 保留 dst 的记录），src 置已归档"""
+    if src_uid == dst_uid:
+        return False, ""
+    src, dst = get_event(src_uid), get_event(dst_uid)
+    if not src or not dst:
+        return False, ""
+    with _lock:
+        c = get_conn()
+        for r in c.execute("SELECT tweet_id, basis, source_kind, note FROM event_evidence"
+                           " WHERE event_uid=?", (src_uid,)).fetchall():
+            c.execute("INSERT OR IGNORE INTO event_evidence"
+                      " (event_uid, tweet_id, basis, source_kind, note, created_at)"
+                      " VALUES (?,?,?,?,?,?)",
+                      (dst_uid, r["tweet_id"], r["basis"], r["source_kind"],
+                       (r["note"] or "") + f" [merged from {src_uid}]", now()))
+        c.commit()
+    _bump_event(dst_uid, "merge", f"merge {src_uid} -> {dst_uid}: {reason}", operator)
+    with _lock:
+        get_conn().execute(
+            "UPDATE events SET status='已归档', version=version+1, updated_at=? WHERE event_uid=?",
+            (now(), src_uid))
+        get_conn().execute(
+            "INSERT INTO event_revisions (event_uid, version, action, detail, operator, created_at)"
+            " SELECT event_uid, version, 'merge_out', ?, ?, ? FROM events WHERE event_uid=?",
+            (f"merged into {dst_uid}: {reason}", operator[:60], now(), src_uid))
+        get_conn().commit()
+    with _lock:
+        _refresh_event_times(dst_uid)
+    return True, dst_uid
+
+
+def split_event(uid, tweet_ids, new_title, operator="system"):
+    """人工拆分：指定证据移出到新事件"""
+    ev = get_event(uid)
+    if not ev:
+        return False, ""
+    new_uid, _ = create_event(new_title or (ev["title"] + "（拆分）"), ev.get("summary", ""),
+                              ev.get("severity", ""), operator, [], "manual")
+    moved = 0
+    with _lock:
+        c = get_conn()
+        for tid in tweet_ids:
+            r = c.execute("SELECT * FROM event_evidence WHERE event_uid=? AND tweet_id=?",
+                          (uid, int(tid))).fetchone()
+            if not r:
+                continue
+            c.execute("INSERT OR IGNORE INTO event_evidence"
+                      " (event_uid, tweet_id, basis, source_kind, note, created_at)"
+                      " VALUES (?,?,?,?,?,?)",
+                      (new_uid, int(tid), r["basis"], r["source_kind"],
+                       (r["note"] or "") + f" [split from {uid}]", now()))
+            c.execute("DELETE FROM event_evidence WHERE event_uid=? AND tweet_id=?",
+                      (uid, int(tid)))
+            moved += 1
+        c.commit()
+    if moved:
+        _bump_event(uid, "split", f"split out {moved} evidence -> {new_uid}", operator)
+        _bump_event(new_uid, "split", f"split in {moved} evidence from {uid}", operator)
+        with _lock:
+            _refresh_event_times(uid)
+            _refresh_event_times(new_uid)
+    return True, new_uid
+
+
+def update_event(uid, title=None, summary=None, severity=None, status=None, operator="system",
+                 expected_version=None):
+    """更新事件元数据。expected_version 提供时做乐观锁（版本不符拒绝）。"""
+    ev = get_event(uid)
+    if not ev:
+        return False, 0
+    if expected_version is not None and int(expected_version) != int(ev["version"]):
+        return False, int(ev["version"])
+    sets, args = [], []
+    for k, v in (("title", title), ("summary", summary), ("severity", severity),
+                 ("status", status)):
+        if v is not None:
+            sets.append(f"{k}=?")
+            args.append(str(v)[:1000])
+    if not sets:
+        return False, ev["version"]
+    with _lock:
+        get_conn().execute(f"UPDATE events SET {', '.join(sets)} WHERE event_uid=?",
+                           args + [uid])
+        get_conn().commit()
+    v = _bump_event(uid, "update", "fields=" + ",".join(s[0] for s in [x.split("=") for x in sets]),
+                    operator)
+    return True, v
+
+
+def event_revisions(uid):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM event_revisions WHERE event_uid=? ORDER BY version DESC, id DESC",
+        (uid,)).fetchall()]
+
+
+def candidate_events(tweet_id, limit=10):
+    """候选关联（**不自动合并**）：仅共享 CVE/IP/组织名/受害单位等弱信号。
+    返回 [{event_uid,title,reasons}]，由人工决定是否关联。"""
+    t = get_tweet(tweet_id)
+    if not t:
+        return []
+    import json as _json
+    def _arr(v):
+        try:
+            return [str(x) for x in _json.loads(v or "[]")]
+        except Exception:
+            return []
+    my_iocs = set(_arr(t.get("ai_iocs")))
+    my_orgs = set(_arr(t.get("org")))
+    my_actors = set(_arr(t.get("ai_actors")))
+    out = []
+    for ev in get_conn().execute(
+            "SELECT * FROM events WHERE status!='已归档' ORDER BY updated_at DESC LIMIT 100").fetchall():
+        ev = dict(ev)
+        reasons = []
+        ev_tweets = [r["tweet_id"] for r in get_conn().execute(
+            "SELECT tweet_id FROM event_evidence WHERE event_uid=?", (ev["event_uid"],)).fetchall()]
+        if tweet_id in ev_tweets:
+            continue   # 已在本事件中
+        if ev_tweets:
+            rows = get_conn().execute(
+                f"SELECT ai_iocs, org, ai_actors FROM tweets WHERE id IN"
+                f" ({','.join('?' * len(ev_tweets))})", ev_tweets).fetchall()
+            ev_iocs, ev_orgs, ev_actors = set(), set(), set()
+            for r in rows:
+                ev_iocs |= set(_arr(r["ai_iocs"]))
+                ev_orgs |= set(_arr(r["org"]))
+                ev_actors |= set(_arr(r["ai_actors"]))
+            common_ioc = my_iocs & ev_iocs
+            common_org = my_orgs & ev_orgs
+            common_actor = my_actors & ev_actors
+            if common_ioc:
+                reasons.append("共享指标：" + "、".join(sorted(common_ioc)[:3]))
+            if common_org:
+                reasons.append("共享单位：" + "、".join(sorted(common_org)[:3]))
+            if common_actor:
+                reasons.append("共享行为体：" + "、".join(sorted(common_actor)[:3]))
+        if reasons:
+            out.append({"event_uid": ev["event_uid"], "title": ev["title"],
+                        "reasons": reasons,
+                        "basis": "shared_indicator",
+                        "auto_merge": False})   # 明确：共享标识不得自动合并
+    return out[:limit]
+
+def review_event(uid, event_version, decision, note="", operator="system"):
+    """审核绑定事件版本。返回 (ok, reason)。
+
+    规则：
+      - 旧版本不能批准新内容：event_version 必须等于当前 version
+      - 同一版本只能有一条决定（UNIQUE(event_uid,event_version) 幂等）
+    """
+    ev = get_event(uid)
+    if not ev:
+        return False, "event_not_found"
+    if int(event_version) != int(ev["version"]):
+        return False, f"version_mismatch(current={ev['version']})"
+    if decision not in ("approved", "rejected"):
+        return False, "bad_decision"
+    with _lock:
+        try:
+            get_conn().execute(
+                "INSERT INTO event_reviews (event_uid, event_version, decision, note,"
+                " operator, created_at) VALUES (?,?,?,?,?,?)",
+                (uid, int(event_version), decision, note[:500], operator[:60], now()))
+            get_conn().commit()
+        except Exception:
+            return False, "already_reviewed"
+    return True, "ok"
+
+
+def event_review_latest(uid):
+    r = get_conn().execute(
+        "SELECT * FROM event_reviews WHERE event_uid=? ORDER BY event_version DESC, id DESC LIMIT 1",
+        (uid,)).fetchone()
+    return dict(r) if r else None
+
+
+def event_reviews(uid):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM event_reviews WHERE event_uid=? ORDER BY event_version DESC, id DESC",
+        (uid,)).fetchall()]
+
+
+def review_queue(status="", limit=50):
+    """审核队列：待审核（无当前版本审核决定）+ 未归档事件"""
+    rows = get_conn().execute(
+        "SELECT e.*, (SELECT COUNT(*) FROM event_evidence v WHERE v.event_uid=e.event_uid) n_evidence,"
+        " (SELECT decision FROM event_reviews r WHERE r.event_uid=e.event_uid"
+        "   AND r.event_version=e.version LIMIT 1) current_decision"
+        " FROM events e WHERE e.status!='已归档'"
+        " ORDER BY e.updated_at DESC LIMIT ?", (int(limit),)).fetchall()
+    items = [dict(r) for r in rows]
+    if status == "pending":
+        items = [x for x in items if not x.get("current_decision")]
+    elif status == "approved":
+        items = [x for x in items if x.get("current_decision") == "approved"]
+    return items
+
+
+def event_events_for_tweet(tweet_id):
+    """某情报所属事件（删除保护用）"""
+    return [r["event_uid"] for r in get_conn().execute(
+        "SELECT event_uid FROM event_evidence WHERE tweet_id=?", (int(tweet_id),)).fetchall()]
