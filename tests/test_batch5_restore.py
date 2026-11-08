@@ -50,7 +50,11 @@ def check(name, cond, detail=""):
 
 
 # ============================================================
-print("== 构造待恢复环境（含各类状态 + 附件） ==")
+print("== 构造待恢复环境（含各类状态 + 附件 + 生产态配置） ==")
+# G 组夹具：恢复前配置为"生产态"（调度/外发全开）——恢复必须自动落实安全关闭
+(env.tmp / "runtime.json").write_text(json.dumps(
+    {"scheduler": {"enabled": True}, "outbound": {"enable": True},
+     "x": {"accounts": [{"name": "legacy"}]}}, ensure_ascii=False), encoding="utf-8")
 db.add_x_account("RestoreSrc")
 db.add_rss_source("RestoreRSS", "https://example.com/r")
 src_id = db.get_conn().execute("SELECT id FROM rss_sources WHERE name='RestoreRSS'").fetchone()["id"]
@@ -127,7 +131,11 @@ summary = backup.restore_to(bk_dir, target, project_root=ROOT)
 rs_elapsed = time.time() - t_rs
 check("R2-1 恢复哈希校验通过", summary["ok"], str(summary.get("problems"))[:100])
 check("R2-2 恢复耗时 < 60s", rs_elapsed < 60, f"{rs_elapsed:.2f}s")
-counts = summary["counts"]
+# G 组语义：原件一致性校验（复制后逐字节一致）+ 安全变更摘要
+check("R2-1b 原件一致性 verify_original ok",
+      (summary.get("verify_original") or {}).get("ok") is True,
+      str(summary.get("verify_original"))[:100])
+counts = summary["verify_original"]["counts"]
 check("R2-3 情报数一致", counts["tweets"] == before["tweets"],
       f"{counts['tweets']} vs {before['tweets']}")
 check("R2-4 投递/消息/尝试一致",
@@ -169,8 +177,9 @@ with sqlite3.connect(str(target / "xintel.db")) as c:
     check("R4-1 管理员凭据随备份恢复", login_ok)
     tok_rows = c.execute("SELECT COUNT(*) n FROM auth_tokens").fetchone()["n"]
     sess_rows = c.execute("SELECT COUNT(*) n FROM auth_sessions").fetchone()["n"]
-    check("R4-2 Token 记录随备份恢复（需人工复核吊销状态）", tok_rows >= 1, f"{tok_rows} 条")
-    check("R4-3 会话记录随备份恢复（恢复后应清理）", sess_rows >= 1, f"{sess_rows} 条")
+    # G 组安全语义：恢复一律清除旧 Token/会话——不悄悄复活已吊销凭据
+    check("R4-2 旧 Token 已全部清除（不复活已吊销凭据）", tok_rows == 0, f"{tok_rows} 条")
+    check("R4-3 旧会话已全部清除", sess_rows == 0, f"{sess_rows} 条")
 
 # ============================================================
 print("== R4 恢复后不外发（应用启动行为） ==")
@@ -182,6 +191,25 @@ with sqlite3.connect(str(target / "xintel.db")) as c:
     pending = c.execute("SELECT COUNT(*) n FROM delivery_msgs WHERE state='待发送'").fetchone()["n"]
 check("R4-4 恢复后仍保有 发送中/结果不明/待发送（不自动清零/重发）",
       sending >= 1 and unknown >= 1 and pending >= 0, f"s={sending} u={unknown} p={pending}")
+# G 组运行语义：恢复副本配置已强制安全（原件不动）——真实启动验证见 test_batch7_g.py
+rt_restored = json.loads((target / "runtime.json").read_text(encoding="utf-8"))
+rt_orig = json.loads((bk_dir / "runtime.json").read_text(encoding="utf-8"))
+check("R4-5a 恢复副本 scheduler.enabled=false",
+      (rt_restored.get("scheduler") or {}).get("enabled") is False,
+      str(rt_restored.get("scheduler")))
+check("R4-5b 恢复副本 outbound.enable=false",
+      (rt_restored.get("outbound") or {}).get("enable") is False,
+      str(rt_restored.get("outbound")))
+check("R4-5c 备份原件配置未被改动",
+      (rt_orig.get("scheduler") or {}).get("enabled") is True,
+      str(rt_orig.get("scheduler")))
+sc = summary.get("safety_changes") or []
+check("R4-5d 摘要区分原件哈希与恢复变更",
+      sc and sc[0].get("backup_original_sha256") != sc[0].get("restored_modified_sha256"),
+      str(sc)[:120])
+ar = summary.get("auth_reset") or {}
+check("R4-5e 摘要记录 Token/会话清除数量",
+      ar.get("tokens", 0) >= 1 and ar.get("sessions", 0) >= 1, str(ar)[:100])
 # 应用启动策略：默认调度关闭（由部署控制；代码层提供显式开关）
 src_main = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
 check("R4-5 启动调度受配置控制（可关闭）", "scheduler" in src_main)
@@ -207,6 +235,7 @@ check("R5-1 事件相关表存在", {"events", "event_evidence", "event_revision
 
 print(f"\n=== 演练耗时：备份 {bk_elapsed:.2f}s / 恢复 {rs_elapsed:.2f}s / 总计 {time.time()-T0:.2f}s ===")
 print("=== 限制：恢复后需人工清理 auth_sessions、复核 auth_tokens 吊销状态 ===")
+print("=== 2026-11-09 G 组修订：Token/会话恢复时自动清除；调度/外发恢复时强制关闭 ===")
 print(f"\n==== 恢复演练：{PASS} PASS / {len(FAIL)} FAIL ====")
 if FAIL:
     print("失败项：")
