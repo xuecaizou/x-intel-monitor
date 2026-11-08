@@ -230,7 +230,17 @@ def deliver(tid, payload):
 
     deliver_dir = payload.get("deliver_dir", "")
     docx = payload.get("docx", "")
-    docx_abs = os.path.join(deliver_dir, docx) if deliver_dir and docx else ""
+    # 2026-11-09 H：交付文件读取经 safe_report_path——deliver_dir 必须是
+    # data/report_tasks 下的相对目录，filename 纯文件名（历史接受任意绝对目录）
+    path_error = ""
+    docx_abs = ""
+    if deliver_dir and docx:
+        try:
+            from .safefetch import safe_report_path
+            docx_abs = str(safe_report_path(deliver_dir, docx))
+        except Exception as pe:
+            path_error = f"交付路径不合法: {type(pe).__name__}: {str(pe)[:120]}"
+            docx_abs = ""
     exists = bool(docx_abs and os.path.isfile(docx_abs))
 
     updates = {
@@ -245,10 +255,10 @@ def deliver(tid, payload):
     auto_push = bool(t.get("auto_push")) or bool(payload.get("auto_push"))
 
     if not exists:
-        # 交付文件不存在 → 宁可拦住不可放过
+        # 交付文件不存在/路径不合法 → 宁可拦住不可放过
         updates.update({"status": "待人工",
                         "gate_exit": 999,
-                        "gate_summary": "交付文件不存在: " + docx_abs})
+                        "gate_summary": (path_error or "交付文件不存在: " + docx_abs)})
     else:
         gate_exit, gate_summary = _run_gate(
             docx_abs, t.get("tier", "速报"), payload.get("word_limit"))
@@ -374,7 +384,14 @@ def push_task(tid):
                 if _push_file is not None:
                     for suffix_name in (t["docx"].rsplit(".", 1)[0] + "_批注.docx",
                                         t["docx"].rsplit(".", 1)[0] + "_审阅.html"):
-                        fp = os.path.join(t["deliver_dir"], suffix_name)
+                        try:
+                            from .safefetch import safe_report_path
+                            fp = str(safe_report_path(t["deliver_dir"], suffix_name))
+                        except Exception as pe:
+                            items.append({"item": suffix_name, "ok": False,
+                                          "detail": f"交付路径不合法: {str(pe)[:80]}"})
+                            attach_note += f" +{suffix_name}:路径非法"
+                            continue
                         if prev_it.get(suffix_name) is True:
                             items.append({"item": suffix_name, "ok": True,
                                           "detail": "跳过（上次已成功）"})

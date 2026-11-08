@@ -180,9 +180,14 @@ def check_proxy_trust(purpose: str, proxy: str):
 
 
 def fetch_limited(url: str, *, timeout: int = 20, max_bytes: int = MAX_BYTES,
-                  allow_private: bool = False, session=None):
-    """受控 GET：禁用自动重定向（手动逐跳校验）、限制大小。
+                  allow_private: bool = False, session=None, purpose: str = "rss",
+                  proxies=None, headers=None):
+    """受控 GET：禁用自动重定向（**逐跳** validate_url）、限制大小、限超时。
 
+    2026-11-09 H：新增 purpose/proxies/headers——业务调用链（RSS/媒体）从
+    "默认自动重定向+整包读取"的裸 requests 迁移到本函数；代理场景下本地
+    IP 校验是尽力而为（代理侧解析不可见），但 scheme 白名单、逐跳校验、
+    重定向上限、大小上限、超时仍在应用层实际生效。
     session 可为 requests.Session 或兼容替身（测试用）。
     返回 (status_code, content_bytes, final_url)。
     """
@@ -190,9 +195,10 @@ def fetch_limited(url: str, *, timeout: int = 20, max_bytes: int = MAX_BYTES,
 
     cur = url
     for hop in range(MAX_REDIRECTS + 1):
-        validate_url(cur, allow_private=allow_private)
+        validate_url(cur, allow_private=allow_private, purpose=purpose)
         r = (session or requests).get(cur, timeout=timeout, allow_redirects=False,
-                                      stream=True)
+                                      stream=True, proxies=proxies,
+                                      headers=headers or {})
         if r.status_code in (301, 302, 303, 307, 308):
             loc = r.headers.get("location") or r.headers.get("Location")
             if not loc:

@@ -87,19 +87,24 @@ def fetch_source(src, cfg, limit=15):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
     try:
         # SSRF 校验（第四批）：仅 http/https；禁止回环/私网/链路本地（可用 fetch.allow_private_urls 显式放行）
-        from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust
+        from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust, fetch_limited
+        from .twitter import _proxies
         try:
             validate_url(url, purpose="rss")   # RSS 永不允许私网（无白名单用途）
             check_proxy_trust("rss", xcfg.get("proxy") or "")
         except UnsafeUrlError as ue:
             return 0, "", f"URL 拒绝（出站策略）：{ue}"
-        r = _http_get(url, xcfg, timeout=max(20, int((src.get("_timeout") or 20))))
-        if r.status_code != 200:
-            return 0, f"HTTP {r.status_code}", f"HTTP {r.status_code}"
-        if not (r.content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in r.content[:600]
-                or b"<rss" in r.content[:600]):
+        # 2026-11-09 H：从裸 _http_get（默认自动重定向+整包读取）迁移到受控抓取——
+        # 重定向逐跳校验、≤8MB、显式超时在应用层实际生效
+        status, content, _final = fetch_limited(
+            url, timeout=max(20, int((src.get("_timeout") or 20))),
+            purpose="rss", proxies=_proxies(xcfg.get("proxy") or ""))
+        if status != 200:
+            return 0, f"HTTP {status}", f"HTTP {status}"
+        if not (content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in content[:600]
+                or b"<rss" in content[:600]):
             return 0, "响应非 RSS/Atom", "非 RSS 内容（可能被 WAF 拦截）"
-        feed = feedparser.parse(r.content)
+        feed = feedparser.parse(content)
         if not feed.entries:
             return 0, "0 条目", "空 feed"
         # 增量短路：首条 guid 与上次一致 → 无更新
@@ -177,17 +182,28 @@ def run_rss_round(trigger="schedule"):
 
 
 def test_source(url):
-    """连通性测试：抓一次返回条目数与前 3 条标题（不入库）"""
+    """连通性测试：抓一次返回条目数与前 3 条标题（不入库）。
+
+    2026-11-09 H：补齐出站校验（历史缺陷——fetch_source 有 validate_url，
+    来源测试却裸走 _http_get，可被当作 SSRF 探针）。"""
     from .config import load
+    from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust, fetch_limited
+    from .twitter import _proxies
     cfg = load()
     xcfg = dict(cfg.get("x", {}))
     if not xcfg.get("proxy"):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
     try:
-        r = _http_get(url, xcfg, timeout=20)
-        if r.status_code != 200:
-            return {"ok": False, "error": f"HTTP {r.status_code}"}
-        feed = feedparser.parse(r.content)
+        validate_url(url, purpose="rss")
+        check_proxy_trust("rss", xcfg.get("proxy") or "")
+    except UnsafeUrlError as ue:
+        return {"ok": False, "error": f"URL 拒绝（出站策略）：{str(ue)[:120]}"}
+    try:
+        status, content, _final = fetch_limited(url, timeout=20, purpose="rss",
+                                                proxies=_proxies(xcfg.get("proxy") or ""))
+        if status != 200:
+            return {"ok": False, "error": f"HTTP {status}"}
+        feed = feedparser.parse(content)
         if not feed.entries:
             return {"ok": False, "error": "解析成功但 0 条目（内容可能被 WAF 拦截）"}
         return {"ok": True, "title": feed.feed.get("title", ""),

@@ -168,8 +168,9 @@ check("T2-3 终态不可覆盖", ok3 is False)
 print("== T3 报告分项补发（正文成功仅补失败附件） ==")
 reports_cfg = {"channels": {}}
 reports.load = lambda: reports_cfg
-dirt = TMP / "d3"
-dirt.mkdir(exist_ok=True)
+dirt_rel = "b3-d3"   # H 组：交付目录必须为 data/report_tasks 下相对路径
+dirt = TMP / "report_tasks" / dirt_rel
+dirt.mkdir(parents=True, exist_ok=True)
 (dirt / "r_批注.docx").write_text("x")   # 审阅.html 缺失 → 分项失败
 wm_stub = {"calls": []}
 import app.wecom_media as wm  # noqa: E402
@@ -185,7 +186,7 @@ t3 = add_tweet("RepSrc", "report src")
 tid3 = reports.create_task("分项补发", ["t3"], "速报", "", [t3], 0)["id"]
 db.get_conn().execute(
     "UPDATE report_tasks SET status='已交付待推', deliver_dir=?, docx='r.docx' WHERE id=?",
-    (str(dirt), tid3))
+    (dirt_rel, tid3))
 db.get_conn().commit()
 reports.push_task(tid3)
 check("T3-1 附件失败 → 部分已推送", task_status(tid3) == "部分已推送", task_status(tid3))
@@ -337,7 +338,22 @@ feed2 = types.SimpleNamespace(entries=[
 class FakeResp:
     status_code = 200
     content = b'<rss><channel><item><title>stub</title></item></channel></rss>'
-rssfetch._http_get = lambda url, cfg, **kw: FakeResp()
+    headers = {}
+
+    def iter_content(self, chunk_size=65536):
+        yield self.content
+
+    def raise_for_status(self):
+        return None
+
+# H 组：fetch_source 已迁移到 fetch_limited（requests.get HTTP 边界）——
+# 替身同步迁移：validate_url 放行（跳过 DNS）+ requests.get 受控响应
+import app.safefetch as _sf  # noqa: E402
+_orig_validate = _sf.validate_url
+_sf.validate_url = lambda url, **kw: url
+import requests as _requests  # noqa: E402
+_orig_get3 = _requests.get
+_requests.get = lambda url, **kw: FakeResp()
 rssfetch.feedparser = types.SimpleNamespace(parse=lambda c: feed2)
 _r1 = rssfetch.run_rss_round("test")
 n1 = _r1["new"]
@@ -359,6 +375,10 @@ check("S-D1 来源改名后不重复入库且归属不变",
 
 # ============================================================
 _cfg3.load = _real_load3
+_sf.validate_url = _orig_validate
+_requests.get = _orig_get3
+import feedparser as _real_feedparser
+rssfetch.feedparser = _real_feedparser  # 恢复真实解析器
 print("== S-B 位点后置（入库失败不推进） ==")
 # 模拟：insert_tweet 抛异常 → 位点不推进 → 重试仍能拉到同一批
 orig_it = db.insert_tweet

@@ -161,14 +161,20 @@ def api_media(url: str):
     except Exception as e:
         raise HTTPException(400, f"URL 未通过校验：{str(e)[:80]}")
     try:
-        from app.twitter import _http_get
+        from app.twitter import _proxies
+        from app.safefetch import fetch_limited
         cfg = load().get("x", {})
-        r = _http_get(url, cfg, timeout=20)
-        ct = r.headers.get("content-type", "image/jpeg")
-        if not ct.startswith("image/"):
-            raise HTTPException(502, "上游返回非图片内容")
+        # 2026-11-09 H：从裸 _http_get（自动跟随重定向——上游可 302 到内网）迁移到
+        # 受控抓取：重定向逐跳校验（域名白名单每跳复核）、≤8MB、显式超时
+        status, content, _final = fetch_limited(
+            url, timeout=20, purpose="media",
+            proxies=_proxies(cfg.get("proxy") or ""))
+        if status != 200:
+            raise HTTPException(502, f"上游 HTTP {status}")
+        import mimetypes
+        ct = mimetypes.guess_type("x.jpg")[0] or "image/jpeg"  # 受控路径不读上游头（防注入头伪造），图片代理仅 twimg 白名单
         from fastapi.responses import Response
-        return Response(content=r.content, media_type=ct,
+        return Response(content=content, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
     except HTTPException:
         raise
