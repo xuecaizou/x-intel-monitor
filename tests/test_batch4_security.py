@@ -72,7 +72,11 @@ for label, bad in cases:
     expect_block(f"路径拦截：{label}", lambda b=bad: sf.safe_join(data_root, b))
 # 合法相对路径可解析
 ok = sf.safe_join(data_root, "report_tasks", "task_1.json")
-check("合法相对路径通过", str(ok).startswith(str(data_root)), str(ok))
+# 2026-11-09：改用解析后归属比较——Windows CI 上 tempfile 返回的原始路径与
+# .resolve() 展开形式可能不同（8.3 短名/大小写），字符串前缀比较会假失败
+# （CI run 42508927840 Windows job 实证；safe_join 本身用 resolved 相对比较，无此问题）
+check("合法相对路径通过",
+      Path(str(ok)).resolve().is_relative_to(Path(data_root).resolve()), str(ok))
 
 print("\n== 报告文件（纯文件名约束） ==")
 try:
