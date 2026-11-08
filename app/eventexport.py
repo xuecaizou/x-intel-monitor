@@ -75,37 +75,25 @@ def _csv_safe(v):
 
 
 def _snapshot(uid):
-    """一致性快照读取。
+    """一致性快照读取（2026-11-09 E 修订）。
 
-    使用 SQLite 只读事务（BEGIN DEFERRED）保证多次查询看到同一快照；
-    若连接已有未提交事务则复用当前事务（不嵌套 BEGIN）。
-    """
-    c = db.get_conn()
-    started = False
-    if not c.in_transaction:
-        c.execute("BEGIN DEFERRED")
-        started = True
-    try:
-        ev = db.get_event(uid)
+    先做新鲜度检查（写连接：底层情报变化 → 推进版本留痕），再开
+    **独立只读连接**（WAL 快照）完成全部读取——与写请求完全隔离：
+    导出与写交错不再出现 'cannot commit - no transaction is active'
+    （共享连接 BEGIN 被写入隐式提交/回收的历史缺陷），且多次查询
+    看到同一版本的数据。"""
+    if not db.ensure_event_freshness(uid):
+        return None  # 事件不存在
+    with db.snapshot_conn() as ro:
+        ev = db.get_event(uid, conn=ro)
         if not ev:
-            if started:
-                c.execute("COMMIT")
             return None
-        evidence = db.event_evidence(uid)
-        stats = db.evidence_stats(uid)
-        review = db.event_review_latest(uid)
-        revs = db.event_revisions(uid)
-        if started:
-            c.execute("COMMIT")
-    except Exception:
-        if started:
-            try:
-                c.execute("ROLLBACK")
-            except Exception:
-                pass
-        raise
-    return {"event": ev, "evidence": evidence, "stats": stats,
-            "review": review, "revisions": revs}
+        return {"event": ev,
+                "evidence": db.event_evidence(uid, conn=ro),
+                "stats": db.evidence_stats(uid, conn=ro),
+                "review": db.event_review_latest(uid, conn=ro),
+                "review_state": db.event_review_state(uid, conn=ro),
+                "revisions": db.event_revisions(uid, conn=ro)}
 
 
 def _evidence_item(t):
@@ -208,7 +196,10 @@ def export_event_json(uid):
                     "event_version": snap["review"]["event_version"],
                     "operator": snap["review"]["operator"],
                     "note": snap["review"]["note"],
-                    "created_at": snap["review"]["created_at"]}
+                    "created_at": snap["review"]["created_at"],
+                    # 历史决定标注：state=stale 时该决定只反映旧版本，不得当作当前批准
+                    "state": snap["review_state"]["state"],
+                    "current_version": snap["review_state"]["current_version"]}
                    if snap["review"] else None),
         "evidence": items,
         "iocs": iocs,

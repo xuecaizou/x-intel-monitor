@@ -21,6 +21,7 @@ SUITES = [
     "tests/test_batch7_b.py",
     "tests/test_batch7_c.py",
     "tests/test_batch7_d.py",
+    "tests/test_batch7_e.py",
     "tests/test_batch1.py",
     "tests/test_batch2.py",
     "tests/test_batch3.py",

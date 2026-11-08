@@ -1102,11 +1102,13 @@ def api_event_detail(uid: str):
     ev = db.get_event(uid)
     if not ev:
         raise HTTPException(404, "事件不存在")
+    db.ensure_event_freshness(uid)  # 底层情报变化 → 版本推进留痕（旧审核自动失效）
     ev["evidence"] = db.event_evidence(uid)
     ev["stats"] = db.evidence_stats(uid)
     ev["revisions"] = db.event_revisions(uid)
     ev["reviews"] = db.event_reviews(uid)
     ev["review_latest"] = db.event_review_latest(uid)
+    ev["review_state"] = db.event_review_state(uid)  # valid/stale/none 统一口径
     ev["candidates"] = []   # 这里不返回候选（需按推文查）
     return ev
 
