@@ -194,25 +194,78 @@ def init_ready() -> bool:
     return user_count() > 0
 
 
+def parse_init_content(raw: str):
+    """解析初始化文件内容。返回 (username, password, 诊断信息)。
+
+    容错（2026-11-08 实测问题）：
+      - 冒号 或 斜杠 均可用作分隔符（用户实际写了 admin/密码）
+      - 去 BOM / 首尾空白 / Windows 换行
+      - 密码含 @ . 等字符原样保留
+    仍无法解析时返回 (None, None, 原因)。
+    """
+    txt = (raw or "").lstrip("﻿").strip()
+    if not txt:
+        return None, None, "文件为空"
+    sep = ":" if ":" in txt else ("/" if "/" in txt else None)
+    if sep is None:
+        return None, None, "缺少分隔符（需 用户名:密码 或 用户名/密码）"
+    username, _, password = txt.partition(sep)
+    username, password = username.strip(), password.strip()
+    if not username:
+        return None, None, "用户名为空"
+    if len(password) < 8:
+        return None, None, f"密码长度 {len(password)} < 8"
+    return username, password, ""
+
+
+def find_init_files():
+    """查找初始化文件。同时接受 单点/双点 命名（admin_init.txt / admin_init..txt），
+    以及项目根目录的误放位置——返回存在的路径列表。"""
+    base = Path(DATA_DIR)
+    candidates = [base / INIT_FILE, base / "admin_init..txt", base.parent / INIT_FILE]
+    return [p for p in candidates if p.exists()]
+
+
 def try_consume_init_file() -> Optional[str]:
-    """服务启动时若存在 data/admin_init.txt，读取并创建管理员后删除文件。
-    格式：用户名:密码（密码可含冒号）。文件权限建议仅本机用户可读。"""
-    p = Path(DATA_DIR) / INIT_FILE
-    if not p.exists() or user_count() > 0:
+    """服务启动时处理初始化文件（存在即处理；已有管理员时改为"重置该用户密码"）。
+    格式：用户名:密码（也兼容 用户名/密码）。处理成功后删除文件。"""
+    files = find_init_files()
+    if not files:
         return None
+    p = files[0]
     try:
-        raw = p.read_text(encoding="utf-8").strip()
-        username, _, password = raw.partition(":")
-        if not username or len(password) < 8:
-            return "admin_init.txt 格式错误或密码少于 8 位"
-        create_admin(username.strip(), password)
-        try:
-            p.unlink()
-        except Exception:
-            pass
-        return f"已根据本机初始化文件创建管理员：{username.strip()}"
+        raw = p.read_text(encoding="utf-8-sig")
     except Exception as e:
-        return f"初始化失败：{type(e).__name__}"
+        return f"初始化文件读取失败：{type(e).__name__}"
+    username, password, why = parse_init_content(raw)
+    if not username:
+        return f"admin_init 解析失败（{why}）：文件保留在 {p}，请修正后重启"
+    try:
+        if user_count() == 0:
+            create_admin(username, password)
+            msg = f"已创建管理员：{username}"
+        else:
+            # 已有管理员：按文件意图重置该用户密码（运维恢复场景）
+            set_password(username, password)
+            msg = f"已重置管理员密码：{username}"
+        for f in files:
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        return msg + f"（初始化文件已删除，共 {len(files)} 个）"
+    except Exception as e:
+        return f"初始化失败：{type(e).__name__}: {e}"[:160]
+
+
+def set_password(username: str, password: str) -> bool:
+    """设置指定用户密码（不存在返回 False）"""
+    with db._lock:
+        cur = db.get_conn().execute(
+            "UPDATE auth_users SET pw_hash=? WHERE username=?",
+            (hash_password(password), username))
+        db.get_conn().commit()
+        return cur.rowcount > 0
 
 
 # ---------- 依赖注入 ----------
