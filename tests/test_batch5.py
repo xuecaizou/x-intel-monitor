@@ -124,10 +124,16 @@ t_i = {"ai_integrity": "invalid"}
 check("L2-6 verified 允许且不标注", integ.may_auto_downstream(t_v) == (True, False, ""))
 check("L2-7 partial 允许但必须标注", integ.may_auto_downstream(t_p)[:2] == (True, True))
 check("L2-8 invalid 禁止下游", integ.may_auto_downstream(t_i)[0] is False)
-# 人工审核 → verified
-t_rev = {"ai_integrity": "partial", "ai_review": "manual"}
-check("L2-9 人工审核后视为 verified", integ.effective_grade(t_rev) == "verified"
+# 人工审核 → verified（2026-11-09 C 组修订：仅当审核绑定当前版本时升级）
+t_rev = {"ai_integrity": "partial", "ai_review": "manual",
+         "ai_review_version": 0, "analysis_version": 0}
+check("L2-9 人工审核（绑定当前版本）后视为 verified",
+      integ.effective_grade(t_rev) == "verified"
       and integ.may_auto_downstream(t_rev)[:2] == (True, False))
+t_rev_legacy = {"ai_integrity": "partial", "ai_review": "manual"}  # 无版本绑定的历史数据
+check("L2-9b 无版本绑定审核保守 stale 不升级",
+      integ.review_state(t_rev_legacy)[0] == "stale"
+      and integ.effective_grade(t_rev_legacy) == "partial")
 
 # ============================================================
 print("== L2 下游一致性（推送/报告共用同一函数） ==")

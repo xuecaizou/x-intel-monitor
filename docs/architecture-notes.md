@@ -9,7 +9,7 @@
 | app/config.py | DEFAULTS + config.yaml + runtime.json 三层深合并；**运行时配置唯一入口** | 不缓存（每次 load() 读文件） |
 | app/db.py | SQLite 单连接+线程锁；全部表读写；facets 统计；push_stats_today | 业务判定 |
 | app/twitter.py | X 抓取三级降级（syndication→Nitter→Cookie）；代理读取 x.proxy | 入库（engine 调 db） |
-| app/rssfetch.py | RSS/Atom 抓取；_norm_time 时间归一；guid 增量短路 | 入库（同上） |
+| app/rssfetch.py | RSS/Atom 抓取（受控 fetch_limited：逐跳校验/≤8MB）；_norm_time 归一；**逐条扫描去重**（首条 GUID 短路已废除——第七批 I） | 入库（engine 调 db） |
 | app/ai.py | 研判/翻译/分类/模型列表；analyze_tweet 内含地理规则兜底（F7） | 推送 |
 | app/geo_rules.py | 确定性地理判定三层（国旗→强地理→企业名弱线索默认不采信） | 写库 |
 | app/engine.py | 调度编排：run_fetch（采集→AI→推送）、dispatch（摘要+即时）、pass_filter（六维+模式）、报告任务编排 | 不直连外部（经 notify/ai） |
@@ -99,7 +99,7 @@
   read 20 个 / write 40 个 / admin 1 个；认证端点 3 个免依赖。
 - 会话写请求必须带 `X-CSRF-Token`（与登录返回的 csrf 比对）。
 - 未初始化（无管理员）时一律 503；不存在"匿名兜底"。
-- `db.update_ai()` 无版本检查（已知限制 L1）。
+- `db.update_ai()` 无版本检查（**低层管理写专用**——B 组起引擎路径全部改走 apply_ai_result / update_ai_guarded 权威路径，失败/状态写回同样受版本与人工保护约束）。
 
 ## 7. 出站与文件安全（第四批）
 
@@ -156,5 +156,25 @@
 **证据独立性**：`source_kind=original` 才计入独立证据；`repost/translation` 单列，不冒充独立来源。
 
 **审核语义**：审核对象是「事件 + 版本」；版本推进后旧审核自动失效（查询时按 `event_version=当前version` 匹配）。
+- **证据指纹 evidence_fingerprint**（第七批 E）：成员集合+每条证据 analysis_version 的 SHA1。
+  底层情报变化（AI 结果落地/人工修订/原文更新都推进 analysis_version）→ 读路径
+  `ensure_event_freshness` 检测→版本推进+`evidence_changed` 留痕（幂等）。
+- **审核三态 review_state**：valid（绑定当前版本且指纹一致）/ stale（历史决定，不得冒充当前批准——
+  事件详情页显示"历史决定（vN）：… 需重新审核"）/ none。导出 JSON 的 review 块携带 state。
+- **写事务语义**：update_event 乐观锁（检查/修改/推进/审计同事务，UPDATE WHERE version=?）；
+  add/remove_evidence、split（零有效成员不建空事件）、merge 全部单事务（`_bump_event_locked`）。
+- **导出一致性**：`_snapshot` 使用独立只读连接（WAL 快照）——导出与写请求完全隔离，
+  历史上共享连接 BEGIN 被写入隐式回收导致的 cannot commit 缺陷已消除。
 
 **完整性 → 导出**：`verified/normalized` 可作结论；`partial` 逐条标注 `usable_as_conclusion=false`；`invalid` 不进入可用结论。
+
+**IOC 导出口径（第七批 F）**：五桶分离 `cve/attack/victim/reference/invalid`——
+缺角色证据默认 `role=unknown`（绝不默认 attack）；组织名重合仅 `hints.org_overlap` 不参与确定归类；
+事实核验 `verified` 只来自"人工审核绑定当前版本"，不由结构完整性推导；
+invalid 来源指标进 invalid 桶（审计保留，不进可使用结论）；去重按 (value, tweet_id)
+保留全部来源（`source_count`/`role_conflict` 标注）；JSON/CSV 同口径，CSV 公式注入防护延续。
+
+**统计口径（第七批 J）**：来源总数=X+RSS；启用数=两类启用之和（启用但异常仍计入）；
+逐源四态 `ok/error/unknown/disabled`（启用但无抓取记录=unknown，不假正常）；聚合
+`health.state`（normal/partial_error/error/unknown/idle）由 X 与 RSS 共同决定；
+推送统计真实/模拟分列——`real_rate` 分母=真实尝试，仅模拟时为 None（前端显示"无真实样本"）。

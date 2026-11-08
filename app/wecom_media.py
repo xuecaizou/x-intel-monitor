@@ -11,7 +11,15 @@ UPLOAD_LIMIT = 20 * 1024 * 1024
 
 
 def push_file(webhook, path):
-    """上传并推送文件；返回企微响应 dict（errcode==0 为成功）"""
+    """上传并推送文件；返回企微响应 dict（errcode==0 为成功）。
+
+    2026-11-09 H：webhook 出站校验（仅 https + 公网地址；内网网关需管理员
+    在 outbound.allow_private.webhook 显式授权，不得借用其他用途的白名单）。"""
+    try:
+        from .safefetch import validate_url, UnsafeUrlError
+        validate_url(webhook, purpose="webhook")
+    except UnsafeUrlError as ue:
+        return {"errcode": 90002, "errmsg": f"webhook 未通过出站校验: {str(ue)[:120]}"}
     size = os.path.getsize(path)
     if size > UPLOAD_LIMIT:
         return {"errcode": 90001, "errmsg": f"文件 {size} 字节超过企微 20MB 上限，未上传"}

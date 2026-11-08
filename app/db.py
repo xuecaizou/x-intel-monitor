@@ -208,6 +208,8 @@ def init_db():
             severity TEXT DEFAULT '',
             first_seen TEXT DEFAULT '',
             last_seen TEXT DEFAULT '',
+            -- 证据内容指纹（2026-11-09 E）：底层情报(成员+analysis_version)变化即推进
+            evidence_fingerprint TEXT DEFAULT '',
             created_at TEXT, updated_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
@@ -238,6 +240,8 @@ def init_db():
             event_uid TEXT NOT NULL,
             event_version INTEGER NOT NULL,
             decision TEXT NOT NULL,        -- approved/rejected
+            -- 审核绑定证据指纹：底层情报再变 → 旧决定自动成为历史（不得冒充当前批准）
+            evidence_fingerprint TEXT DEFAULT '',
             note TEXT DEFAULT '',
             operator TEXT DEFAULT '',
             created_at TEXT,
@@ -293,6 +297,12 @@ def init_db():
             get_conn().execute("ALTER TABLE delivery_msgs ADD COLUMN claim_token TEXT DEFAULT ''")
         except Exception:
             pass
+        # 事件证据指纹列（2026-11-09 E，幂等）：底层情报变化可被检测
+        for _tbl in ("events", "event_reviews"):
+            try:
+                get_conn().execute(f"ALTER TABLE {_tbl} ADD COLUMN evidence_fingerprint TEXT DEFAULT ''")
+            except Exception:
+                pass
         # 迁移（可重复）：既有报告任务的推文引用回填到 report_refs（UNIQUE 幂等）
         try:
             get_conn().execute(
@@ -376,6 +386,32 @@ def insert_tweet(t):
 def get_tweet(tid):
     r = get_conn().execute("SELECT * FROM tweets WHERE id=?", (int(tid),)).fetchone()
     return dict(r) if r else None
+
+
+from contextlib import contextmanager as _ctxmgr
+
+
+@_ctxmgr
+def snapshot_conn():
+    """独立只读连接（2026-11-09 E）：导出用一致性读取事务。
+
+    WAL 模式下读连接获得独立快照——与写连接完全隔离：
+    导出事务与写请求交错不再出现 'cannot commit - no transaction is active'
+    （共享连接上 BEGIN 与写入互相踩踏的历史缺陷），也不阻塞写。
+    用法：with db.snapshot_conn() as c: ...（事务内完成全部读取）"""
+    DATA_DIR.mkdir(exist_ok=True)
+    ro = sqlite3.connect(f"file:{(DATA_DIR / 'xintel.db').as_posix()}?mode=ro", uri=True,
+                         check_same_thread=False, timeout=10)
+    ro.row_factory = sqlite3.Row
+    ro.execute("BEGIN DEFERRED")
+    try:
+        yield ro
+        ro.execute("COMMIT")
+    finally:
+        try:
+            ro.close()
+        except Exception:
+            pass
 
 
 def _row_tweet(r):
@@ -795,6 +831,65 @@ def clear_manual_protection(tid):
         return cur.rowcount > 0
 
 
+def bind_review(tid, base_version, review="manual"):
+    """人工审核绑定：原子检查版本——审核只能绑定用户实际审阅的版本。
+
+    请求处理期间内容版本被推进（AI 结果先落地/人工修订/原文更新）→ 拒绝绑定，
+    返回 None（调用方应要求刷新后基于新版本重新审核）。
+    成功：ai_review/ai_review_at/ai_review_version 原子写入，返回绑定版本。"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE tweets SET ai_review=?, ai_review_at=?, ai_review_version=?"
+            " WHERE id=? AND analysis_version=?",
+            (review, now(), int(base_version), int(tid), int(base_version)))
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return None
+        return get_analysis_version(tid)
+
+
+def update_ai_guarded(tid, fields, base_version):
+    """失败/状态类写回的权威路径：原子检查版本与人工保护，不推进版本。
+
+    与 apply_ai_result 的区别：这是状态写回（ai_status/ai_error 等），不推进版本；
+    但同样必须在提交时原子确认「版本未变且未被人工接管」——迟到失败不得覆盖
+    期间新增的人工状态或更新的成功结果（2026-11-09 缺陷 B 修复）。
+    返回 (applied, reason)。
+    """
+    if not fields:
+        return True, "applied"
+    with _lock:
+        row = get_conn().execute(
+            "SELECT analysis_version, ai_modified FROM tweets WHERE id=?", (int(tid),)).fetchone()
+        if not row:
+            return False, "tweet_not_found"
+        cur_ver = int(row["analysis_version"] or 0)
+        if int(row["ai_modified"] or 0) == 1 or int(base_version) != cur_ver:
+            reason = ("status_manual_protected" if int(row["ai_modified"] or 0) == 1
+                      else "status_version_changed")
+            try:
+                payload = json.dumps(fields, ensure_ascii=False, default=str)[:4000]
+            except Exception:
+                payload = "{}"
+            get_conn().execute(
+                "INSERT INTO ai_result_conflicts (tweet_id, base_version, current_version,"
+                " reason, result_json, created_at) VALUES (?,?,?,?,?,?)",
+                (int(tid), int(base_version), cur_ver, reason, payload, now()))
+            get_conn().commit()
+            return False, reason
+        sets = ", ".join(f"{k}=?" for k in fields)
+        args = list(fields.values()) + [int(tid), cur_ver]
+        # 注意：ai_modified 为 TEXT 列（默认 ''），不能用 =0 比较（台账 B47 同源坑）
+        not_modified = "(ai_modified IS NULL OR ai_modified='' OR ai_modified='0')"
+        cur = get_conn().execute(
+            f"UPDATE tweets SET {sets} WHERE id=? AND analysis_version=? AND {not_modified}",
+            args)
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return False, "race_lost"
+        return True, "applied"
+
+
 def list_conflicts(limit=50):
     return [dict(r) for r in get_conn().execute(
         "SELECT * FROM ai_result_conflicts ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]
@@ -933,12 +1028,28 @@ def cnt24_by_source(source_id):
 
 
 def push_stats_today():
-    """今日推送统计（口径：ok=成功+模拟成功；sim 单列模拟次数，供首页区分真实/模拟口径）"""
+    """今日推送统计（2026-11-09 J：真实/模拟分列，禁止模拟冒充真实成功率）。
+
+    口径（单位=逻辑投递，非重试次数）：
+      total      今日全部推送日志行
+      ok         成功+模拟成功（兼容旧调用）
+      sim        模拟次数（单列）
+      real_ok    真实成功（= ok - sim）
+      real_total 真实尝试（= total - sim）
+      real_rate  真实成功率（real_total==0 → None：无真实样本，不得显示 100%）
+    "今日"=本地自然日窗口，与"近24小时"是不同窗口，不强行要求相等。"""
     row = get_conn().execute(
         "SELECT COUNT(*) AS total, SUM(CASE WHEN status IN ('成功','模拟成功') THEN 1 ELSE 0 END) AS ok,"
         " SUM(CASE WHEN status='模拟成功' THEN 1 ELSE 0 END) AS sim"
         " FROM push_logs WHERE date(created_at)=date('now','localtime')").fetchone()
-    return int(row["ok"] or 0), int(row["total"] or 0), int(row["sim"] or 0)
+    total = int(row["total"] or 0)
+    ok = int(row["ok"] or 0)
+    sim = int(row["sim"] or 0)
+    real_total = total - sim
+    real_ok = ok - sim
+    return {"total": total, "ok": ok, "sim": sim,
+            "real_ok": real_ok, "real_total": real_total,
+            "real_rate": (round(real_ok / real_total * 1000) / 10) if real_total > 0 else None}
 
 
 # ---------- kv ----------
@@ -1229,7 +1340,8 @@ EVENT_BASIS_RANK = {"manual": 3, "official_same": 2, "victim_same": 1, "shared_i
 
 def create_event(title, summary="", severity="", operator="system", tweet_ids=None,
                  basis="manual"):
-    """创建事件并可选关联证据。返回 (event_uid, version)。"""
+    """创建事件并可选关联证据。返回 (event_uid, version)。
+    建事件/证据/审计/指纹在同事务内（2026-11-09 E）。"""
     import secrets as _secrets
     uid = "evt_" + _secrets.token_hex(6)
     with _lock:
@@ -1247,13 +1359,15 @@ def create_event(title, summary="", severity="", operator="system", tweet_ids=No
                   " created_at) VALUES (?,1,'create',?,?,?)",
                   (uid, f"title={title[:80]} basis={basis} n={len(tweet_ids or [])}",
                    operator[:60], now()))
-        c.commit()
         _refresh_event_times(uid)
+        c.execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                  (evidence_fingerprint(uid), uid))
+        c.commit()
     return uid, 1
 
 
-def get_event(uid):
-    r = get_conn().execute("SELECT * FROM events WHERE event_uid=?", (uid,)).fetchone()
+def get_event(uid, conn=None):
+    r = (conn or get_conn()).execute("SELECT * FROM events WHERE event_uid=?", (uid,)).fetchone()
     return dict(r) if r else None
 
 
@@ -1277,22 +1391,32 @@ def list_events(status="", q="", limit=50, offset=0):
     return total, [dict(r) for r in rows]
 
 
-def event_evidence(uid):
-    """证据列表（联推文内容 + 完整性分级），用于详情页"""
-    rows = get_conn().execute(
-        "SELECT v.*, t.id AS tweet_id_only, t.screen_name, t.text, t.title_zh, t.text_zh, t.url,"
-        " t.published_at, t.created_at, t.text_hash, t.ai_severity, t.ai_type,"
+def event_evidence(uid, conn=None):
+    """证据列表（联推文内容 + 完整性分级），用于详情页。
+
+    身份契约（2026-11-09 缺陷 D 修复）：
+      - evidence_id = event_evidence 关联表行 id（仅审计用途）
+      - tweet_id    = tweets.id（解除/拆分/跳转/导出必须使用这一身份）
+    历史 SQL 用 v.* 导致关联表 id 以 "id" 键泄漏、created_at 同名歧义——
+    前端与导出误用关联表 id（推文 4091/4092 显示为证据 1/2），解除/拆分/导出
+    全部引用错误。现改为全列唯一别名。"""
+    rows = (conn or get_conn()).execute(
+        "SELECT v.id AS evidence_id, v.event_uid, v.basis, v.source_kind,"
+        " v.note, v.created_at AS linked_at,"
+        " t.id AS tweet_id, t.screen_name, t.text, t.title_zh, t.text_zh, t.url,"
+        " t.published_at, t.created_at AS collected_at, t.text_hash, t.ai_severity, t.ai_type,"
         " t.category, t.geo_country, t.geo_province, t.geo_city, t.industry, t.ai_integrity,"
-        " t.ai_review, t.analysis_version, t.org, t.tags, t.ai_iocs, t.ai_assessment,"
+        " t.ai_review, t.ai_review_version, t.ai_review_at, t.analysis_version,"
+        " t.org, t.tags, t.ai_iocs, t.ai_assessment,"
         " t.ai_confidence, t.ai_repair"
         " FROM event_evidence v JOIN tweets t ON t.id=v.tweet_id"
         " WHERE v.event_uid=? ORDER BY v.id", (uid,)).fetchall()
     return [_row_tweet(r) for r in rows]
 
 
-def evidence_stats(uid):
+def evidence_stats(uid, conn=None):
     """独立证据统计：original 才算独立；repost 单列（转载不冒充独立证据）"""
-    rows = get_conn().execute(
+    rows = (conn or get_conn()).execute(
         "SELECT source_kind, COUNT(*) n FROM event_evidence WHERE event_uid=?"
         " GROUP BY source_kind", (uid,)).fetchall()
     d = {r["source_kind"]: r["n"] for r in rows}
@@ -1302,14 +1426,56 @@ def evidence_stats(uid):
 
 def _bump_event(uid, action, detail, operator):
     with _lock:
-        c = get_conn()
-        c.execute("UPDATE events SET version=version+1, updated_at=? WHERE event_uid=?",
-                  (now(), uid))
-        v = c.execute("SELECT version FROM events WHERE event_uid=?", (uid,)).fetchone()["version"]
-        c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
-                  " created_at) VALUES (?,?,?,?,?,?)",
-                  (uid, v, action, detail[:500], operator[:60], now()))
-        c.commit()
+        return _bump_event_locked(uid, action, detail, operator)
+
+
+def _bump_event_locked(uid, action, detail, operator):
+    """版本推进 + 审计（**调用方必须已持有 _lock**；与内容修改同一事务提交）。"""
+    c = get_conn()
+    c.execute("UPDATE events SET version=version+1, updated_at=? WHERE event_uid=?",
+              (now(), uid))
+    v = c.execute("SELECT version FROM events WHERE event_uid=?", (uid,)).fetchone()["version"]
+    c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
+              " created_at) VALUES (?,?,?,?,?,?)",
+              (uid, v, action, detail[:500], operator[:60], now()))
+    return v
+
+
+def evidence_fingerprint(uid, conn=None):
+    """事件证据内容指纹：成员集合 + 每条证据当前 analysis_version。
+
+    底层情报（AI 结果落地/人工修订/原文更新都会推进 analysis_version）一经变化，
+    指纹随之变化——事件审核与版本据此判定"内容已变化"，旧审核自动成为历史决定。"""
+    c = conn or get_conn()
+    rows = c.execute(
+        "SELECT v.tweet_id, COALESCE(t.analysis_version,0) av, v.basis, v.source_kind"
+        " FROM event_evidence v LEFT JOIN tweets t ON t.id=v.tweet_id"
+        " WHERE v.event_uid=? ORDER BY v.tweet_id", (uid,)).fetchall()
+    import hashlib as _hashlib
+    h = _hashlib.sha1()
+    for r in rows:
+        h.update(f"{r['tweet_id']}:{r['av']}:{r['basis']}:{r['source_kind']};".encode())
+    return h.hexdigest()
+
+
+def ensure_event_freshness(uid, operator="system"):
+    """底层情报变化检测：指纹不符 → 推进事件版本 + 留痕 + 刷新存储指纹。
+
+    幂等：指纹一致时不做任何写。读路径（详情/导出）调用后，旧审核
+    （绑定旧 event_version）自动失效为历史决定。返回当前版本。"""
+    with _lock:
+        ev = get_conn().execute("SELECT version, evidence_fingerprint FROM events"
+                                " WHERE event_uid=?", (uid,)).fetchone()
+        if not ev:
+            return 0
+        cur_fp = evidence_fingerprint(uid)
+        if (ev["evidence_fingerprint"] or "") == cur_fp:
+            return int(ev["version"] or 0)
+        v = _bump_event_locked(uid, "evidence_changed",
+                               f"底层情报内容变化（指纹 {cur_fp[:12]}）", operator)
+        get_conn().execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                           (cur_fp, uid))
+        get_conn().commit()
         return v
 
 
@@ -1337,13 +1503,15 @@ def add_evidence(uid, tweet_id, basis="manual", source_kind="original", note="",
             " (event_uid, tweet_id, basis, source_kind, note, created_at)"
             " VALUES (?,?,?,?,?,?)",
             (uid, int(tweet_id), basis, source_kind, note[:200], now()))
-        get_conn().commit()
         if cur.rowcount == 0:
+            get_conn().commit()
             return False, get_event(uid)["version"]
-    v = _bump_event(uid, "update", f"add_evidence tweet={tweet_id} basis={basis}"
-                                   f" kind={source_kind}", operator)
-    with _lock:
+        v = _bump_event_locked(uid, "update", f"add_evidence tweet={tweet_id} basis={basis}"
+                                               f" kind={source_kind}", operator)
         _refresh_event_times(uid)
+        get_conn().execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                           (evidence_fingerprint(uid), uid))
+        get_conn().commit()
     return True, v
 
 
@@ -1351,12 +1519,14 @@ def remove_evidence(uid, tweet_id, operator="system"):
     with _lock:
         cur = get_conn().execute("DELETE FROM event_evidence WHERE event_uid=? AND tweet_id=?",
                                  (uid, int(tweet_id)))
-        get_conn().commit()
         if cur.rowcount == 0:
+            get_conn().commit()
             return False, get_event(uid)["version"] if get_event(uid) else 0
-    v = _bump_event(uid, "unlink", f"remove_evidence tweet={tweet_id}", operator)
-    with _lock:
+        v = _bump_event_locked(uid, "unlink", f"remove_evidence tweet={tweet_id}", operator)
         _refresh_event_times(uid)
+        get_conn().execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                           (evidence_fingerprint(uid), uid))
+        get_conn().commit()
     return True, v
 
 
@@ -1367,6 +1537,7 @@ def merge_events(src_uid, dst_uid, operator="system", reason=""):
     src, dst = get_event(src_uid), get_event(dst_uid)
     if not src or not dst:
         return False, ""
+    # 单事务（2026-11-09 E）：证据并入 + dst 版本推进 + src 归档 + 双向指纹/时间刷新
     with _lock:
         c = get_conn()
         for r in c.execute("SELECT tweet_id, basis, source_kind, note FROM event_evidence"
@@ -1376,36 +1547,59 @@ def merge_events(src_uid, dst_uid, operator="system", reason=""):
                       " VALUES (?,?,?,?,?,?)",
                       (dst_uid, r["tweet_id"], r["basis"], r["source_kind"],
                        (r["note"] or "") + f" [merged from {src_uid}]", now()))
-        c.commit()
-    _bump_event(dst_uid, "merge", f"merge {src_uid} -> {dst_uid}: {reason}", operator)
-    with _lock:
-        get_conn().execute(
-            "UPDATE events SET status='已归档', version=version+1, updated_at=? WHERE event_uid=?",
+        _bump_event_locked(dst_uid, "merge", f"merge {src_uid} -> {dst_uid}: {reason}", operator)
+        c.execute(
+            "UPDATE events SET status='已归档', updated_at=? WHERE event_uid=?",
             (now(), src_uid))
-        get_conn().execute(
-            "INSERT INTO event_revisions (event_uid, version, action, detail, operator, created_at)"
-            " SELECT event_uid, version, 'merge_out', ?, ?, ? FROM events WHERE event_uid=?",
-            (f"merged into {dst_uid}: {reason}", operator[:60], now(), src_uid))
-        get_conn().commit()
-    with _lock:
+        _bump_event_locked(src_uid, "merge_out", f"merged into {dst_uid}: {reason}", operator)
         _refresh_event_times(dst_uid)
+        for u in (dst_uid, src_uid):
+            c.execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                      (evidence_fingerprint(u), u))
+        c.commit()
     return True, dst_uid
 
 
 def split_event(uid, tweet_ids, new_title, operator="system"):
-    """人工拆分：指定证据移出到新事件"""
+    """人工拆分：指定证据移出到新事件。
+
+    原子语义（2026-11-09 D/E 修复）：校验、建事件、移动、双向版本推进、
+    指纹刷新全部在**同一事务**内——零有效成员直接失败不建空事件；
+    中途任何一步失败整体不落库（不留半拆分状态）。传入必须是本事件的
+    真实 tweet_id（历史上前端误传关联表 id → 零命中 → 却已建空事件报成功）。"""
     ev = get_event(uid)
     if not ev:
         return False, ""
-    new_uid, _ = create_event(new_title or (ev["title"] + "（拆分）"), ev.get("summary", ""),
-                              ev.get("severity", ""), operator, [], "manual")
-    moved = 0
+    import secrets as _secrets
+    new_uid = "evt_" + _secrets.token_hex(6)
     with _lock:
         c = get_conn()
-        for tid in tweet_ids:
+        valid_ids = []
+        for tid in (tweet_ids or []):
+            try:
+                tid = int(tid)
+            except Exception:
+                continue
+            r = c.execute("SELECT 1 FROM event_evidence WHERE event_uid=? AND tweet_id=?",
+                          (uid, tid)).fetchone()
+            if r:
+                valid_ids.append(tid)
+        if not valid_ids:
+            return False, ""
+        # 建目标事件（同事务，不经 create_event——其内部加锁会死锁）
+        c.execute(
+            "INSERT INTO events (event_uid, title, summary, status, version, severity,"
+            " first_seen, last_seen, created_at, updated_at) VALUES (?,?,?,'候选',1,?,?,?,?,?)",
+            (new_uid, (new_title or (ev["title"] + "（拆分）"))[:200], ev.get("summary", "")[:1000],
+             ev.get("severity", "")[:20], now(), now(), now(), now()))
+        c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
+                  " created_at) VALUES (?,1,'create',?,?,?)",
+                  (new_uid, f"split from {uid}", operator[:60], now()))
+        moved = 0
+        for tid in valid_ids:
             r = c.execute("SELECT * FROM event_evidence WHERE event_uid=? AND tweet_id=?",
                           (uid, int(tid))).fetchone()
-            if not r:
+            if not r:  # 锁内复验（校验与移动之间无窗口）
                 continue
             c.execute("INSERT OR IGNORE INTO event_evidence"
                       " (event_uid, tweet_id, basis, source_kind, note, created_at)"
@@ -1415,43 +1609,65 @@ def split_event(uid, tweet_ids, new_title, operator="system"):
             c.execute("DELETE FROM event_evidence WHERE event_uid=? AND tweet_id=?",
                       (uid, int(tid)))
             moved += 1
+        if moved == 0:  # 双保险：不产生空事件
+            c.execute("DELETE FROM events WHERE event_uid=?", (new_uid,))
+            c.commit()
+            return False, ""
+        _bump_event_locked(uid, "split", f"split out {moved} evidence -> {new_uid}", operator)
+        _bump_event_locked(new_uid, "split", f"split in {moved} evidence from {uid}", operator)
+        _refresh_event_times(uid)
+        _refresh_event_times(new_uid)
+        for u in (uid, new_uid):
+            c.execute("UPDATE events SET evidence_fingerprint=? WHERE event_uid=?",
+                      (evidence_fingerprint(u), u))
         c.commit()
-    if moved:
-        _bump_event(uid, "split", f"split out {moved} evidence -> {new_uid}", operator)
-        _bump_event(new_uid, "split", f"split in {moved} evidence from {uid}", operator)
-        with _lock:
-            _refresh_event_times(uid)
-            _refresh_event_times(new_uid)
     return True, new_uid
 
 
 def update_event(uid, title=None, summary=None, severity=None, status=None, operator="system",
                  expected_version=None):
-    """更新事件元数据。expected_version 提供时做乐观锁（版本不符拒绝）。"""
-    ev = get_event(uid)
-    if not ev:
-        return False, 0
-    if expected_version is not None and int(expected_version) != int(ev["version"]):
-        return False, int(ev["version"])
+    """更新事件元数据。expected_version 提供时做乐观锁。
+
+    原子语义（2026-11-09 E 修复）：版本检查、内容修改、版本推进、审计
+    在**同一事务**内完成——历史上检查在锁外读、UPDATE 无版本条件，
+    两个相同 expected_version 的并发修改都会"成功"并互相覆盖。"""
     sets, args = [], []
     for k, v in (("title", title), ("summary", summary), ("severity", severity),
                  ("status", status)):
         if v is not None:
-            sets.append(f"{k}=?")
+            sets.append(f"{k}=?" if k != "status" else "status=?")
             args.append(str(v)[:1000])
     if not sets:
-        return False, ev["version"]
+        ev = get_event(uid)
+        return False, int(ev["version"]) if ev else 0
     with _lock:
-        get_conn().execute(f"UPDATE events SET {', '.join(sets)} WHERE event_uid=?",
-                           args + [uid])
-        get_conn().commit()
-    v = _bump_event(uid, "update", "fields=" + ",".join(s[0] for s in [x.split("=") for x in sets]),
-                    operator)
+        c = get_conn()
+        if expected_version is not None:
+            cond = (f"UPDATE events SET {{}}, version=version+1, updated_at=?"
+                    " WHERE event_uid=? AND version=?")
+            cur = c.execute(cond.format(", ".join(sets)),
+                            args + [now(), uid, int(expected_version)])
+            if cur.rowcount == 0:
+                c.commit()
+                ev = get_event(uid)
+                return False, int(ev["version"]) if ev else 0
+            v = int(expected_version) + 1
+        else:
+            c.execute(f"UPDATE events SET {{}}, version=version+1, updated_at=?"
+                      " WHERE event_uid=?".format(", ".join(sets)),
+                      args + [now(), uid])
+            v = c.execute("SELECT version FROM events WHERE event_uid=?",
+                          (uid,)).fetchone()["version"]
+        c.execute("INSERT INTO event_revisions (event_uid, version, action, detail, operator,"
+                  " created_at) VALUES (?,?,?,?,?,?)",
+                  (uid, v, "update", "fields=" + ",".join(x.split("=")[0] for x in sets),
+                   operator[:60], now()))
+        c.commit()
     return True, v
 
 
-def event_revisions(uid):
-    return [dict(r) for r in get_conn().execute(
+def event_revisions(uid, conn=None):
+    return [dict(r) for r in (conn or get_conn()).execute(
         "SELECT * FROM event_revisions WHERE event_uid=? ORDER BY version DESC, id DESC",
         (uid,)).fetchall()]
 
@@ -1506,33 +1722,64 @@ def candidate_events(tweet_id, limit=10):
     return out[:limit]
 
 def review_event(uid, event_version, decision, note="", operator="system"):
-    """审核绑定事件版本。返回 (ok, reason)。
+    """审核绑定事件版本 + 证据指纹。返回 (ok, reason)。
 
-    规则：
-      - 旧版本不能批准新内容：event_version 必须等于当前 version
+    规则（2026-11-09 E 收紧）：
+      - 版本检查在锁内复验（读-判-写原子）：旧版本不能批准新内容
+      - 同时绑定当前证据指纹——底层情报再变（ensure_event_freshness 推进版本）
+        后旧决定自动成为历史，不得冒充当前批准
       - 同一版本只能有一条决定（UNIQUE(event_uid,event_version) 幂等）
     """
-    ev = get_event(uid)
-    if not ev:
-        return False, "event_not_found"
-    if int(event_version) != int(ev["version"]):
-        return False, f"version_mismatch(current={ev['version']})"
     if decision not in ("approved", "rejected"):
         return False, "bad_decision"
     with _lock:
+        c = get_conn()
+        ev = c.execute("SELECT version FROM events WHERE event_uid=?", (uid,)).fetchone()
+        if not ev:
+            return False, "event_not_found"
+        if int(event_version) != int(ev["version"]):
+            return False, f"version_mismatch(current={ev['version']})"
+        fp = evidence_fingerprint(uid)
         try:
-            get_conn().execute(
-                "INSERT INTO event_reviews (event_uid, event_version, decision, note,"
-                " operator, created_at) VALUES (?,?,?,?,?,?)",
-                (uid, int(event_version), decision, note[:500], operator[:60], now()))
-            get_conn().commit()
+            c.execute(
+                "INSERT INTO event_reviews (event_uid, event_version, decision,"
+                " evidence_fingerprint, note, operator, created_at) VALUES (?,?,?,?,?,?,?)",
+                (uid, int(event_version), decision, fp, note[:500], operator[:60], now()))
+            c.commit()
         except Exception:
             return False, "already_reviewed"
     return True, "ok"
 
 
-def event_review_latest(uid):
-    r = get_conn().execute(
+def event_review_state(uid, conn=None):
+    """事件审核有效性三态（导出/详情统一口径）。
+
+    返回 dict：{state: valid|stale|none, review: 最新决定或 None,
+                current_version, reviewed_version, fingerprint_matched}
+    valid = 决定绑定当前版本且证据指纹一致；否则 stale（历史决定）。"""
+    c = conn or get_conn()
+    ev = c.execute("SELECT version, evidence_fingerprint FROM events WHERE event_uid=?",
+                   (uid,)).fetchone()
+    if not ev:
+        return {"state": "none", "review": None, "current_version": 0,
+                "reviewed_version": None, "fingerprint_matched": False}
+    cur_ver = int(ev["version"] or 0)
+    cur_fp = ev["evidence_fingerprint"] or ""
+    rev = c.execute("SELECT * FROM event_reviews WHERE event_uid=?"
+                    " ORDER BY event_version DESC, id DESC LIMIT 1", (uid,)).fetchone()
+    if not rev:
+        return {"state": "none", "review": None, "current_version": cur_ver,
+                "reviewed_version": None, "fingerprint_matched": cur_fp == ""}
+    rev_v = int(rev["event_version"] or 0)
+    # 保守原则：事件已指纹化但审核未绑定指纹（历史数据）→ 无法证明审的是当前内容 → stale
+    fp_match = (not cur_fp) or (rev["evidence_fingerprint"] or "") == cur_fp
+    state = "valid" if (rev_v == cur_ver and fp_match) else "stale"
+    return {"state": state, "review": dict(rev), "current_version": cur_ver,
+            "reviewed_version": rev_v, "fingerprint_matched": bool(fp_match)}
+
+
+def event_review_latest(uid, conn=None):
+    r = (conn or get_conn()).execute(
         "SELECT * FROM event_reviews WHERE event_uid=? ORDER BY event_version DESC, id DESC LIMIT 1",
         (uid,)).fetchone()
     return dict(r) if r else None

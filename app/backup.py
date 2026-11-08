@@ -121,8 +121,20 @@ def verify_backup(backup_dir: Path):
     return {"ok": not bad and checks.get("integrity") == "ok", "problems": bad, "counts": checks}
 
 
-def restore_to(backup_dir: Path, target_dir: Path, project_root: Path | None = None):
-    """恢复到新目录（不覆盖现有数据）。返回恢复摘要 + 校验结果。"""
+def restore_to(backup_dir: Path, target_dir: Path, project_root: Path | None = None,
+               safe_mode: bool = True):
+    """恢复到新目录（不覆盖现有数据）。返回恢复摘要 + 校验结果。
+
+    安全语义（2026-11-09 G 修复，默认强制）：
+      1. safe_mode=True：恢复后自动改写**恢复副本**的 runtime.json——
+         scheduler.enabled=false、outbound.enable=false。备份原件不动；
+         变更记录在摘要 safety_changes（含备份原件哈希与变更后哈希，
+         两者明确区分——原件哈希不符≠恢复变更）。
+      2. 旧会话与 Token 一律清除：旧备份可能包含已吊销 Token/过期会话，
+         恢复绝不悄悄复活凭据；管理员用 data/admin_init.txt 重新取得访问
+         （auth_reset 摘要记录清除数量）。
+      3. verify_original：复制后立即按 manifest 全量校验（原件一致性）；
+         安全变更发生在其后，最终校验只看 SQLite integrity。"""
     backup_dir = Path(backup_dir)
     target_dir = Path(target_dir)
     if target_dir.exists() and any(target_dir.iterdir()):
@@ -133,7 +145,59 @@ def restore_to(backup_dir: Path, target_dir: Path, project_root: Path | None = N
         dst = target_dir / f["path"]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
-    return verify_backup(target_dir)
+    summary = {"safe_mode": bool(safe_mode), "safety_changes": [], "auth_reset": None}
+    # 原件一致性：此时恢复副本与备份逐字节一致
+    summary["verify_original"] = verify_backup(target_dir)
+    if safe_mode:
+        rt = target_dir / "runtime.json"
+        if rt.exists():
+            original_sha = _sha256_file(rt)
+            data = {}
+            try:
+                data = json.loads(rt.read_text(encoding="utf-8") or "{}")
+            except Exception:
+                data = {}
+            changed = {}
+            sched = data.setdefault("scheduler", {})
+            if sched.get("enabled", True) is not False:
+                changed["scheduler.enabled"] = {"from": sched.get("enabled", True), "to": False}
+            sched["enabled"] = False
+            ob = data.setdefault("outbound", {})
+            if ob.get("enable", True) is not False:
+                changed["outbound.enable"] = {"from": ob.get("enable", True), "to": False}
+            ob["enable"] = False
+            rt.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            summary["safety_changes"].append({
+                "file": "runtime.json",
+                "backup_original_sha256": original_sha,      # 备份原件（复制后）哈希
+                "restored_modified_sha256": _sha256_file(rt),  # 安全变更后哈希
+                "changes": changed,
+                "note": "恢复实例默认暂停调度、禁止外发；需恢复运行时人工显式开启并复核",
+            })
+        # 旧会话与 Token：明确清除，不复活已吊销凭据
+        dbp = target_dir / "xintel.db"
+        cleared = {"tokens": 0, "sessions": 0}
+        if dbp.exists():
+            try:
+                with sqlite3.connect(str(dbp)) as c:
+                    cleared["tokens"] = c.execute("DELETE FROM auth_tokens").rowcount or 0
+                    cleared["sessions"] = c.execute("DELETE FROM auth_sessions").rowcount or 0
+                    c.commit()
+            except Exception as e:
+                cleared["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        summary["auth_reset"] = {
+            **cleared,
+            "note": "旧备份可能含已吊销 Token/过期会话；恢复后一律清除，"
+                    "管理员需通过 data/admin_init.txt 重新初始化密码",
+        }
+    # 最终校验：SQLite integrity（安全变更后）
+    dbp = target_dir / "xintel.db"
+    if dbp.exists():
+        with sqlite3.connect(str(dbp)) as c:
+            summary["integrity_final"] = c.execute("PRAGMA integrity_check").fetchone()[0]
+    summary["ok"] = (summary["verify_original"].get("ok") is True
+                     and summary.get("integrity_final", "ok") == "ok")
+    return summary
 
 
 def export_pending_deliveries(db_path: Path) -> dict:

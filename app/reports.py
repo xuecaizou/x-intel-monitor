@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from urllib.parse import quote
 
@@ -190,9 +191,17 @@ def abort(tid, note=""):
 
 # ---------- 系统复跑门禁脚本验收 ----------
 
+def _gate_python():
+    """门禁脚本解释器：runtime.json report.gate_python 可显式配置；
+    默认当前解释器（sys.executable）——跨平台可靠，不依赖 Windows py launcher
+    （历史缺陷：硬编码 ["py","-3.13"] 在 Ubuntu 无 py、Windows CI 无 3.13 注册时
+    门禁恒 999，交付永远落回"待人工"，且被入口 exit 0 掩盖）。"""
+    return ((load().get("report") or {}).get("gate_python") or "").strip() or sys.executable
+
+
 def _run_gate(docx_path, tier, word_limit=None):
     """复跑机械门禁，返回 (exit_code, gate_summary)"""
-    cmd = ["py", "-3.13", _gate_script(), docx_path, "--档位", tier]
+    cmd = [_gate_python(), _gate_script(), docx_path, "--档位", tier]
     if word_limit:
         cmd += ["--字数上限", str(word_limit)]
     try:
@@ -205,7 +214,7 @@ def _run_gate(docx_path, tier, word_limit=None):
     except subprocess.TimeoutExpired:
         exit_code, summary = 999, "门禁脚本超时（>180s）"
     except FileNotFoundError as e:
-        exit_code, summary = 999, f"py launcher 不可用: {e}"
+        exit_code, summary = 999, f"门禁解释器不可用: {e}"
     except Exception as e:
         exit_code, summary = 999, f"复跑异常: {type(e).__name__}: {str(e)[:120]}"
     return exit_code, summary
@@ -221,7 +230,17 @@ def deliver(tid, payload):
 
     deliver_dir = payload.get("deliver_dir", "")
     docx = payload.get("docx", "")
-    docx_abs = os.path.join(deliver_dir, docx) if deliver_dir and docx else ""
+    # 2026-11-09 H：交付文件读取经 safe_report_path——deliver_dir 必须是
+    # data/report_tasks 下的相对目录，filename 纯文件名（历史接受任意绝对目录）
+    path_error = ""
+    docx_abs = ""
+    if deliver_dir and docx:
+        try:
+            from .safefetch import safe_report_path
+            docx_abs = str(safe_report_path(deliver_dir, docx))
+        except Exception as pe:
+            path_error = f"交付路径不合法: {type(pe).__name__}: {str(pe)[:120]}"
+            docx_abs = ""
     exists = bool(docx_abs and os.path.isfile(docx_abs))
 
     updates = {
@@ -236,10 +255,10 @@ def deliver(tid, payload):
     auto_push = bool(t.get("auto_push")) or bool(payload.get("auto_push"))
 
     if not exists:
-        # 交付文件不存在 → 宁可拦住不可放过
+        # 交付文件不存在/路径不合法 → 宁可拦住不可放过
         updates.update({"status": "待人工",
                         "gate_exit": 999,
-                        "gate_summary": "交付文件不存在: " + docx_abs})
+                        "gate_summary": (path_error or "交付文件不存在: " + docx_abs)})
     else:
         gate_exit, gate_summary = _run_gate(
             docx_abs, t.get("tier", "速报"), payload.get("word_limit"))
@@ -365,7 +384,14 @@ def push_task(tid):
                 if _push_file is not None:
                     for suffix_name in (t["docx"].rsplit(".", 1)[0] + "_批注.docx",
                                         t["docx"].rsplit(".", 1)[0] + "_审阅.html"):
-                        fp = os.path.join(t["deliver_dir"], suffix_name)
+                        try:
+                            from .safefetch import safe_report_path
+                            fp = str(safe_report_path(t["deliver_dir"], suffix_name))
+                        except Exception as pe:
+                            items.append({"item": suffix_name, "ok": False,
+                                          "detail": f"交付路径不合法: {str(pe)[:80]}"})
+                            attach_note += f" +{suffix_name}:路径非法"
+                            continue
                         if prev_it.get(suffix_name) is True:
                             items.append({"item": suffix_name, "ok": True,
                                           "detail": "跳过（上次已成功）"})

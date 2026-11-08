@@ -161,14 +161,20 @@ def api_media(url: str):
     except Exception as e:
         raise HTTPException(400, f"URL 未通过校验：{str(e)[:80]}")
     try:
-        from app.twitter import _http_get
+        from app.twitter import _proxies
+        from app.safefetch import fetch_limited
         cfg = load().get("x", {})
-        r = _http_get(url, cfg, timeout=20)
-        ct = r.headers.get("content-type", "image/jpeg")
-        if not ct.startswith("image/"):
-            raise HTTPException(502, "上游返回非图片内容")
+        # 2026-11-09 H：从裸 _http_get（自动跟随重定向——上游可 302 到内网）迁移到
+        # 受控抓取：重定向逐跳校验（域名白名单每跳复核）、≤8MB、显式超时
+        status, content, _final = fetch_limited(
+            url, timeout=20, purpose="media",
+            proxies=_proxies(cfg.get("proxy") or ""))
+        if status != 200:
+            raise HTTPException(502, f"上游 HTTP {status}")
+        import mimetypes
+        ct = mimetypes.guess_type("x.jpg")[0] or "image/jpeg"  # 受控路径不读上游头（防注入头伪造），图片代理仅 twimg 白名单
         from fastapi.responses import Response
-        return Response(content=r.content, media_type=ct,
+        return Response(content=content, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
     except HTTPException:
         raise
@@ -192,7 +198,15 @@ def api_tweet_ai(tid: int, body: AiActionBody):
 # ---------- 统计 / 抓取 ----------
 
 def _sources_health(accounts):
-    """监控源健康（逐源）：名称 / 近 24h 入库条数 / 最后抓取时间 / 最近一轮成败"""
+    """监控源健康（2026-11-09 J：统一口径，四态分别显示，不假零不默认正常）。
+
+    口径：
+      - 来源总数 = X 总数 + RSS 总数；启用数 = 两类启用数之和；
+      - 总数、启用数、健康状态三者独立（已启用但异常仍计入启用数）；
+      - 逐源 state：ok / error（最近一轮失败） / unknown（启用但无抓取记录，
+        不默认正常） / disabled（停用——不参与健康统计）；
+      - 健康聚合由 X 与 RSS 共同决定：一轮 X 成功不能覆盖 RSS 已知失败。
+    """
     import time as _t
 
     def fmt_ts(v):
@@ -224,31 +238,70 @@ def _sources_health(accounts):
                 if m2 and m2.group(1) not in rss_status:
                     rss_status[m2.group(1)] = "✗" not in m2.group(2)
 
-    def fmt_src(name, ok, kv_last, count_key):
-        return {"name": name, "ok": bool(ok), "cnt24": cnt24(count_key), "last": fmt_ts(kv_last)}
+    def state_of(enabled, ok_known):
+        """enabled=是否启用；ok_known=None(无抓取记录)/True/False"""
+        if not enabled:
+            return "disabled"
+        if ok_known is None:
+            return "unknown"   # 启用但从未抓取：未知，不冒充正常
+        return "ok" if ok_known else "error"
+
+    def fmt_src(name, enabled, ok_known, kv_last, count_key):
+        return {"name": name, "state": state_of(enabled, ok_known),
+                "ok": bool(ok_known) if ok_known is not None else False,
+                "enabled": bool(enabled),
+                "cnt24": cnt24(count_key), "last": fmt_ts(kv_last)}
 
     # 计数键与库内 screen_name 一致：X 无 @ 前缀，RSS 带 "RSS:" 前缀（2026-11-08 修复恒 0）
-    x_items = [fmt_src("@" + a["screen_name"],
-                       x_status.get(a["screen_name"], True),
+    x_items = [fmt_src("@" + a["screen_name"], bool(a["enabled"]),
+                       x_status.get(a["screen_name"]),
                        db.get_kv("acc_last_" + a["screen_name"].lower()),
                        a["screen_name"])
                for a in accounts]
-    rss_items = [fmt_src("[RSS] " + s["name"], rss_status.get(s["name"], True),
+    rss_all = db.list_rss_sources()
+    rss_enabled_ids = {s["id"] for s in db.list_rss_sources(enabled_only=True)}
+    rss_items = [fmt_src("[RSS] " + s["name"], s["id"] in rss_enabled_ids,
+                         rss_status.get(s["name"]),
                          db.get_kv("rss_last_" + str(s["id"])),
                          "RSS:" + s["name"])
-                 for s in db.list_rss_sources()]
+                 for s in rss_all]
+
+    def agg(items):
+        return {"ok": sum(1 for i in items if i["state"] == "ok"),
+                "error": sum(1 for i in items if i["state"] == "error"),
+                "unknown": sum(1 for i in items if i["state"] == "unknown"),
+                "disabled": sum(1 for i in items if i["state"] == "disabled")}
+
+    x_tot, rss_tot = len(accounts), len(rss_all)
+    x_en = len([a for a in accounts if a["enabled"]])
+    rss_en = len(rss_enabled_ids)
+    xa, ra = agg(x_items), agg(rss_items)
+    enabled_total = x_en + rss_en
+    err_total = xa["error"] + ra["error"]
+    unk_total = xa["unknown"] + ra["unknown"]
+    if enabled_total == 0:
+        health = "idle"          # 无启用源
+    elif err_total == 0 and unk_total == 0:
+        health = "normal"
+    elif err_total == 0:
+        health = "unknown"       # 无失败但有未运行的启用源
+    elif err_total >= enabled_total:
+        health = "error"         # 启用源全部异常
+    else:
+        health = "partial_error"  # 部分异常（X 成功不能掩盖 RSS 失败）
     return {
-        "x": {"total": len(accounts), "enabled": len([a for a in accounts if a["enabled"]]),
-              "items": x_items},
-        "rss": {"total": len(db.list_rss_sources()),
-                "enabled": len(db.list_rss_sources(enabled_only=True)),
-                "items": rss_items},
+        "total": x_tot + rss_tot,
+        "enabled": enabled_total,
+        "health": {"state": health, "x": xa, "rss": ra},
+        "x": {"total": x_tot, "enabled": x_en, "items": x_items},
+        "rss": {"total": rss_tot, "enabled": rss_en, "items": rss_items},
     }
 
 
 @router.get("/api/stats", dependencies=[Depends(auth.require("read"))])
 def api_stats():
-    push_ok, push_total, push_sim = db.push_stats_today()
+    ps = db.push_stats_today()
+    push_ok, push_total, push_sim = ps["ok"], ps["total"], ps["sim"]
     a = db.ai_stats()
     lf = db.get_kv("last_fetch")
     accounts = db.list_x_accounts()
@@ -267,6 +320,9 @@ def api_stats():
         "accounts": len(accounts), "accounts_enabled": len([a for a in accounts if a["enabled"]]),
         "sources": _sources_health(accounts),
         "push_ok": push_ok, "push_total": push_total, "push_sim": push_sim,
+        # J：真实/模拟分列——只有模拟时 real_rate=None（前端显示"无真实样本"）
+        "push_real_ok": ps["real_ok"], "push_real_total": ps["real_total"],
+        "push_real_rate": ps["real_rate"],
         "next_run_in": (scheduler_instance().next_run_in() if scheduler_instance() else None),
         "fetch_running": engine.is_running(),
         "fetch_interval_minutes": load()["fetch"]["interval_minutes"],
@@ -662,17 +718,19 @@ class ReviewBody(BaseModel):
 
 @router.post("/api/tweets/{tid}/review", dependencies=[Depends(auth.require("write"))])
 def api_tweet_review(tid: int, body: ReviewBody):
-    """人工审核通过：将当前版本标记为已核验（ai_review=manual）。
-    约束：审核绑定当前 analysis_version；内容再次变化（版本推进）后审核自动失效。"""
+    """人工审核通过：将审核绑定到用户实际审阅的版本（ai_review=manual + ai_review_version）。
+    约束：原子绑定——请求处理期间版本被推进则拒绝（409），要求基于新版本重新审核；
+    内容再次变化（版本推进）后旧审核自动失效（integrity.review_state=stale）。"""
     t = db.get_tweet(tid)
     if not t:
         raise HTTPException(404, "推文不存在")
     ver = int(t.get("analysis_version") or 0)
-    db.update_ai(tid, {"ai_review": "manual", "ai_review_at": db.now(),
-                       "ai_review_version": ver})
+    bound = db.bind_review(tid, ver)
+    if bound is None:
+        raise HTTPException(409, "内容版本已变化，本次审核未绑定；请刷新后基于当前版本重新审核")
     db.add_ai_log("人工审核", detail=(body.note or "review approved")[:180],
                   tweet_id=tid, status="ok")
-    return {"ok": True, "reviewed_version": ver}
+    return {"ok": True, "reviewed_version": bound}
 
 
 @router.get("/api/ai/conflicts", dependencies=[Depends(auth.require("read"))])
@@ -1100,11 +1158,13 @@ def api_event_detail(uid: str):
     ev = db.get_event(uid)
     if not ev:
         raise HTTPException(404, "事件不存在")
+    db.ensure_event_freshness(uid)  # 底层情报变化 → 版本推进留痕（旧审核自动失效）
     ev["evidence"] = db.event_evidence(uid)
     ev["stats"] = db.evidence_stats(uid)
     ev["revisions"] = db.event_revisions(uid)
     ev["reviews"] = db.event_reviews(uid)
     ev["review_latest"] = db.event_review_latest(uid)
+    ev["review_state"] = db.event_review_state(uid)  # valid/stale/none 统一口径
     ev["candidates"] = []   # 这里不返回候选（需按推文查）
     return ev
 
@@ -1149,7 +1209,10 @@ def api_event_split(uid: str, body: SplitBody, request: Request):
         raise HTTPException(400, "tweet_ids 不能为空")
     ok, new_uid = db.split_event(uid, body.tweet_ids, body.new_title, _operator(request))
     if not ok:
-        raise HTTPException(404, "事件不存在")
+        if not db.get_event(uid):
+            raise HTTPException(404, "事件不存在")
+        raise HTTPException(400, "拆分失败：传入的 tweet_id 均不属于本事件"
+                                 "（请使用推文ID，而非证据列表行号；不会创建空事件）")
     return {"ok": True, "new_event": new_uid}
 
 

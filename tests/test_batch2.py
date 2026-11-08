@@ -329,8 +329,10 @@ check("S12-2 迁移不创建投递（不伪造历史成功）", n_before == n_af
 
 # ============================================================
 print("== 场景13 报告分项交付 ==")
-dirt = TMP / "deliver"
-dirt.mkdir(exist_ok=True)
+# H 组：交付目录必须是 data/report_tasks 下的相对路径（受控目录）
+dirt_rel = "s13-deliver"
+dirt = TMP / "report_tasks" / dirt_rel
+dirt.mkdir(parents=True, exist_ok=True)
 (dirt / "r_批注.docx").write_text("x")
 reports.load = lambda: {"channels": {}}
 ch_wfile = StubCh("wecom", "企微·附件", ok=True, caps=("markdown", "file"))
@@ -340,7 +342,7 @@ set_inst((ch_wfile, {"iid": iid_a, "webhook": "stub://wecom", "instance_name": "
 tid13 = reports.create_task("分项交付", ["d13"], "速报", "", [jp_id], 0)["id"]
 db.get_conn().execute(
     "UPDATE report_tasks SET status='已交付待推', deliver_dir=?, docx='r.docx' WHERE id=?",
-    (str(dirt), tid13))
+    (dirt_rel, tid13))
 db.get_conn().commit()
 reports.push_task(tid13)
 check("S13-1 附件失败 → 部分已推送（不被正文成功掩盖）",
@@ -392,17 +394,20 @@ gate_stub = TMP / "gate_stub.py"
 gate_stub.write_text("import sys\nsys.exit(0)\n")
 reports.load = lambda: {"channels": {}, "report": {"gate_script": str(gate_stub)}}
 tid14 = reports.create_task("待人工重验", ["d14"], "速报", "", [jp_id], 0)["id"]
+dirt14_rel = "s14-deliver"
+dirt14 = TMP / "report_tasks" / dirt14_rel
+dirt14.mkdir(parents=True, exist_ok=True)
 db.get_conn().execute(
     "UPDATE report_tasks SET status='待人工', deliver_dir=?, docx='g.docx' WHERE id=?",
-    (str(dirt), tid14))
-(dirt / "g.docx").write_text("doc")
-(dirt / "g_批注.docx").write_text("doc")
-(dirt / "g_审阅.html").write_text("<html></html>")
+    (dirt14_rel, tid14))
+(dirt14 / "g.docx").write_text("doc")
+(dirt14 / "g_批注.docx").write_text("doc")
+(dirt14 / "g_审阅.html").write_text("<html></html>")
 db.get_conn().commit()
 wm.push_file = lambda webhook, path: {"errcode": 0}
 set_inst((ch_ok, {"iid": iid_a, "webhook": "stub://ok", "instance_name": "OK",
                   "filter_rule": ""}, False, iid_a))
-d = reports.deliver(tid14, {"deliver_dir": str(dirt), "docx": "g.docx",
+d = reports.deliver(tid14, {"deliver_dir": dirt14_rel, "docx": "g.docx",
                             "word_count": 100, "ledger_total": 3, "ledger_pass": 3})
 check("S14-1 待人工可重新交付并重新验收", task_st(tid14) == "已交付待推", task_st(tid14))
 db.get_conn().execute("UPDATE report_tasks SET status='已交付待推', updated_at=? WHERE id=?",

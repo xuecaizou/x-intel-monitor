@@ -129,34 +129,73 @@ def _push_sort_key(t):
 
 def run_ai_stage(new_tweets, cfg):
     """AI 阶段：本轮新推文**全部**研判+翻译（推送门控依赖它们完成）；
-    历史遗留未研判的按 auto_limit 限额补处理。失败推文 ai_retries+1 供下轮重试"""
+    历史遗留未研判的按 auto_limit 限额补处理。失败推文 ai_retries+1 供下轮重试。
+
+    提交语义（2026-11-09 缺陷 B 修复）：process_tweet 只计算不写库，成功结果经
+    db.apply_ai_result 原子提交（版本+人工保护）；失败/配额状态经
+    db.update_ai_guarded 写回（不覆盖人工修改）。出现 429/额度耗尽 → 停止本轮
+    后续模型调用与翻译，剩余不计成功。"""
     acfg = dict(cfg.get("ai", {}))
     if not (acfg.get("enabled") and acfg.get("auto_analyze") and acfg.get("api_key")):
         return 0
     done = 0
-    def _run(t):
+    quota_hit = [False]
+
+    def _commit_or_back(t, fields, error, quota_flag):
+        """成功/失败结果统一权威提交；返回是否应停止本轮"""
         nonlocal done
+        tid = t["id"]
+        base = int(t.get("analysis_version") or 0)
         try:
-            aimod.process_tweet(t, acfg)
-            done += 1
-            time.sleep(0.5)
-        except aimod.AIModifiedError:
-            pass  # 人工修订保护：跳过，不算失败
-        except aimod.AIQuotaError as e:
-            db.update_ai(t["id"], {"ai_status": "error",
-                                   "ai_error": f"AIQuotaError: {str(e)[:150]}",
-                                   "ai_analyzed_at": db.now()})
-            raise   # 配额问题：中止本轮 AI，避免继续烧额度
+            applied, reason, cur = db.apply_ai_result(tid, fields, base)
         except Exception as e:
-            db.update_ai(t["id"], {"ai_status": "error",
-                                   "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
-                                   "ai_analyzed_at": db.now()})
+            # 落库异常：一次失败写回（guarded），绝不重复调用收费模型
+            db.update_ai_guarded(tid, {"ai_status": "error",
+                                       "ai_error": f"落库失败 {type(e).__name__}: {str(e)[:120]}",
+                                       "ai_analyzed_at": db.now()}, base)
+            return False
+        if applied:
+            if not error:
+                done += 1
+            return bool(quota_flag)
+        # 冲突：结果已审计留存（apply_ai_result 内写 ai_result_conflicts）
+        db.add_ai_log("AI结果冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=tid,
+                      status="conflict")
+        return bool(quota_flag)
+
+    def _run(t):
+        if quota_hit[0]:
+            return
+        try:
+            fields, error, quota_flag = aimod.process_tweet(t, acfg)
+        except aimod.AIModifiedError:
+            return  # 人工修订保护：跳过，不算失败
+        except aimod.AIQuotaError as e:  # 双保险（process_tweet 已转 flag）
+            db.update_ai_guarded(t["id"], {"ai_status": "error",
+                                           "ai_error": f"AIQuotaError: {str(e)[:150]}",
+                                           "ai_analyzed_at": db.now()},
+                                 int(t.get("analysis_version") or 0))
+            quota_hit[0] = True
+            return
+        except Exception as e:
+            db.update_ai_guarded(t["id"], {"ai_status": "error",
+                                           "ai_error": f"{type(e).__name__}: {str(e)[:180]}",
+                                           "ai_analyzed_at": db.now()},
+                                 int(t.get("analysis_version") or 0))
+            return
+        if _commit_or_back(t, fields, error, quota_flag):
+            quota_hit[0] = True
     for t in new_tweets:  # 新推文不限量——推送门控依赖它们完成研判
+        if quota_hit[0]:
+            break  # 429：停止本轮后续模型调用和翻译
         if int(t.get("ai_modified") or 0) == 1:
             continue  # 人工修订保护：跳过自动研判，人工有效值保留
         _run(t)
-    for t in db.tweets_pending_ai(int(acfg.get("auto_limit", 10))):  # 历史遗留限额补（不含人工修订）
-        _run(t)
+    if not quota_hit[0]:  # 配额停止时不再进入补处理列表
+        for t in db.tweets_pending_ai(int(acfg.get("auto_limit", 10))):  # 历史遗留限额补（不含人工修订）
+            if quota_hit[0]:
+                break
+            _run(t)
     return done
 
 
@@ -181,6 +220,7 @@ def process_ai_tasks(cfg, batch=5):
         return "后台AI任务：AI 未启用"
     ids = db.ai_task_items(t["id"], kind, limit)
     done = fail = skip = 0
+    quota_stop_note = ""
     for tid in ids:
         row = db.get_tweet(tid)
         if not row or int(row.get("ai_modified") or 0) == 1:
@@ -188,12 +228,22 @@ def process_ai_tasks(cfg, batch=5):
             continue
         base = int(row.get("analysis_version") or 0)
         try:
-            fields = aimod.process_tweet(row, acfg)   # 模型调用
+            fields, error, quota_flag = aimod.process_tweet(row, acfg)   # 模型调用（纯计算）
+        except aimod.AIModifiedError:
+            skip += 1
+            continue
+        except aimod.AIQuotaError as e:  # 双保险（process_tweet 已转 flag）
+            fail += 1
+            db.update_ai_guarded(tid, {"ai_status": "error",
+                                       "ai_error": f"task {t['id']} AIQuotaError: {str(e)[:120]}",
+                                       "ai_analyzed_at": db.now()}, base)
+            quota_stop_note = f"配额停止，剩余 {len(ids) - done - fail - skip} 条未处理"
+            break
         except Exception as e:
             fail += 1
-            db.update_ai(tid, {"ai_status": "error",
-                               "ai_error": f"task {t['id']}: {type(e).__name__}: {str(e)[:150]}",
-                               "ai_analyzed_at": db.now()})
+            db.update_ai_guarded(tid, {"ai_status": "error",
+                                       "ai_error": f"task {t['id']}: {type(e).__name__}: {str(e)[:150]}",
+                                       "ai_analyzed_at": db.now()}, base)
             continue
         if not fields:
             fail += 1
@@ -202,21 +252,35 @@ def process_ai_tasks(cfg, batch=5):
         try:
             applied, reason, cur = db.apply_ai_result(tid, fields, base)
         except Exception as e:
-            # 落库失败（非冲突）：计入失败并记录，避免任务停在"处理中"
+            # 落库失败（非冲突）：计入失败并记录，避免任务停在"处理中"；不重复调用模型
             fail += 1
             db.add_ai_log("任务落库失败", detail=f"{type(e).__name__}: {str(e)[:150]}",
                           tweet_id=tid)
+            db.update_ai_guarded(tid, {"ai_error": f"落库失败 {type(e).__name__}: {str(e)[:120]}"},
+                                 base)
             continue
         if applied:
-            done += 1
+            if not error:
+                done += 1
+            else:
+                fail += 1
         else:
             # 冲突不计失败（结果已审计留存），单列 skip 以免重复烧钱
             skip += 1
             db.add_ai_log("任务结果冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=tid,
                           status="conflict")
+        if quota_flag:
+            # 429：已成功的结果已提交；停止本轮剩余条目（不计成功/失败）
+            quota_stop_note = f"配额停止，剩余 {max(0, len(ids) - done - fail - skip)} 条未处理"
+            break
     _st = "完成" if fail == 0 else ("完成(部分)" if done else "失败")
+    if quota_stop_note:
+        _st = "失败(配额)" if done == 0 else "完成(部分)"
     db.finish_ai_task(t["id"], _st, done=done, fail=fail, skip=skip)
-    return f"后台AI任务#{t['id']}：提交{len(ids)} 成功{done} 失败{fail} 跳过{skip}"
+    note = f"后台AI任务#{t['id']}：提交{len(ids)} 成功{done} 失败{fail} 跳过{skip}"
+    if quota_stop_note:
+        note += f"（{quota_stop_note}）"
+    return note
 
 
 def effective_interval_minutes(cfg):
@@ -511,7 +575,8 @@ def run_fetch(manual=False, cfg=None):
             if row and not row.get("category"):
                 cat = aimod.rule_classify(row.get("text"))
                 if cat:
-                    db.update_ai(t["id"], {"category": cat})
+                    db.update_ai_guarded(t["id"], {"category": cat},
+                                         int(row.get("analysis_version") or 0))
         db.set_kv("last_fetch", json.dumps(
             {"at": db.now(), "new": len(new_tweets), "ai": ai_done,
              "pushed": pushed, "manual": bool(manual)}, ensure_ascii=False))
@@ -555,10 +620,12 @@ def run_single_ai(tweet_id, action, force=False):
 
 
 def backfill_tags(limit_n=10, cfg=None):
-    """为已研判但缺地区标签的旧推文补跑 AI 打标（不重做翻译）"""
+    """为已研判但缺地区标签的旧推文补跑 AI 打标（不重做翻译）。
+    配额停止：429/额度耗尽立即停止本轮，剩余不计失败。"""
     rows = db.tweets_missing_geo(limit_n)
     acfg = cfg or load().get("ai", {})
     done, errors = 0, 0
+    quota_stopped = False
     for t in rows:
         base = int(t.get("analysis_version") or 0)
         try:
@@ -572,11 +639,17 @@ def backfill_tags(limit_n=10, cfg=None):
             else:
                 db.add_ai_log("补标冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=t["id"],
                               status="conflict")
+        except aimod.AIQuotaError as e:
+            db.update_ai_guarded(t["id"], {"ai_error": f"AIQuotaError: {str(e)[:150]}"}, base)
+            quota_stopped = True
+            break
         except Exception as e:
-            db.update_ai(t["id"], {"ai_error": f"backfill {type(e).__name__}: {str(e)[:150]}"})
+            db.update_ai_guarded(t["id"], {"ai_error": f"backfill {type(e).__name__}: {str(e)[:150]}"},
+                                 base)
             errors += 1
         time.sleep(1)
-    return {"done": done, "errors": errors, "remaining_hint": len(rows)}
+    return {"done": done, "errors": errors, "remaining_hint": len(rows),
+            **({"quota_stopped": True} if quota_stopped else {})}
 
 
 def test_channel(key, cfg):
@@ -610,7 +683,8 @@ def classify_recent(limit=200, cfg=None):
     for t in pending:
         cat = aimod.rule_classify(t.get("text"))
         if cat:
-            db.update_ai(t["id"], {"category": cat})
+            db.update_ai_guarded(t["id"], {"category": cat},
+                                 int(t.get("analysis_version") or 0))
             rule_done += 1
         else:
             ai_todo.append(t)
@@ -621,6 +695,7 @@ def classify_recent(limit=200, cfg=None):
             ai_done, fail = r["done"], r["fail"]
         except Exception as e:
             for t in ai_todo:
-                db.update_ai(t["id"], {"ai_error": f"classify {type(e).__name__}: {str(e)[:150]}"})
+                db.update_ai_guarded(t["id"], {"ai_error": f"classify {type(e).__name__}: {str(e)[:150]}"},
+                                     int(t.get("analysis_version") or 0))
             fail = len(ai_todo)
     return {"rule": rule_done, "ai": ai_done, "fail": fail, "total": rule_done + ai_done}

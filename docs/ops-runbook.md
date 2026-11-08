@@ -52,6 +52,15 @@ python scripts/backup_restore.py restore backups/<stamp> restore-test
 4. 启动后**先确认 auth.enabled**，再确认调度：恢复后默认不自动补发
 5. 用 `export-pending` 导出未完成/不明任务，人工决定重试
 
+**恢复安全语义（2026-11-09 G 组，`restore_to` 默认强制）**：
+- 恢复副本 runtime.json 自动改写 `scheduler.enabled=false`、`outbound.enable=false`
+  （**备份原件不动**；`safety_changes` 记录原件/变更后哈希，两者明确区分）；
+- **旧 Token 与会话一律清除**：旧备份可能含已吊销凭据，恢复不悄悄复活——
+  管理员用 `data/admin_init.txt` 重新取得访问（auth_users 保留）；
+- `verify_original`（复制后逐字节校验）与 `integrity_final`（安全变更后）分离；
+- 启动后必须**实际验证**：healthz 可达、启动日志含"调度已按配置暂停"、
+  抓取/推送日志为空——不以配置文件包含开关字符串代替运行验证。
+
 ## 5. 精确回退（第五批修订）
 
 ### 5.1 代码回退（含新增文件处理）
@@ -102,9 +111,15 @@ git status   # 复核差异：应只有预期文件
 
 ## 6. 出站 URL 安全
 
-- RSS/媒体：仅 http/https；私网/回环/链路本地/保留地址拦截；重定向逐跳校验；响应 ≤8MB
-- 管理员显式例外：`fetch.allow_private_urls=true`（仅限内网 AI 网关等明确用途）
+- RSS/媒体：仅 http/https；私网/回环/链路本地/保留地址拦截；**重定向逐跳校验**；响应 ≤8MB
+- 管理员显式例外：按用途授权（`outbound.allow_private.<purpose>` 精确 host:port）——
+  ai_gateway 白名单**不会**扩大到 rss/media/webhook（第七批 H 组用途隔离）
 - AI 网关地址由管理员在 AI 设置中配置，属于受信配置（不做私网拦截）
+- 企微附件 webhook：仅 https+公网；内网网关需显式 `outbound.allow_private.webhook`
+- 报告交付路径：`deliver_dir` 必须是 `data/report_tasks` 下相对目录 + 纯文件名
+  （`safe_report_path`；非法路径 → 交付转待人工并注明原因）
+- 代理边界：低信任用途配代理须 `outbound.trusted_proxy=true`；该标志仅为管理员声明，
+  应用层逐跳校验（scheme/白名单/上限）仍实际生效，代理侧解析不可见属已知限制
 
 ## 7. 健康检查
 
@@ -115,6 +130,8 @@ git status   # 复核差异：应只有预期文件
 ```bash
 # 离线（推荐，CI 同款）：临时库 + 替身 + 禁用外联
 python offline_test.py
+# 退出码：任一套件失败/缺失/异常退出 → 非零（套件级汇总见末尾）。
+# 历史：收集 failed 但不据此退出——CI 绿标掩盖双平台 FAIL（2026-11-09 A 组修复）。
 
 # 集成（对运行实例；会真实调用 AI、写生产日志）
 XINTEL_TOKEN=<admin token> python healthcheck.py

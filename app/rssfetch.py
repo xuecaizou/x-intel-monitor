@@ -2,7 +2,8 @@
 
 与 X 账号共用 tweets 表：screen_name=RSS 源名，tweet_id=条目 guid/link 哈希（幂等去重），
 media 提取 description 内首图。每源独立 fetch_minutes（0=跟随全局），置顶式增量：
-记录上次首条 guid（kv rss_top_{id}），无变化整源短路。
+增量：逐条扫描去重（2026-11-09 I 修复——不再按首条 guid 短路整源），
+位点 rss_top_{id} 仅作追踪参考、入库完成后推进；source_id=rss:{源id}。
 """
 import hashlib
 import html as htmllib
@@ -79,36 +80,44 @@ def _extract_media(desc):
 
 
 def fetch_source(src, cfg, limit=15):
-    """抓取单个 RSS 源，返回 (新条目数, 追踪明细, 错误)
-    条目字段与 twitter._tweet 对齐，直接 insert_tweet 进管道"""
+    """抓取单个 RSS 源，返回 (新条目数, 追踪明细, 错误)。
+    条目字段与 twitter._tweet 对齐，直接 insert_tweet 进管道。
+
+    增量语义（2026-11-09 缺陷 I 修复）：**逐条扫描去重，不再按首条 GUID
+    短路整源**——历史缺陷：首位是置顶条目或新条目插入非首位时，首条 GUID
+    未变 → 整源跳过 → 漏采。幂等由 insert_tweet UNIQUE(source_id, tweet_id)
+    保证；位点 rss_top_{id} 仅在本轮全部入库尝试完成后推进（入库异常不推进），
+    只作追踪参考不再参与跳过判断；条目携带 source_id（rss:{id}）——来源改名
+    不重复入库、归属不变。"""
     name, url = src["name"], src["url"]
     xcfg = dict(cfg.get("x", {}))
     if not xcfg.get("proxy"):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
     try:
         # SSRF 校验（第四批）：仅 http/https；禁止回环/私网/链路本地（可用 fetch.allow_private_urls 显式放行）
-        from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust
+        from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust, fetch_limited
+        from .twitter import _proxies
         try:
             validate_url(url, purpose="rss")   # RSS 永不允许私网（无白名单用途）
             check_proxy_trust("rss", xcfg.get("proxy") or "")
         except UnsafeUrlError as ue:
             return 0, "", f"URL 拒绝（出站策略）：{ue}"
-        r = _http_get(url, xcfg, timeout=max(20, int((src.get("_timeout") or 20))))
-        if r.status_code != 200:
-            return 0, f"HTTP {r.status_code}", f"HTTP {r.status_code}"
-        if not (r.content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in r.content[:600]
-                or b"<rss" in r.content[:600]):
+        # 2026-11-09 H：从裸 _http_get（默认自动重定向+整包读取）迁移到受控抓取——
+        # 重定向逐跳校验、≤8MB、显式超时在应用层实际生效
+        status, content, _final = fetch_limited(
+            url, timeout=max(20, int((src.get("_timeout") or 20))),
+            purpose="rss", proxies=_proxies(xcfg.get("proxy") or ""))
+        if status != 200:
+            return 0, f"HTTP {status}", f"HTTP {status}"
+        if not (content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in content[:600]
+                or b"<rss" in content[:600]):
             return 0, "响应非 RSS/Atom", "非 RSS 内容（可能被 WAF 拦截）"
-        feed = feedparser.parse(r.content)
+        feed = feedparser.parse(content)
         if not feed.entries:
             return 0, "0 条目", "空 feed"
-        # 增量短路：首条 guid 与上次一致 → 无更新
-        top_id = _entry_id(feed.entries[0])
-        if db.get_kv(f"rss_top_{src['id']}") == top_id:
-            return 0, "无更新（首条 guid 未变）", ""
-        new, trace_parts = 0, []
-        media_fail = 0
-        for e in feed.entries[:limit]:
+        scanned = feed.entries[:limit]
+        new = 0
+        for e in scanned:
             eid = _entry_id(e)
             link = e.get("link") or ""
             desc = e.get("description", "") or e.get("summary", "") or ""
@@ -118,6 +127,7 @@ def fetch_source(src, cfg, limit=15):
             t = {
                 "screen_name": f"RSS:{name}",  # 加前缀防与同名 X 账号数据混淆
                 "tweet_id": eid,
+                "source_id": f"rss:{src['id']}",  # 稳定来源身份：改名不重复入库
                 "text": (e.get("title", "").strip() + "\n" + text).strip()[:2000],
                 "url": link,
                 "published_at": _norm_time(e.get("published") or e.get("updated") or ""),
@@ -128,8 +138,9 @@ def fetch_source(src, cfg, limit=15):
             rid = db.insert_tweet(t)
             if rid:
                 new += 1
-        db.set_kv(f"rss_top_{src['id']}", top_id)
-        trace = f"✓{new}条/{len(feed.entries[:limit])}扫描"
+        # 位点推进：仅在全部条目入库尝试完成（无异常）后写入，仅作追踪参考
+        db.set_kv(f"rss_top_{src['id']}", _entry_id(scanned[0]))
+        trace = f"✓{new}条/{len(scanned)}扫描"
         return new, trace, ""
     except Exception as e:
         return 0, "", f"{type(e).__name__}: {str(e)[:120]}"
@@ -177,17 +188,28 @@ def run_rss_round(trigger="schedule"):
 
 
 def test_source(url):
-    """连通性测试：抓一次返回条目数与前 3 条标题（不入库）"""
+    """连通性测试：抓一次返回条目数与前 3 条标题（不入库）。
+
+    2026-11-09 H：补齐出站校验（历史缺陷——fetch_source 有 validate_url，
+    来源测试却裸走 _http_get，可被当作 SSRF 探针）。"""
     from .config import load
+    from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust, fetch_limited
+    from .twitter import _proxies
     cfg = load()
     xcfg = dict(cfg.get("x", {}))
     if not xcfg.get("proxy"):
         xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
     try:
-        r = _http_get(url, xcfg, timeout=20)
-        if r.status_code != 200:
-            return {"ok": False, "error": f"HTTP {r.status_code}"}
-        feed = feedparser.parse(r.content)
+        validate_url(url, purpose="rss")
+        check_proxy_trust("rss", xcfg.get("proxy") or "")
+    except UnsafeUrlError as ue:
+        return {"ok": False, "error": f"URL 拒绝（出站策略）：{str(ue)[:120]}"}
+    try:
+        status, content, _final = fetch_limited(url, timeout=20, purpose="rss",
+                                                proxies=_proxies(xcfg.get("proxy") or ""))
+        if status != 200:
+            return {"ok": False, "error": f"HTTP {status}"}
+        feed = feedparser.parse(content)
         if not feed.entries:
             return {"ok": False, "error": "解析成功但 0 条目（内容可能被 WAF 拦截）"}
         return {"ok": True, "title": feed.feed.get("title", ""),
