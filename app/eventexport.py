@@ -109,9 +109,11 @@ def _snapshot(uid):
 
 
 def _evidence_item(t):
-    """单条证据（含完整性分级 + 是否可作 AI 结论）"""
+    """单条证据（结构完整性 / 人工认可 / 有效性三表达，互不抹除）"""
     grade = integ.effective_grade(t)
+    structural = integ.structural_grade(t)
     allowed, must_label, reason = integ.may_auto_downstream(t)
+    rev_state, rev_ver, cur_ver = integ.review_state(t)
     iocs = _arr(t.get("ai_iocs"))
     orgs = _arr(t.get("org"))
     tags = _arr(t.get("tags"))
@@ -129,11 +131,17 @@ def _evidence_item(t):
             "type": t.get("ai_type", ""),
             "assessment": t.get("ai_assessment", ""),
             "confidence": int(t.get("ai_confidence") or 0),
+            # 有效完整性（人工认可绑定当前版本时可升级为 verified）
             "integrity": grade,
+            # 原始结构分级（partial/invalid 与修复痕迹不被人工审核抹掉）
+            "structural_integrity": structural,
             "integrity_label": integ.label(t),
             "usable_as_conclusion": bool(allowed and not must_label),
             "must_label_unfinished": bool(must_label),
-            "review": t.get("ai_review", ""),
+            # 人工认可三态：valid=绑定当前版本；stale=历史决定；none=未审核
+            "review": {"state": rev_state,
+                       "reviewed_version": rev_ver,
+                       "current_version": cur_ver},
             "repair_notes": t.get("ai_repair", ""),
         },
         "geo": {"country": t.get("geo_country", ""), "province": t.get("geo_province", ""),

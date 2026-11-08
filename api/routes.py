@@ -662,17 +662,19 @@ class ReviewBody(BaseModel):
 
 @router.post("/api/tweets/{tid}/review", dependencies=[Depends(auth.require("write"))])
 def api_tweet_review(tid: int, body: ReviewBody):
-    """人工审核通过：将当前版本标记为已核验（ai_review=manual）。
-    约束：审核绑定当前 analysis_version；内容再次变化（版本推进）后审核自动失效。"""
+    """人工审核通过：将审核绑定到用户实际审阅的版本（ai_review=manual + ai_review_version）。
+    约束：原子绑定——请求处理期间版本被推进则拒绝（409），要求基于新版本重新审核；
+    内容再次变化（版本推进）后旧审核自动失效（integrity.review_state=stale）。"""
     t = db.get_tweet(tid)
     if not t:
         raise HTTPException(404, "推文不存在")
     ver = int(t.get("analysis_version") or 0)
-    db.update_ai(tid, {"ai_review": "manual", "ai_review_at": db.now(),
-                       "ai_review_version": ver})
+    bound = db.bind_review(tid, ver)
+    if bound is None:
+        raise HTTPException(409, "内容版本已变化，本次审核未绑定；请刷新后基于当前版本重新审核")
     db.add_ai_log("人工审核", detail=(body.note or "review approved")[:180],
                   tweet_id=tid, status="ok")
-    return {"ok": True, "reviewed_version": ver}
+    return {"ok": True, "reviewed_version": bound}
 
 
 @router.get("/api/ai/conflicts", dependencies=[Depends(auth.require("read"))])

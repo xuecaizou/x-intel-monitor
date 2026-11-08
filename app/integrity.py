@@ -42,11 +42,44 @@ def normalize_stored(value):
     return VERIFIED
 
 
-def effective_grade(tweet):
-    """当前有效完整性等级。人工审核/人工修订 → verified（仅对该版本有效）。"""
-    if str(tweet.get("ai_review") or "") == "manual":
-        return VERIFIED
+def structural_grade(tweet):
+    """结构完整性原始分级（不受人工审核影响）——partial/invalid 及修复痕迹必须保留可查。"""
     return normalize_stored(tweet.get("ai_integrity"))
+
+
+def review_state(tweet):
+    """人工审核绑定状态三态（2026-11-09 缺陷 C 修复）。
+
+    返回 (state, reviewed_version, current_version)：
+      valid — ai_review=manual 且 ai_review_version == 当前 analysis_version
+              （审核者实际审阅的就是当前版本，人工认可有效）
+      stale — 版本已推进/未记录绑定版本：旧审核只是历史决定，不得冒充当前批准
+      none  — 未人工审核
+    """
+    if str(tweet.get("ai_review") or "") != "manual":
+        return "none", None, int(tweet.get("analysis_version") or 0)
+    cur = int(tweet.get("analysis_version") or 0)
+    rev = tweet.get("ai_review_version")
+    if rev is None or str(rev).strip() == "":
+        # 历史数据未记录绑定版本 → 无法证明审的是当前版本，保守按 stale
+        return "stale", None, cur
+    try:
+        rev = int(rev)
+    except Exception:
+        return "stale", None, cur
+    return ("valid" if rev == cur else "stale"), rev, cur
+
+
+def effective_grade(tweet):
+    """当前有效完整性等级。
+
+    人工认可升级仅在审核绑定当前版本时生效（review_state=valid）；
+    版本推进后旧审核自动失效，回落到结构分级——审核必须绑定用户实际审阅的版本。
+    原始结构分级始终可经 structural_grade() 查询，不被人工审核抹掉。"""
+    state, _rev, _cur = review_state(tweet)
+    if state == "valid":
+        return VERIFIED
+    return structural_grade(tweet)
 
 
 def may_auto_downstream(tweet):

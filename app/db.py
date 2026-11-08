@@ -795,6 +795,23 @@ def clear_manual_protection(tid):
         return cur.rowcount > 0
 
 
+def bind_review(tid, base_version, review="manual"):
+    """人工审核绑定：原子检查版本——审核只能绑定用户实际审阅的版本。
+
+    请求处理期间内容版本被推进（AI 结果先落地/人工修订/原文更新）→ 拒绝绑定，
+    返回 None（调用方应要求刷新后基于新版本重新审核）。
+    成功：ai_review/ai_review_at/ai_review_version 原子写入，返回绑定版本。"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE tweets SET ai_review=?, ai_review_at=?, ai_review_version=?"
+            " WHERE id=? AND analysis_version=?",
+            (review, now(), int(base_version), int(tid), int(base_version)))
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return None
+        return get_analysis_version(tid)
+
+
 def update_ai_guarded(tid, fields, base_version):
     """失败/状态类写回的权威路径：原子检查版本与人工保护，不推进版本。
 
