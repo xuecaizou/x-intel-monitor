@@ -31,7 +31,8 @@ jobs:
           pip install -r requirements.txt
           pip install httpx
       - name: Verify no secrets in repo
-        run: python scripts/check_no_secrets.py
+        run: |
+          python scripts/check_no_secrets.py || { echo "SECRET CHECK FAILED"; python -c "import subprocess;print(subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout[:2000])"; exit 1; }
       - name: Run offline test suite
         run: python offline_test.py
       - name: Compile check
