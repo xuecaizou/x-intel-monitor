@@ -905,25 +905,35 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       document.getElementById('kpi-today-dl').textContent='累计 '+s.total+' 条';
       document.getElementById('kpi-ai').textContent=s.ai_analyzed;
       document.getElementById('kpi-ai-dl').textContent='今日研判 '+s.ai_today+' 条 · 已标注地区 '+s.geo_tagged+' 条';
-      document.getElementById('kpi-acc').textContent=(s.accounts_enabled||0)+' / '+(s.sources? s.sources.x.total : s.accounts||0);
-      document.getElementById('kpi-acc-dl').textContent='监控源启用 / 总数（01 X + 02 RSS）';
+      /* J：统一口径 = X 总数 + RSS 总数（含启用但异常的源）；总数/启用/健康独立 */
+      var srcAll=s.sources||{};
+      document.getElementById('kpi-acc').textContent=(srcAll.enabled!=null?srcAll.enabled:(s.accounts_enabled||0))+' / '+(srcAll.total!=null?srcAll.total:(s.accounts||0));
+      document.getElementById('kpi-acc-dl').textContent='监控源启用 / 总数（X + RSS）'+
+        (srcAll.health?({'normal':' · 全部正常','partial_error':' · 部分异常','error':' · 全部异常','unknown':' · 有未运行源','idle':' · 无启用源'}[srcAll.health.state]||''):'');
       (function(){
         var src=s.sources; if(!src)return;
         function rows(boxId, items){
           var box=document.getElementById(boxId);
+          var STATE={ok:'正常',error:'异常',unknown:'未运行',disabled:'已停用'};
           box.innerHTML=(items&&items.length)?items.map(function(it){
-            var tip=it.name+'：近 24h 入库 '+it.cnt24+' 条 · 最后抓取 '+(it.last||'—')+(it.ok?'':' · 最近一轮有失败');
+            var st=it.state||'unknown';
+            var tip=it.name+'：'+(STATE[st]||st)+' · 近 24h 入库 '+it.cnt24+' 条 · 最后抓取 '+(it.last||'—')+
+              (st==='error'?' · 最近一轮有失败':'')+(st==='unknown'?' · 尚无抓取记录':'');
+            var cls=st==='ok'?'ok':(st==='error'?'bad':'mut');
             return '<div class="srcrow" title="'+esc(tip)+'">'+
-              '<span class="sdot '+(it.ok?'ok':'bad')+'"></span><b>'+esc(it.name)+'</b>'+
-              '<span class="stx">24h '+it.cnt24+' 条 · '+(it.last||'—')+'</span></div>';
+              '<span class="sdot '+cls+'" style="'+(st==='unknown'?'background:#94a3b8':'')+(st==='disabled'?'background:#cbd5e1':'')+'"></span><b>'+esc(it.name)+'</b>'+
+              '<span class="stx">'+(STATE[st]||st)+' · 24h '+it.cnt24+' 条 · '+(it.last||'—')+'</span></div>';
           }).join(''):'<div class="srcrow"><span class="sdot"></span><span class="stx">无源</span></div>';
         }
         rows('kpi-src-x', src.x.items);
         rows('kpi-src-rss', src.rss.items);
       })();
-      var rate=s.push_total?(Math.round(s.push_ok/s.push_total*1000)/10)+'%':'--';
+      /* J：真实成功率（分母=真实尝试）；只有模拟时显示"无真实样本"，不冒充 100% */
+      var pr=s.push_real_total!=null?s.push_real_total:(s.push_total!=null?(s.push_total-(s.push_sim||0)):0);
+      var rate=(s.push_real_rate!=null)?(s.push_real_rate+'%'):(pr>0?'--':'无真实样本');
       document.getElementById('kpi-push').textContent=rate;
-      document.getElementById('kpi-push-dl').textContent='今日推送 '+s.push_total+' 次'+(s.push_sim?(' · 含模拟 '+s.push_sim):'');
+      document.getElementById('kpi-push-dl').textContent='今日推送 '+s.push_total+' 次 · 真实成功 '+
+        (s.push_real_ok!=null?s.push_real_ok:'—')+(s.push_sim?(' · 模拟 '+s.push_sim+'（单列）'):'');
       intervalSec=Math.max(60,(s.fetch_interval_minutes||15)*60);
       if(s.next_run_in!=null&&!busy)nextIn=s.next_run_in;
       document.getElementById('aiquick').checked=!!s.ai_auto_on;
@@ -948,7 +958,10 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   function loadAccounts(){
     jget('/api/x/accounts').then(function(d){
       var items=d.items||[];
-      document.getElementById('xcount').textContent=items.length+' 个';
+      jget('/api/rss/sources').then(function(rd){
+        var n=(items.length)+((rd.items||[]).length);
+        document.getElementById('xcount').textContent=n+' 个（X '+items.length+' + RSS '+(rd.items||[]).length+'）';
+      }).catch(function(){document.getElementById('xcount').textContent=items.length+' 个';});
       var sel=document.getElementById('accsel'),cur=state.acc;
       var rssNames=[];
       try{jget('/api/rss/sources').then(function(rd){

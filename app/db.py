@@ -1028,12 +1028,28 @@ def cnt24_by_source(source_id):
 
 
 def push_stats_today():
-    """今日推送统计（口径：ok=成功+模拟成功；sim 单列模拟次数，供首页区分真实/模拟口径）"""
+    """今日推送统计（2026-11-09 J：真实/模拟分列，禁止模拟冒充真实成功率）。
+
+    口径（单位=逻辑投递，非重试次数）：
+      total      今日全部推送日志行
+      ok         成功+模拟成功（兼容旧调用）
+      sim        模拟次数（单列）
+      real_ok    真实成功（= ok - sim）
+      real_total 真实尝试（= total - sim）
+      real_rate  真实成功率（real_total==0 → None：无真实样本，不得显示 100%）
+    "今日"=本地自然日窗口，与"近24小时"是不同窗口，不强行要求相等。"""
     row = get_conn().execute(
         "SELECT COUNT(*) AS total, SUM(CASE WHEN status IN ('成功','模拟成功') THEN 1 ELSE 0 END) AS ok,"
         " SUM(CASE WHEN status='模拟成功' THEN 1 ELSE 0 END) AS sim"
         " FROM push_logs WHERE date(created_at)=date('now','localtime')").fetchone()
-    return int(row["ok"] or 0), int(row["total"] or 0), int(row["sim"] or 0)
+    total = int(row["total"] or 0)
+    ok = int(row["ok"] or 0)
+    sim = int(row["sim"] or 0)
+    real_total = total - sim
+    real_ok = ok - sim
+    return {"total": total, "ok": ok, "sim": sim,
+            "real_ok": real_ok, "real_total": real_total,
+            "real_rate": (round(real_ok / real_total * 1000) / 10) if real_total > 0 else None}
 
 
 # ---------- kv ----------

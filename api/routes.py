@@ -198,7 +198,15 @@ def api_tweet_ai(tid: int, body: AiActionBody):
 # ---------- 统计 / 抓取 ----------
 
 def _sources_health(accounts):
-    """监控源健康（逐源）：名称 / 近 24h 入库条数 / 最后抓取时间 / 最近一轮成败"""
+    """监控源健康（2026-11-09 J：统一口径，四态分别显示，不假零不默认正常）。
+
+    口径：
+      - 来源总数 = X 总数 + RSS 总数；启用数 = 两类启用数之和；
+      - 总数、启用数、健康状态三者独立（已启用但异常仍计入启用数）；
+      - 逐源 state：ok / error（最近一轮失败） / unknown（启用但无抓取记录，
+        不默认正常） / disabled（停用——不参与健康统计）；
+      - 健康聚合由 X 与 RSS 共同决定：一轮 X 成功不能覆盖 RSS 已知失败。
+    """
     import time as _t
 
     def fmt_ts(v):
@@ -230,31 +238,70 @@ def _sources_health(accounts):
                 if m2 and m2.group(1) not in rss_status:
                     rss_status[m2.group(1)] = "✗" not in m2.group(2)
 
-    def fmt_src(name, ok, kv_last, count_key):
-        return {"name": name, "ok": bool(ok), "cnt24": cnt24(count_key), "last": fmt_ts(kv_last)}
+    def state_of(enabled, ok_known):
+        """enabled=是否启用；ok_known=None(无抓取记录)/True/False"""
+        if not enabled:
+            return "disabled"
+        if ok_known is None:
+            return "unknown"   # 启用但从未抓取：未知，不冒充正常
+        return "ok" if ok_known else "error"
+
+    def fmt_src(name, enabled, ok_known, kv_last, count_key):
+        return {"name": name, "state": state_of(enabled, ok_known),
+                "ok": bool(ok_known) if ok_known is not None else False,
+                "enabled": bool(enabled),
+                "cnt24": cnt24(count_key), "last": fmt_ts(kv_last)}
 
     # 计数键与库内 screen_name 一致：X 无 @ 前缀，RSS 带 "RSS:" 前缀（2026-11-08 修复恒 0）
-    x_items = [fmt_src("@" + a["screen_name"],
-                       x_status.get(a["screen_name"], True),
+    x_items = [fmt_src("@" + a["screen_name"], bool(a["enabled"]),
+                       x_status.get(a["screen_name"]),
                        db.get_kv("acc_last_" + a["screen_name"].lower()),
                        a["screen_name"])
                for a in accounts]
-    rss_items = [fmt_src("[RSS] " + s["name"], rss_status.get(s["name"], True),
+    rss_all = db.list_rss_sources()
+    rss_enabled_ids = {s["id"] for s in db.list_rss_sources(enabled_only=True)}
+    rss_items = [fmt_src("[RSS] " + s["name"], s["id"] in rss_enabled_ids,
+                         rss_status.get(s["name"]),
                          db.get_kv("rss_last_" + str(s["id"])),
                          "RSS:" + s["name"])
-                 for s in db.list_rss_sources()]
+                 for s in rss_all]
+
+    def agg(items):
+        return {"ok": sum(1 for i in items if i["state"] == "ok"),
+                "error": sum(1 for i in items if i["state"] == "error"),
+                "unknown": sum(1 for i in items if i["state"] == "unknown"),
+                "disabled": sum(1 for i in items if i["state"] == "disabled")}
+
+    x_tot, rss_tot = len(accounts), len(rss_all)
+    x_en = len([a for a in accounts if a["enabled"]])
+    rss_en = len(rss_enabled_ids)
+    xa, ra = agg(x_items), agg(rss_items)
+    enabled_total = x_en + rss_en
+    err_total = xa["error"] + ra["error"]
+    unk_total = xa["unknown"] + ra["unknown"]
+    if enabled_total == 0:
+        health = "idle"          # 无启用源
+    elif err_total == 0 and unk_total == 0:
+        health = "normal"
+    elif err_total == 0:
+        health = "unknown"       # 无失败但有未运行的启用源
+    elif err_total >= enabled_total:
+        health = "error"         # 启用源全部异常
+    else:
+        health = "partial_error"  # 部分异常（X 成功不能掩盖 RSS 失败）
     return {
-        "x": {"total": len(accounts), "enabled": len([a for a in accounts if a["enabled"]]),
-              "items": x_items},
-        "rss": {"total": len(db.list_rss_sources()),
-                "enabled": len(db.list_rss_sources(enabled_only=True)),
-                "items": rss_items},
+        "total": x_tot + rss_tot,
+        "enabled": enabled_total,
+        "health": {"state": health, "x": xa, "rss": ra},
+        "x": {"total": x_tot, "enabled": x_en, "items": x_items},
+        "rss": {"total": rss_tot, "enabled": rss_en, "items": rss_items},
     }
 
 
 @router.get("/api/stats", dependencies=[Depends(auth.require("read"))])
 def api_stats():
-    push_ok, push_total, push_sim = db.push_stats_today()
+    ps = db.push_stats_today()
+    push_ok, push_total, push_sim = ps["ok"], ps["total"], ps["sim"]
     a = db.ai_stats()
     lf = db.get_kv("last_fetch")
     accounts = db.list_x_accounts()
@@ -273,6 +320,9 @@ def api_stats():
         "accounts": len(accounts), "accounts_enabled": len([a for a in accounts if a["enabled"]]),
         "sources": _sources_health(accounts),
         "push_ok": push_ok, "push_total": push_total, "push_sim": push_sim,
+        # J：真实/模拟分列——只有模拟时 real_rate=None（前端显示"无真实样本"）
+        "push_real_ok": ps["real_ok"], "push_real_total": ps["real_total"],
+        "push_real_rate": ps["real_rate"],
         "next_run_in": (scheduler_instance().next_run_in() if scheduler_instance() else None),
         "fetch_running": engine.is_running(),
         "fetch_interval_minutes": load()["fetch"]["interval_minutes"],
