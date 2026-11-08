@@ -97,7 +97,7 @@ print("== 恢复演练（隔离目录，不覆盖现有） ==")
 target = env.tmp / "restored"
 summary = backup.restore_to(Path(res["dir"]), target, project_root=ROOT)
 check("W6 恢复哈希校验通过", summary["ok"], str(summary)[:120])
-counts = summary["counts"]
+counts = summary["verify_original"]["counts"]  # 2026-11-09 G：原件一致性校验分离
 check("W7 情报数量一致", counts.get("tweets") == pre_counts["tweets"],
       f"{counts.get('tweets')} vs {pre_counts['tweets']}")
 check("W8 投递/消息/尝试一致",
