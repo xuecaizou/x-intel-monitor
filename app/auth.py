@@ -220,6 +220,29 @@ def try_consume_init_file() -> Optional[str]:
 ROLE_RANK = {"read": 1, "write": 2, "admin": 3}
 
 
+def _is_test_mode() -> bool:
+    """测试模式必须显式声明（环境变量），不依赖当前目录/浏览器来源"""
+    return os.environ.get("XINTEL_TEST") == "1"
+
+
+def _auth_disabled_allowed() -> bool:
+    """auth.enabled=false 仅在测试模式下允许；生产配置关闭会被拒绝并回退为启用。"""
+    try:
+        from .config import load
+        enabled = (load().get("auth") or {}).get("enabled", True)
+    except Exception:
+        enabled = True
+    if enabled:
+        return False
+    if _is_test_mode():
+        return True
+    # 生产误配：记录一次告警（不静默公开），按启用处理
+    if not getattr(_auth_disabled_allowed, "_warned", False):
+        print("[auth] 拒绝 auth.enabled=false：非测试模式（需 XINTEL_TEST=1），认证保持启用")
+        _auth_disabled_allowed._warned = True
+    return False
+
+
 def _extract_principal(request: Request) -> Optional[dict]:
     # 1) Bearer Token
     auth = request.headers.get("authorization", "")
@@ -238,9 +261,8 @@ def require(role: str = "read"):
     """FastAPI 依赖：要求指定权限；写请求校验 CSRF（会话登录时）"""
     async def _dep(request: Request):
         from .config import load
-        acfg = (load().get("auth") or {})
-        if not acfg.get("enabled", True):
-            return {"username": "anonymous", "role": "admin", "kind": "disabled"}
+        if _auth_disabled_allowed():
+            return {"username": "anonymous", "role": "admin", "kind": "test_bypass"}
         if not init_ready():
             raise HTTPException(503, "系统未初始化管理员：请在本机创建 data/admin_init.txt（用户名:密码）后重启")
         p = _extract_principal(request)

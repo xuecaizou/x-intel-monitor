@@ -17,6 +17,9 @@ DATA_DIR = BASE_DIR / "data"
 DEFAULTS = {
     "server": {"host": "0.0.0.0", "port": 8083},  # 0.0.0.0 = 局域网可访问
     "fetch": {"interval_minutes": 15, "timeout_seconds": 25, "retries": 1},
+    # 第五批：恢复/演练场景默认暂停调度与外发（显式开启才运行）
+    "scheduler": {"enabled": True},
+    "outbound": {"enable": True, "trusted_proxy": False, "allow_private": {}},
     "network": {"proxy": "socks5://127.0.0.1:10808"},  # X 域名被 DNS 污染，必须走代理
     "x": {
         "strategy": "auto",                 # auto: syndication → Nitter → Cookie 直连

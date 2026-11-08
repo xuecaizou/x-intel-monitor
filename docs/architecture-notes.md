@@ -118,3 +118,18 @@
 - manifest：created_at / schema_version / code_commit / sqlite_integrity / files[sha256]
 - 恢复：仅到空目录（拒绝覆盖）+ integrity_check + 关键表计数 + 人工修订保留校验
 - 恢复后**不自动启动调度**（由部署脚本控制）；待发送/结果不明任务需人工处置
+
+## 9. 进程模型与并发支持范围（第五批）
+
+**当前仅支持单进程部署。**
+- 调度器（APScheduler BackgroundScheduler / threading 回退）为**进程内单实例**；
+  启动多个 uvicorn worker 或多个 `run_fetch` 实例会导致**重复调度**（同一轮抓取/推送被执行多次）。
+- `app/db.py` 的 `_lock` 与 `config.py` 的 `_rt_lock` 均为**线程锁，不是跨进程锁**；
+  投递消息的原子领取（`claim_msg`）依赖 SQLite 的 `UPDATE ... WHERE state IN (...)`，
+  在单机多进程下**仍具备原子性**（SQLite 文件锁保证），但调度重复问题仍存在。
+- 因此：
+  - 禁止 `uvicorn --workers N`（N>1）、gunicorn 多 worker、`--reload` 开发模式长期运行；
+  - 如需多实例，必须先引入外部分布式锁/队列（属后续架构变更，不在本批范围）；
+  - 单进程下：调度互斥由 `engine._running` 保证（手动与定时不重叠）。
+- 验证方式：`netstat` 确认单 PID 监听、`ps` 确认仅一个 `run.py`；
+  代码层无跨进程锁声明（已核实）。

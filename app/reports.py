@@ -12,6 +12,7 @@ import time
 from urllib.parse import quote
 
 from . import db
+from . import integrity as _integ
 from .config import load
 
 DATA_SUBDIR = "report_tasks"
@@ -58,6 +59,12 @@ def _tweet_package(t):
             "iocs": j(t.get("ai_iocs")),
             "confidence": t.get("ai_confidence", 0),
             "tags": j(t.get("tags")),
+            # L2：完整性分级——Agent 必须据此决定是否可自动引用为结论
+            "integrity": _integ.effective_grade(t),
+            "integrity_label": _integ.label(t),
+            "may_auto_downstream": _integ.may_auto_downstream(t)[0],
+            "must_label_unfinished": _integ.may_auto_downstream(t)[1],
+            "repair_notes": t.get("ai_repair", ""),
         },
         "geo": {
             "country": t.get("geo_country", ""),
@@ -84,9 +91,16 @@ def create_task(title, keywords, tier, notes, tweet_ids, auto_push=0, cfg=None):
         t = db.get_tweet(tid)
         if t:
             tweets.append(_tweet_package(t))
+    partial_n = sum(1 for x in tweets if x["ai"]["integrity"] in ("partial", "invalid"))
     package = {
         "title": title, "keywords": keywords or [], "tier": tier,
         "notes": notes or "", "tweets": tweets, "disclaimer": DISCLAIMER,
+        "integrity_summary": {
+            "total": len(tweets),
+            "partial_or_invalid": partial_n,
+            "note": ("包含部分/无效 AI 结果，不得直接作为已核验结论引用"
+                     if partial_n else "全部为完整研判"),
+        },
     }
     with db._lock:
         cur = db.get_conn().execute(
@@ -260,6 +274,8 @@ def push_task(tid):
     t = get_task(tid)
     if not t:
         return None
+    if not (load().get("outbound") or {}).get("enable", True):
+        return {"error": "外发已禁用（outbound.enable=false）：恢复/演练模式不允许推送报告"}
     prev_status = t["status"]
     with db._lock:
         cur = db.get_conn().execute(

@@ -116,11 +116,17 @@ def _flaky_update(tid_, fields):
     raise RuntimeError("模拟落库失败")
 ai.process_tweet = _mock_process
 db.update_ai = _flaky_update
+_orig_apply = db.apply_ai_result
+def _flaky_apply(tid_, fields, base):
+    calls["db"] += 1
+    raise RuntimeError("模拟落库失败")
+db.apply_ai_result = _flaky_apply
 try:
     engine.process_ai_tasks({"ai": {"enabled": True, "api_key": "stub", "model": "stub"}})
 except Exception as e:
     print("  （任务处理异常被捕获）", str(e)[:60])
 db.update_ai = orig_update
+db.apply_ai_result = _orig_apply
 check("A5-1 模型调用与落库失败分开计数", calls["model"] >= 1 and calls["db"] >= 1,
       str(calls))
 task_row = db.get_conn().execute("SELECT * FROM ai_tasks WHERE id=?", (task5,)).fetchone()

@@ -83,12 +83,31 @@
 
 | ID | 限制 | 影响 | 状态 |
 |----|------|------|------|
-| L1 | `db.update_ai()` 无版本检查/条件更新 | 迟到 AI 结果可直接覆盖人工值（绕过引擎路径） | 待第五批或专项 |
-| L2 | `ai_repair` 非空未强制降级下游 | 修复/截断结果仍可能被当完整结果推送 | 待确认业务规则 |
-| L3 | 跨进程并发未验证（模块锁仅单进程） | 多 worker 部署需外部锁 | 单进程部署下无影响 |
-| L4 | 远端 CI 未实际运行 | 仅本地脚本验证 | 推送后待观察 |
+| L1 | `db.update_ai()` 无版本检查/条件更新 | 迟到 AI 结果可直接覆盖人工值（绕过引擎路径） | **✅ 第五批已关闭**（analysis_version + 原子条件更新 + 冲突审计） |
+| L2 | `ai_repair` 非空未强制降级下游 | 修复/截断结果仍可能被当完整结果推送 | **✅ 第五批已关闭**（ai_integrity 四级 + may_auto_downstream 统一判断） |
+| L3 | 跨进程并发未验证（模块锁仅单进程） | 多 worker 部署需外部锁 | **已声明单进程支持边界**（architecture §9）；不升级架构 |
+| L4 | 远端 CI 未实际运行 | 仅本地脚本验证 | **✅ 已运行并通过**（Ubuntu+Windows，run 42462622836） |
 | L5 | 54 条历史 source_id 为空 | 统计归属缺失（不猜测） | 保留待处理 |
 | L6 | 真实 AI/群发送未在本轮执行 | 认证后需 Token 才能调用 | 按授权边界 |
+
+
+## 第五批已实现（2026-11-08）
+
+| ID | 需求 | 实现位置 | 验证 |
+|----|------|---------|------|
+| R53 | AI 分析版本语义（analysis_version，任何有效值变更推进） | db.bump_analysis_version/manual_override | test_batch5 L1-1~L1-5 |
+| R54 | AI 结果原子条件提交（版本不符不覆盖+审计+不自动重试） | db.apply_ai_result、ai_result_conflicts | L1-1~L1-3、L1-5 |
+| R55 | 人工保护整条粒度 + 显式重新分析 | db.manual_override/clear_manual_protection、/manual/force | L1-4 |
+| R56 | 全部 AI 写入路径纳入版本控制（6 条） | engine.run_single_ai/backfill_tags/process_ai_tasks、ai.batch_process/classify_batch、routes.manual | 代码审查 + 测试 |
+| R57 | 完整性四级分级（verified/normalized/partial/invalid） | app/integrity.py、tweets.ai_integrity | L2-1~L2-5 |
+| R58 | 下游统一判断（推送/报告/导出共用一个函数） | integrity.may_auto_downstream；engine.dispatch_round；reports._tweet_package | L2-6~L2-13 |
+| R59 | 人工审核绑定版本（内容变化后失效） | /api/tweets/{tid}/review、ai_review_version | L2-9 |
+| R60 | 出站私网例外按用途白名单（移除全局开关） | safefetch._allowed_private_targets、outbound.allow_private | OUT-1~OUT-6 |
+| R61 | 低信任用途代理需受控出口声明 | safefetch.check_proxy_trust、outbound.trusted_proxy | OUT-5/6 |
+| R62 | 认证关闭仅测试模式（生产误配回退启用） | auth._auth_disabled_allowed | AUTH-1/2 |
+| R63 | 进程模型支持边界文档化 | architecture-notes §9 | PROC-1/2 |
+| R64 | 恢复/演练默认暂停调度与外发 | scheduler.enabled、outbound.enable | R4-5/7/8/9 |
+| R65 | 隔离恢复演练（含凭据/状态/附件哈希） | tests/test_batch5_restore.py | 23/23 |
 
 ## 待确认/候选需求（不擅自实现）
 

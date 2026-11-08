@@ -103,8 +103,30 @@ def _resolve_ips(host: str):
     return ips
 
 
+# 按用途允许的私网目标（host:port 精确匹配）；只有管理员显式配置的用途才能进入
+def _allowed_private_targets(purpose: str):
+    try:
+        from .config import load
+        cfg = (load().get("outbound") or {}).get("allow_private") or {}
+        vals = cfg.get(purpose) or []
+        return {str(v).strip().lower() for v in vals if str(v).strip()}
+    except Exception:
+        return set()
+
+
+def _hostport(u) -> str:
+    port = u.port or _DEFAULT_PORTS.get(u.scheme, 0)
+    return f"{u.hostname.lower()}:{port}"
+
+
 def validate_url(url: str, allow_private: bool = False, purpose: str = "rss") -> str:
-    """校验出站 URL。allow_private=True 仅用于管理员显式授权的内网 AI 网关/代理。"""
+    """校验出站 URL。
+
+    私网放行规则（第五批收敛）：
+      - 仅当 purpose 在 outbound.allow_private 白名单中且 host:port 精确匹配时允许
+      - allow_private=True 参数已废弃（保留兼容：会被忽略，避免调用方误放行）
+      - RSS/媒体用途不配置白名单 → 永不允许私网
+    """
     if not url or not isinstance(url, str):
         raise UnsafeUrlError("URL 为空")
     u = urlparse(url.strip())
@@ -117,12 +139,14 @@ def validate_url(url: str, allow_private: bool = False, purpose: str = "rss") ->
     ips = [host] if _is_ip(host) else _resolve_ips(host)
     if not ips:
         raise UnsafeUrlError(f"主机无法解析：{host[:60]}")
-    if not allow_private:
-        for ip in ips:
-            if _ip_blocked(ip):
-                raise UnsafeUrlError(
-                    f"目标地址不允许（{ip}）：私网/回环/链路本地/保留地址。"
-                    f"如确需内网目标，请由管理员在配置中显式授权该用途")
+    allowed = _allowed_private_targets(purpose)
+    hp = _hostport(u)
+    explicit_ok = hp in allowed or host.lower() in allowed
+    for ip in ips:
+        if _ip_blocked(ip) and not explicit_ok:
+            raise UnsafeUrlError(
+                f"目标地址不允许（{ip}）：私网/回环/链路本地/保留地址。"
+                f"用途 {purpose} 未获管理员显式授权（outbound.allow_private.{purpose}）")
     return u.geturl()
 
 
@@ -132,6 +156,27 @@ def _is_ip(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def check_proxy_trust(purpose: str, proxy: str):
+    """代理边界（第五批）：低信任来源走代理时，代理侧解析/连接目标无法由本应用验证。
+
+    要求管理员显式声明 outbound.trusted_proxy=true（受控出口策略已落实）；
+    否则拒绝该低信任来源使用代理路径，避免"代理绕过内网防护"。
+    """
+    if not proxy:
+        return
+    if purpose in ("ai_gateway",):
+        return   # AI 网关属管理员受信配置
+    try:
+        from .config import load
+        trusted = bool((load().get("outbound") or {}).get("trusted_proxy"))
+    except Exception:
+        trusted = False
+    if not trusted:
+        raise UnsafeUrlError(
+            f"用途 {purpose} 配置了代理但未声明受控出口（outbound.trusted_proxy=true），"
+            f"代理侧目标不可验证，已拒绝")
 
 
 def fetch_limited(url: str, *, timeout: int = 20, max_bytes: int = MAX_BYTES,

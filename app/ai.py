@@ -367,9 +367,14 @@ def analyze_tweet(tweet, cfg=None):
     result = _chat(cfg, [{"role": "user", "content": prompt}], json_mode=True,
                    action="研判", tweet_id=tweet.get("id"),
                    ref="@" + str(tweet.get("screen_name", "")))
-    result, issues, fatal = _validate_result(result, dict(LAST_PARSE_META))
+    parse_meta = dict(LAST_PARSE_META)
+    result, issues, fatal = _validate_result(result, parse_meta)
     if fatal:
         raise AIResultError("; ".join(issues)[:200] or "结果未通过校验")
+    from . import integrity as _integ
+    integrity_grade = _integ.grade_from_issues(
+        issues, fatal=False, repaired=parse_meta.get("repaired", False),
+        truncated=parse_meta.get("truncated", False))
     sev = str(result.get("severity", "info")).lower()
     if sev not in ("critical", "high", "medium", "low", "info"):
         sev = "info"
@@ -417,6 +422,7 @@ def analyze_tweet(tweet, cfg=None):
         "industry": _geo_text(result.get("industry"), 20),
         "tags": json.dumps(tag_list, ensure_ascii=False),
         "ai_repair": "; ".join(issues)[:200],
+        "ai_integrity": integrity_grade,
         "geo_basis": geo_basis,
     }
 
@@ -514,11 +520,18 @@ def batch_process(ids, action, cfg=None):
         t = db.get_tweet(tid)
         if not t:
             continue
+        base = int(t.get("analysis_version") or 0)
         try:
             fields = (analyze_tweet(t, cfg) if action == "analyze"
                       else translate_tweet(t, cfg))
-            db.update_ai(tid, fields)
-            done += 1
+            applied, reason, cur = db.apply_ai_result(tid, fields, base)
+            if applied:
+                done += 1
+            else:
+                db.add_ai_log("批量结果冲突", detail=f"{reason} v{base}->v{cur}",
+                              tweet_id=tid, status="conflict")
+                errors.append(f"#{tid}: 冲突({reason})")
+                fail += 1
         except Exception as e:
             if action == "analyze":
                 db.update_ai(tid, {"ai_status": "error",
@@ -559,6 +572,9 @@ def classify_batch(tweets, cfg=None):
                 if t["id"] in seen:
                     continue  # 重复结果忽略
                 seen.add(t["id"])
+                # 版本语义：分类结果按"当前有效值"条件写入（人工改过的不覆盖）
+                if int(t.get("ai_modified") or 0) == 1:
+                    continue
                 cat = str(r0.get("category", "其他")).strip()[:14]
                 if cat not in CATEGORIES:
                     cat = "其他"

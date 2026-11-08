@@ -42,12 +42,22 @@ expect_block("链路本地（云元数据）拦截",
 expect_block("file 协议拦截", lambda: sf.validate_url("file:///etc/passwd"))
 expect_block("gopher 协议拦截", lambda: sf.validate_url("gopher://127.0.0.1:6379/"))
 expect_block("IPv4 映射 IPv6 拦截", lambda: sf.validate_url("http://[::ffff:127.0.0.1]/x"))
-# 管理员显式例外：允许私网（仅用于内网 AI 网关）
+# 管理员按用途白名单例外（第五批收敛：不再有全局 allow_private）
+import app.config as _cfgmod  # noqa: E402
+_real_load = _cfgmod.load
+_cfgmod.load = lambda: {"outbound": {"allow_private": {
+    "ai_gateway": ["192.168.1.53:20128"]}}}
 try:
-    sf.validate_url("http://192.168.1.53:20128/v1", allow_private=True)
+    sf.validate_url("http://192.168.1.53:20128/v1", purpose="ai_gateway")
     check("管理员白名单例外（内网 AI 网关）", True)
 except sf.UnsafeUrlError as e:
     check("管理员白名单例外（内网 AI 网关）", False, str(e)[:60])
+try:
+    sf.validate_url("http://192.168.1.53:20128/v1", purpose="rss")
+    check("同一地址在 RSS 用途仍被拒（例外不共享）", False, "未拦截")
+except sf.UnsafeUrlError:
+    check("同一地址在 RSS 用途仍被拒（例外不共享）", True)
+_cfgmod.load = _real_load
 
 print("\n== 路径越界 ==")
 data_root = Path(env.tmp)

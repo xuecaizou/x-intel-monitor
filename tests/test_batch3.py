@@ -324,6 +324,11 @@ print("== S-B/S-C 位点与 RSS 全扫 ==")
 # S-C：首条 GUID 不变、后续新增仍被发现（用同一 feed 对象、追加新条目）
 iid_r2 = "ci_b3_r2"
 db.add_rss_source("R4", "https://example.com/r4")
+# 第五批：RSS 走替身时需声明受控出口（outbound.trusted_proxy）
+import app.config as _cfg3  # noqa: E402
+_real_load3 = _cfg3.load
+_cfg3.load = lambda: {"outbound": {"trusted_proxy": True}, "fetch": {}, "x": {},
+                      "network": {}}
 _r4id = db.get_conn().execute("SELECT id FROM rss_sources WHERE name='R4'").fetchone()["id"]
 db.set_kv(f"rss_last_{_r4id}", "0")
 feed2 = types.SimpleNamespace(entries=[
@@ -353,6 +358,7 @@ check("S-D1 来源改名后不重复入库且归属不变",
       n3 == 1, f"n3={n3}")
 
 # ============================================================
+_cfg3.load = _real_load3
 print("== S-B 位点后置（入库失败不推进） ==")
 # 模拟：insert_tweet 抛异常 → 位点不推进 → 重试仍能拉到同一批
 orig_it = db.insert_tweet

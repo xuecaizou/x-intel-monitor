@@ -48,7 +48,41 @@ python scripts/backup_restore.py restore backups/<stamp> restore-test
 4. 启动后**先确认 auth.enabled**，再确认调度：恢复后默认不自动补发
 5. 用 `export-pending` 导出未完成/不明任务，人工决定重试
 
-## 5. 降级回退（从逐实例投递回退到旧版 pushed 语义）
+## 5. 精确回退（第五批修订）
+
+### 5.1 代码回退（含新增文件处理）
+```bash
+# 以"本批起点"为基准（不要用更早的基线，会回退掉中间批次的修复）
+git checkout <本批起点commit> -- app/ api/ web/ tests/ scripts/ .github/     healthcheck.py smoke_test.py offline_test.py requirements.txt
+
+# 本批/后续批次"新增但旧版本没有"的文件必须显式删除，否则会残留并可能被导入：
+git rm -f app/auth.py app/backup.py app/safefetch.py app/integrity.py          web/login.html tests/testenv.py scripts/backup_restore.py          scripts/check_no_secrets.py .github/workflows/ci.yml 2>/dev/null
+
+git status   # 复核差异：应只有预期文件
+```
+
+### 5.2 回退到无认证版本的强制要求
+撤销认证会**重新暴露全部敏感接口**（配置、推送测试、补发、删除）。
+执行前必须：
+1. **暂停调度**：`scheduler.enabled=false`，重启后确认无抓取/推送
+2. **关闭外发**：`outbound.enable=false`
+3. **网络隔离**：仅监听 `127.0.0.1`（`server.host=127.0.0.1`），不要保持 `0.0.0.0`
+4. 撤销后立即检查是否有多余的 API Token 文件/脚本仍在轮询
+
+### 5.3 数据库配套
+- 旧版本不认识新表（auth_*/delivery_*/ai_tasks/ai_result_conflicts）→ **保留不删是无害的**
+- 但 `tweets` 新增列（analysis_version/ai_integrity/ai_review/source_id/text_hash）旧代码会忽略
+- **回退数据库**：只能用备份恢复，会丢失备份之后的数据：
+  ```
+  # 先导出增量（重要）
+  python scripts/backup_restore.py export-pending data/xintel.db > pending_before_rollback.json
+  # 记录截止点
+  sqlite3 data/xintel.db "SELECT MAX(id), MAX(created_at) FROM tweets;"
+  # 停服务后恢复备份
+  ```
+- **不要**把"回退代码"与"恢复旧备份"混为一谈：前者保留数据，后者丢失数据
+
+## 5.4 逐实例 → 旧版 pushed 语义降级（损失已知）
 
 **先用矩阵测试理解损失（tests/test_t7_matrix.py）**：
 - 任一终态 → pushed=1 → 旧代码不重发（**B 待重试会丢失**）

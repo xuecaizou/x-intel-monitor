@@ -188,6 +188,16 @@ def init_db():
             note TEXT DEFAULT '',
             created_at TEXT, updated_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS ai_result_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tweet_id INTEGER NOT NULL,
+            base_version INTEGER NOT NULL,
+            current_version INTEGER NOT NULL,
+            reason TEXT DEFAULT '',
+            result_json TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_aiconf_tweet ON ai_result_conflicts(tweet_id);
         CREATE TABLE IF NOT EXISTS ai_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -255,10 +265,11 @@ def init_db():
                     "geo_country", "geo_province", "geo_city", "org", "industry",
                     "geo_basis", "tags", "media_url", "starred", "read", "ignored", "pushed", "ai_retries",
                     "source_id", "text_hash", "ai_modified", "ai_repair",
+                    "analysis_version", "ai_integrity", "ai_review", "ai_review_at", "ai_review_version",
                     "category"):
             try:
                 get_conn().execute(f"ALTER TABLE tweets ADD COLUMN {col} "
-                                   + ("INTEGER DEFAULT 0" if col in ("ai_confidence", "starred", "read", "ignored", "pushed", "ai_retries")
+                                   + ("INTEGER DEFAULT 0" if col in ("ai_confidence", "starred", "read", "ignored", "pushed", "ai_retries", "analysis_version")
                                       else "TEXT DEFAULT ''"))
                 if col == "pushed":
                     added_pushed = True  # 存量推文视为已处理，防止升级后历史推文被整批推送
@@ -400,6 +411,18 @@ def set_tweet_flags(tweet_id, read=None, ignored=None, starred=None):
         get_conn().execute(f"UPDATE tweets SET {', '.join(sets)} WHERE id=?", args)
         get_conn().commit()
     return True
+
+
+def update_tweet_text(tid, text):
+    """原文更新：写文本 + 推进分析版本（使旧分析结果过期）。返回新版本"""
+    import hashlib as _hl
+    thash = _hl.sha256((text or "").encode("utf-8", "ignore")).hexdigest()[:32] if text else ""
+    with _lock:
+        get_conn().execute(
+            "UPDATE tweets SET text=?, text_hash=?, analysis_version=COALESCE(analysis_version,0)+1"
+            " WHERE id=?", ((text or "")[:10000], thash, int(tid)))
+        get_conn().commit()
+    return get_analysis_version(tid)
 
 
 def batch_tweet_op(ids, op):
@@ -631,6 +654,102 @@ def update_ai(tweet_id, fields):
     with _lock:
         get_conn().execute(f"UPDATE tweets SET {sets} WHERE id=?", args)
         get_conn().commit()
+
+
+def get_analysis_version(tid):
+    r = get_conn().execute("SELECT analysis_version FROM tweets WHERE id=?", (int(tid),)).fetchone()
+    return int((r["analysis_version"] if r else 0) or 0)
+
+
+def bump_analysis_version(tid, bump_modified=False):
+    """原子推进版本（人工修订/原文更新调用）"""
+    with _lock:
+        get_conn().execute(
+            "UPDATE tweets SET analysis_version=COALESCE(analysis_version,0)+1"
+            + (", ai_modified=1" if bump_modified else "")
+            + " WHERE id=?", (int(tid),))
+        get_conn().commit()
+    return get_analysis_version(tid)
+
+
+def manual_override(tid, fields):
+    """人工修订：字段更新 + ai_modified=1 + 版本 +1，全部在同一事务内原子完成"""
+    with _lock:
+        sets = ", ".join(f"{k}=?" for k in fields)
+        args = list(fields.values()) + [int(tid)]
+        cur = get_conn().execute(
+            f"UPDATE tweets SET {sets}, ai_modified=1,"
+            " analysis_version=COALESCE(analysis_version,0)+1 WHERE id=?", args)
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return None
+    return get_analysis_version(tid)
+
+
+def apply_ai_result(tid, fields, base_version, source="ai"):
+    """原子应用 AI 结果。返回 (applied, reason, current_version)。
+
+    base_version 必须是调用模型前读取的版本。版本已被推进（人工改过/原文变了/其它
+    AI 先提交）时：不覆盖、写冲突审计、返回 applied=False。
+    """
+    with _lock:
+        row = get_conn().execute(
+            "SELECT analysis_version, ai_modified FROM tweets WHERE id=?", (int(tid),)).fetchone()
+        if not row:
+            return False, "tweet_not_found", 0
+        cur_ver = int((row["analysis_version"] or 0))
+        if int(base_version) != cur_ver:
+            # 冲突：保留审计，不动当前有效值
+            import json as _json
+            try:
+                payload = _json.dumps(fields, ensure_ascii=False, default=str)[:4000]
+            except Exception:
+                payload = "{}"
+            reason = "manual_modified" if int(row["ai_modified"] or 0) == 1 else "version_changed"
+            get_conn().execute(
+                "INSERT INTO ai_result_conflicts (tweet_id, base_version, current_version,"
+                " reason, result_json, created_at) VALUES (?,?,?,?,?,?)",
+                (int(tid), int(base_version), cur_ver, reason, payload, now()))
+            get_conn().commit()
+            return False, reason, cur_ver
+        if int(row["ai_modified"] or 0) == 1:
+            # 人工保护：整条保护（不做字段级合并，避免语义拼接）
+            import json as _json
+            get_conn().execute(
+                "INSERT INTO ai_result_conflicts (tweet_id, base_version, current_version,"
+                " reason, result_json, created_at) VALUES (?,?,?,?,?,?)",
+                (int(tid), int(base_version), cur_ver, "manual_protected",
+                 _json.dumps(fields, ensure_ascii=False, default=str)[:4000], now()))
+            get_conn().commit()
+            return False, "manual_protected", cur_ver
+        sets = ", ".join(f"{k}=?" for k in fields)
+        args = list(fields.values()) + [int(tid), int(base_version)]
+        # 关键：成功应用后必须推进版本——否则两个同 base 的结果都会"成功"，
+        # 后到者会静默覆盖先到者（乱序竞争漏洞，2026-11-08 修复）
+        cur = get_conn().execute(
+            f"UPDATE tweets SET {sets},"
+            " analysis_version=COALESCE(analysis_version,0)+1"
+            " WHERE id=? AND analysis_version=?", args)
+        get_conn().commit()
+        if cur.rowcount == 0:
+            return False, "race_lost", get_analysis_version(tid)
+        return True, "applied", get_analysis_version(tid)
+
+
+def clear_manual_protection(tid):
+    """显式重新分析：解除人工保护并推进版本（人工值将成为历史版本）"""
+    with _lock:
+        cur = get_conn().execute(
+            "UPDATE tweets SET ai_modified=0,"
+            " analysis_version=COALESCE(analysis_version,0)+1 WHERE id=? AND ai_modified=1",
+            (int(tid),))
+        get_conn().commit()
+        return cur.rowcount > 0
+
+
+def list_conflicts(limit=50):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM ai_result_conflicts ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]
 
 
 def ai_stats():

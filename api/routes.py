@@ -622,13 +622,54 @@ def api_tweet_manual(tid: int, body: ManualBody):
         fields["tags"] = json.dumps(tags, ensure_ascii=False)
     if not fields and not body.note:
         raise HTTPException(400, "无可修订字段")
-    fields["ai_modified"] = 1
     fields["geo_basis"] = "manual" if "geo_country" in fields else t.get("geo_basis", "")
     fields["ai_analyzed_at"] = db.now()
-    db.update_ai(tid, fields)
+    ver = db.manual_override(tid, fields)   # 原子：字段 + ai_modified=1 + 版本+1
+    if ver is None:
+        raise HTTPException(404, "推文不存在")
     db.add_ai_log("人工修订", detail=(body.note or "manual override")[:180], tweet_id=tid,
                   status="ok")
-    return {"ok": True, "modified": fields}
+    return {"ok": True, "modified": fields, "analysis_version": ver}
+
+
+class ManualForceBody(BaseModel):
+    action: str = "reanalyze"       # reanalyze=解除人工保护后重新分析
+
+
+@router.post("/api/tweets/{tid}/manual/force", dependencies=[Depends(auth.require("write"))])
+def api_tweet_manual_force(tid: int, body: ManualForceBody):
+    """显式重新分析：解除人工保护后重新研判（旧人工值被覆盖，属显式操作）。"""
+    if body.action != "reanalyze":
+        raise HTTPException(400, "action 仅支持 reanalyze")
+    r = engine.run_single_ai(tid, "analyze", force=True)
+    if not r:
+        raise HTTPException(404, "推文不存在")
+    return r
+
+
+class ReviewBody(BaseModel):
+    note: str = ""
+
+
+@router.post("/api/tweets/{tid}/review", dependencies=[Depends(auth.require("write"))])
+def api_tweet_review(tid: int, body: ReviewBody):
+    """人工审核通过：将当前版本标记为已核验（ai_review=manual）。
+    约束：审核绑定当前 analysis_version；内容再次变化（版本推进）后审核自动失效。"""
+    t = db.get_tweet(tid)
+    if not t:
+        raise HTTPException(404, "推文不存在")
+    ver = int(t.get("analysis_version") or 0)
+    db.update_ai(tid, {"ai_review": "manual", "ai_review_at": db.now(),
+                       "ai_review_version": ver})
+    db.add_ai_log("人工审核", detail=(body.note or "review approved")[:180],
+                  tweet_id=tid, status="ok")
+    return {"ok": True, "reviewed_version": ver}
+
+
+@router.get("/api/ai/conflicts", dependencies=[Depends(auth.require("read"))])
+def api_ai_conflicts(limit: int = 50):
+    """AI 结果冲突审计（版本不符/人工保护导致未应用的结果）"""
+    return {"items": db.list_conflicts(limit)}
 
 
 # ---------- 推送过滤 ----------

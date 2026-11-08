@@ -181,22 +181,36 @@ def process_ai_tasks(cfg, batch=5):
         if not row or int(row.get("ai_modified") or 0) == 1:
             skip += 1
             continue
+        base = int(row.get("analysis_version") or 0)
         try:
-            aimod.process_tweet(row, acfg)   # 模型调用
+            fields = aimod.process_tweet(row, acfg)   # 模型调用
         except Exception as e:
             fail += 1
             db.update_ai(tid, {"ai_status": "error",
                                "ai_error": f"task {t['id']}: {type(e).__name__}: {str(e)[:150]}",
                                "ai_analyzed_at": db.now()})
             continue
-        try:
-            db.update_ai(tid, {"ai_analyzed_at": db.now()})  # 结果落库（与模型调用分开记录）
-            done += 1
-        except Exception as e:
+        if not fields:
             fail += 1
-            db.add_ai_log("任务落库失败", str(e)[:120], tweet_id=tid)
-    db.finish_ai_task(t["id"], "完成" if fail == 0 else ("完成(部分)" if done else "失败"),
-                      done=done, fail=fail, skip=skip)
+            db.add_ai_log("任务无结果", detail=f"task {t['id']}", tweet_id=tid)
+            continue
+        try:
+            applied, reason, cur = db.apply_ai_result(tid, fields, base)
+        except Exception as e:
+            # 落库失败（非冲突）：计入失败并记录，避免任务停在"处理中"
+            fail += 1
+            db.add_ai_log("任务落库失败", detail=f"{type(e).__name__}: {str(e)[:150]}",
+                          tweet_id=tid)
+            continue
+        if applied:
+            done += 1
+        else:
+            # 冲突不计失败（结果已审计留存），单列 skip 以免重复烧钱
+            skip += 1
+            db.add_ai_log("任务结果冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=tid,
+                          status="conflict")
+    _st = "完成" if fail == 0 else ("完成(部分)" if done else "失败")
+    db.finish_ai_task(t["id"], _st, done=done, fail=fail, skip=skip)
     return f"后台AI任务#{t['id']}：提交{len(ids)} 成功{done} 失败{fail} 跳过{skip}"
 
 
@@ -353,6 +367,9 @@ def dispatch_round(cfg):
     → 原子领取发送 → 退避重试/永久失败/结果不明。模拟独立记录；touched 推文回写兼容 pushed。"""
     st = {"created": 0, "filtered": 0, "sent": 0, "sim": 0,
           "retry_wait": 0, "failed": 0, "unknown": 0}
+    if not (cfg.get("outbound") or {}).get("enable", True):
+        db.add_push_log("外发", "轮次跳过：outbound.enable=false（恢复/演练模式）", "成功", "")
+        return st
     insts = _iid_channels(cfg)
     if not insts:
         return st
@@ -376,10 +393,23 @@ def dispatch_round(cfg):
         pend = db.deliveries_pending(iid, limit=200)
         if not pend:
             continue
+        # L2：下游统一判断——invalid 不得下游；partial 允许但须标注
+        from . import integrity as _integ
+        usable, labeled = [], []
+        for t in pend:
+            allowed, must_label, _reason = _integ.may_auto_downstream(t)
+            if not allowed:
+                continue
+            usable.append(t)
+            if must_label:
+                labeled.append(t["id"])
+        pend = usable
         pend.sort(key=lambda x: (rank.get((x.get("ai_severity") or "info").lower(), 4), x["id"]))
         batch = pend[:max_items]
         if batch:
             content = build_digest(batch)
+            if any(t["id"] in labeled for t in batch):
+                content = ("⚠ 含部分研判结果（AI 研判未完成，仅作原始情报参考）" + chr(10) + content)
             mid = db.create_msg(iid, ch.key, "digest", rule_id, rule_snap,
                                 "X-Intel 推文摘要", content, [t["id"] for t in batch])
             db.link_deliveries(iid, [t["id"] for t in batch], mid)
@@ -387,6 +417,8 @@ def dispatch_round(cfg):
         instant = [t for t in pend if _effective_severity(t) in ("critical", "high")][:INSTANT_CAP]
         for t in instant:
             content = build_single(t)
+            if t["id"] in labeled:
+                content = ("⚠ 部分研判结果（AI 研判未完成）" + chr(10) + content)
             image = None
             if t.get("media_url"):
                 try:
@@ -492,19 +524,29 @@ def run_fetch(manual=False, cfg=None):
         _running = False
 
 
-def run_single_ai(tweet_id, action):
-    """手动单条 AI：action = analyze | translate"""
+def run_single_ai(tweet_id, action, force=False):
+    """手动单条 AI：action = analyze | translate。
+    版本语义（L1）：调用前记录 analysis_version，提交时原子条件更新；
+    期间若被人工修订/原文更新/其它结果先提交 → 不覆盖，写冲突审计并返回冲突信息。
+    force=True（仅显式"重新分析"）：先解除人工保护再分析。"""
     t = db.get_tweet(tweet_id)
     if not t:
         return None
+    if action == "analyze" and force:
+        db.clear_manual_protection(tweet_id)
+        t = db.get_tweet(tweet_id)
+    base = int(t.get("analysis_version") or 0)
     cfg = load().get("ai", {})
-    if action == "translate":
-        fields = aimod.translate_tweet(t, cfg)
-        db.update_ai(tweet_id, fields)
-        return {"ok": True, "fields": fields}
-    fields = aimod.analyze_tweet(t, cfg)
-    db.update_ai(tweet_id, fields)
-    return {"ok": True, "fields": fields}
+    fields = (aimod.translate_tweet(t, cfg) if action == "translate"
+              else aimod.analyze_tweet(t, cfg))
+    applied, reason, cur = db.apply_ai_result(tweet_id, fields, base)
+    if not applied:
+        db.add_ai_log("结果冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=tweet_id,
+                      status="conflict")
+        return {"ok": False, "conflict": True, "reason": reason,
+                "base_version": base, "current_version": cur,
+                "error": f"结果未应用（{reason}）：期间有效值已变化，本次结果已留存审计"}
+    return {"ok": True, "fields": fields, "version": cur}
 
 
 def backfill_tags(limit_n=10, cfg=None):
@@ -513,13 +555,18 @@ def backfill_tags(limit_n=10, cfg=None):
     acfg = cfg or load().get("ai", {})
     done, errors = 0, 0
     for t in rows:
+        base = int(t.get("analysis_version") or 0)
         try:
             fields = aimod.analyze_tweet(t, acfg)
             # 确实无地理信息的推文标「未知」，避免被反复重试浪费额度
             if not fields.get("geo_country"):
                 fields["geo_country"] = "未知"
-            db.update_ai(t["id"], fields)
-            done += 1
+            applied, reason, cur = db.apply_ai_result(t["id"], fields, base)
+            if applied:
+                done += 1
+            else:
+                db.add_ai_log("补标冲突", detail=f"{reason} v{base}->v{cur}", tweet_id=t["id"],
+                              status="conflict")
         except Exception as e:
             db.update_ai(t["id"], {"ai_error": f"backfill {type(e).__name__}: {str(e)[:150]}"})
             errors += 1

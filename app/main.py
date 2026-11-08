@@ -25,7 +25,11 @@ async def lifespan(app):
     if msg:
         print("[auth]", msg)
     auth.seed_initial_admin_if_needed()
-    start_scheduler(engine.run_fetch, load()["fetch"]["interval_minutes"])
+    cfg0 = load()
+    if (cfg0.get("scheduler") or {}).get("enabled", True):
+        start_scheduler(engine.run_fetch, cfg0["fetch"]["interval_minutes"])
+    else:
+        print("[scheduler] 已按配置暂停（scheduler.enabled=false）——恢复/演练场景不应自动抓取与外发")
     yield
 
 
@@ -71,7 +75,8 @@ def readme_md():
 
 def _page_authed(request: Request) -> bool:
     """页面鉴权：auth 关闭时放行；否则需要会话或 Bearer Token"""
-    if not (load().get("auth") or {}).get("enabled", True):
+    # 仅测试模式允许关闭认证（生产误配按启用处理，见 app/auth._auth_disabled_allowed）
+    if auth._auth_disabled_allowed():
         return True
     if not auth.init_ready():
         return False
