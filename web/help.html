@@ -57,7 +57,7 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="24" y2="24">
       <stop offset="0" stop-color="#0891b2"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>
       <path d="M4 4l6.5 8.2L4.4 20h2.6l4.8-6 4.7 6H20l-6.6-8.4L19.6 4H17l-4.3 5.4L8.5 4H4z" stroke="url(#g)" stroke-width="1.4" stroke-linejoin="round"/></svg>
-    <div><h1>X-Intel 帮助文档</h1><p class="sub">X(Twitter) 情报监控台 · AI 研判/翻译/分类/地理标签 · v6</p></div>
+    <div><h1>X-Intel 帮助文档</h1><p class="sub">X(Twitter) 情报监控台 · AI 研判/翻译/分类/地理标签 · 事件聚合/审核/导出 · 认证与恢复 · v7</p></div>
   </div>
   <div class="links"><a href="/arch">系统架构</a><a href="/readme">README</a><a href="/docs">Swagger</a><a href="/">← 控制台</a></div>
 </header>
@@ -71,10 +71,11 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <p>4. <a href="#ai">AI 研判 / 翻译 / 地理标签 / 情报分类</a></p>
     <p>5. <a href="#push">推送与推送过滤</a></p>
     <p>6. <a href="#ops">日志与运维</a></p>
-    <p>7. <a href="#api">REST API 完整参考</a></p>
-    <p>8. <a href="#agent">给外部工具 / AI Agent 的接入指南</a></p>
-    <p>9. <a href="#prompts">推荐 Prompt 模板</a></p>
-    <p>10. <a href="#faq">常见问题</a></p>
+    <p>7. <a href="#events">事件聚合 · 审核 · 标准化导出</a></p>
+    <p>8. <a href="#api">REST API 完整参考</a></p>
+    <p>9. <a href="#agent">给外部工具 / AI Agent 的接入指南</a></p>
+    <p>10. <a href="#prompts">推荐 Prompt 模板</a></p>
+    <p>11. <a href="#faq">常见问题</a></p>
   </div>
 </div>
 
@@ -102,7 +103,9 @@ python run.py
     <tr><td>筛选</td><td>七维组合：等级/分类/国家/行业/账号/状态/全文检索（下拉带计数）</td></tr>
     <tr><td>推送</td><td>四通道（企业微信/钉钉/PushPlus/WxPusher）· <b>每通道多实例</b>（如 5 个企微群各一份）· <b>实例级推送筛选</b>（等级/国家/行业/关键词，仅对该实例生效）· 摘要+即时单推 · 企微截图原图直传 · 全局四维过滤 · 企微 45009 限频自动退避 · 报告交付按通道能力分发</td></tr>
     <tr><td>报告任务</td><td>推文勾选生成线索包 → 外部 report-writer Agent 按规范写作 → 系统复跑机械门禁验收 → 人工确认推送。六状态状态机（待写/写作中/已交付待推/已推送/待人工/已取消），claim 原子防双领</td></tr>
-    <tr><td>运维</td><td>抓取日志（分层追踪，500 轮留存）· 推送日志 · 实时开关 · 页面无缓存（改版即生效）· AI 模型列表一键拉取（/models → 下拉选择）</td></tr>
+    <tr><td>事件聚合</td><td>多来源情报归并为事件（稳定 <code>evt_</code> ID + 版本）· 关联依据分级（人工/同一公告/同一受害单位/仅共享标识，<b>共享标识不自动合并</b>）· 人工合并/拆分/解除（全程留痕）· 人工审核（绑定版本+证据指纹）· 事件 JSON / 时间线 CSV / IOC JSON+CSV 导出</td></tr>
+    <tr><td>认证</td><td>管理员登录（会话 + CSRF）· Token 分级（read/write/admin）· 吊销即时失效 · 未初始化 503 无匿名兜底</td></tr>
+    <tr><td>运维</td><td>抓取日志（分层追踪，500 轮留存）· 推送日志 · 实时开关 · 页面无缓存 · AI 模型列表一键拉取（/models → 下拉）· 一致性备份/校验/恢复演练（恢复默认暂停调度与外发）</td></tr>
   </table>
 </div>
 
@@ -157,9 +160,40 @@ python run.py
   </ul>
 </div>
 
+<div class="card" id="events">
+  <h2>7. 事件聚合 · 审核 · 标准化导出</h2>
+  <ul>
+    <li><b>事件</b>：多条情报归并为一个事件（稳定 <code>evt_</code> ID + 版本号）；状态 候选 / 已确认 / 已归档。</li>
+    <li><b>关联依据</b>：<code>manual</code> 人工确认 · <code>official_same</code> 同一官方公告 · <code>victim_same</code> 同一受害单位 ·
+      <code>shared_indicator</code> 仅共享 CVE/IP/组织名（<b>仅候选，绝不自动合并</b>）。</li>
+    <li><b>证据身份</b>：列表显示的是<b>推文 ID</b>（业务身份）；<code>evidence_id</code> 是关联表行号，仅供审计。
+      解除/拆分/导出均按推文 ID 执行。</li>
+    <li><b>证据独立性</b>：<code>source_kind=original</code> 才计入独立证据；转载/翻译单列，不冒充独立来源。</li>
+    <li><b>审核</b>：审核绑定「事件版本 + 证据指纹」。内容变化（AI 结果落地/人工修订）会自动推进事件版本并留痕
+      <code>evidence_changed</code>，旧审核随即变为<b>历史决定</b>（页面提示"需重新审核"），不会冒充当前批准。
+      版本竞争时审核请求返回 409。</li>
+    <li><b>完整性三表达</b>：有效完整性 / 原始结构分级（partial·invalid 不被人工审核抹掉）/ 人工认可三态
+      （valid·stale·none）分别可查。</li>
+    <li><b>导出</b>（事件详情页四个按钮）：事件 JSON · 时间线 CSV · IOC JSON · IOC CSV。
+      采用独立只读事务快照（导出一致，不被并发写入打断）；IOC 分五桶
+      <code>cve / attack / victim / reference / invalid</code>；缺角色证据默认 <code>unknown</code>；
+      <code>verified</code> 仅代表"人工审核过当前版本"，<b>不等于结构完整</b>；CSV 带公式注入防护。</li>
+  </ul>
+  <div class="tip"><b>提示</b>：只有 <code>usable_as_conclusion=true</code> 的条目才可作为已核验结论引用；
+    partial 条目须标注"研判未完成"；invalid 桶仅审计保留。</div>
+</div>
+
 <div class="card" id="api">
-  <h2>7. REST API 完整参考</h2>
-  <p>交互式文档（Swagger UI）：<a href="/docs" target="_blank"><code>/docs</code></a> · OpenAPI：<a href="/openapi.json" target="_blank"><code>/openapi.json</code></a> · 全部接口无鉴权，仅限内网。</p>
+  <h2>8. REST API 完整参考</h2>
+  <p>交互式文档（Swagger UI）：<a href="/docs" target="_blank"><code>/docs</code></a> · OpenAPI：<a href="/openapi.json" target="_blank"><code>/openapi.json</code></a> ·
+    <b>全部接口需认证</b>：浏览器会话（Cookie + <code>X-CSRF-Token</code>）或
+    <code>Authorization: Bearer xintel_…</code>（角色 read / write / admin）；未初始化管理员时一律 503，无匿名兜底。</p>
+  <h3>认证</h3>
+  <p><span class="tag post">POST</span><code>/api/auth/login</code> — <code>{"username","password"}</code> → 下发 HttpOnly Cookie（SameSite=Lax，12h）+ <code>csrf</code>；
+    <b>所有写请求必须带 <code>X-CSRF-Token</code></b>（值取 <code>GET /api/auth/me</code> 返回的 csrf）。</p>
+  <p><span class="tag post">POST</span><code>/api/auth/logout</code> · <span class="tag get">GET</span><code>/api/auth/me</code> — 当前身份与 csrf</p>
+  <p><span class="tag get">GET</span><code>/api/auth/tokens</code> · <span class="tag post">POST</span><code>/api/auth/tokens</code> — <code>{"name","role":"read|write|admin"}</code>，<b>完整 Token 仅返回一次</b>；<span class="tag post">POST</span><code>/api/auth/tokens/{id}/revoke</code> — 吊销即时失效</p>
+  <p>管理员初始化/重置：本机创建 <code>data/admin_init.txt</code>（一行 <code>用户名:密码</code>，密码≥8 位）后重启；已有同名管理员时执行重置密码。</p>
   <h3>推文数据与管理</h3>
   <p><span class="tag get">GET</span><code>/api/tweets?screen_name=&amp;severity=&amp;country=&amp;industry=&amp;category=&amp;tag=&amp;q=&amp;status=&amp;limit=&amp;offset=</code> — 八维筛选推文流（<code>tag</code> 按关键词标签匹配，如 <code>tag=勒索</code>）。<code>status</code>：all（未忽略）/ unread / read / ignored / starred。条目含全部 AI 与地理字段、<code>tags</code> 标签数组。</p>
   <p><span class="tag post">POST</span><code>/api/tweets/{id}/flag</code> — <code>{"starred":true,"read":true,"ignored":false}</code> 任意组合</p>
@@ -198,7 +232,7 @@ python run.py
 </div>
 
 <div class="card" id="agent">
-  <h2>8. 给外部工具 / AI Agent 的接入指南</h2>
+  <h2>9. 给外部工具 / AI Agent 的接入指南</h2>
   <ol>
     <li><b>拉取情报</b>：<code>GET /api/tweets?severity=high&amp;country=美国&amp;limit=20</code> —— 筛选后的推文自带中文翻译、AI 研判与地理标签，可直接消费。</li>
     <li><b>按维度分流</b>：<code>GET /api/categories</code> / <code>/api/facets</code> 获取可选维度与计数。</li>
@@ -214,7 +248,7 @@ python run.py
     <li><b>Agent 领取</b>：<code>POST …/status {"action":"claim","assignee":"report-writer@&lt;host&gt;"}</code> —— 原子领取，两个 Agent 并发只有一个成功（另一个 409）。</li>
     <li><b>Agent 取料</b>：<code>GET …/package</code> 拿线索包，按其内部规范自行完成外部检索与溯源核查（线索包不替代这两步）。</li>
     <li><b>Agent 写作期间</b>：定期 <code>heartbeat</code> 汇报进度；放弃则 <code>abort</code> 释放回待写。</li>
-    <li><b>交付</b>：<code>POST …/deliver</code> 带 deliver_dir/docx/word_count/ledger_total/ledger_pass/warnings（可选 word_limit）。系统自动复跑已配置的门禁脚本（py -3.13，timeout 180s）：<b>exit 0 → 已交付待推；≠0/文件缺 → 待人工</b>（宁拦住不放过）。</li>
+    <li><b>交付</b>：<code>POST …/deliver</code> 带 deliver_dir/docx/word_count/ledger_total/ledger_pass/warnings（可选 word_limit）。系统自动复跑已配置的门禁脚本（解释器默认当前 Python，可用 <code>report.gate_python</code> 指定；timeout 180s）：<b>exit 0 → 已交付待推；≠0/文件缺 → 待人工</b>（宁拦住不放过）。</li>
     <li><b>推送</b>：人工在面板点「推送通知」——企微收 markdown+报告交付附件；其他启用通道按能力收摘要。<code>auto_push=1</code> 时验收 PASS 自动推。</li>
   </ol>
   <p><b>Agent 调度提示词模板</b>（在 ZCode 会话粘贴，<code>{TASK_ID}</code> 换成面板里的任务号）：</p>
@@ -228,11 +262,11 @@ python run.py
 </div>
 
 <div class="card" id="prompts">
-  <h2>9. 推荐 Prompt 模板（复制给其他 AI 直接用）</h2>
+  <h2>10. 推荐 Prompt 模板（复制给其他 AI 直接用）</h2>
   <p>把模板整段复制给任何具备联网/工具调用能力的 AI（Claude、GPT、Cursor、Dify 工作流、本地 Agent 等），将 <code>{BASE}</code> 替换为本系统地址即可。模板已内嵌 API 说明，AI 无需额外文档即可正确调用。</p>
 
   <h3>① 系统接入 Prompt（作为 Agent 的 System Prompt，一次配置长期有效）</h3>
-  <pre><code>你是接入 X-Intel 威胁情报监控台的情报分析助手。系统 API 基址：{BASE}（无鉴权，仅限内网使用）。
+  <pre><code>你是接入 X-Intel 威胁情报监控台的情报分析助手。系统 API 基址：{BASE}（需认证：请求头 Authorization: Bearer xintel_…）。
 
 【可用接口】
 1) GET {BASE}/api/tweets?severity=&amp;country=&amp;industry=&amp;category=&amp;q=&amp;limit=20
@@ -322,14 +356,23 @@ python run.py
 </div>
 
 <div class="card" id="faq">
-  <h2>10. 常见问题</h2>
+  <h2>11. 常见问题</h2>
   <ul>
     <li><b>抓取全失败？</b>先确认本地代理可用（X 域名被 DNS 污染必须走代理）；故障签名：TCP 能连 10808 但 SSL 握手被重置 = 出口节点问题，换节点即愈。</li>
     <li><b>AI 报 429 / 额度用尽？</b>供应商侧额度问题，报错如实显示在推文卡上；换 Key 或充值后点卡上按钮重试。</li>
     <li><b>推文为什么是英文？</b>等 AI 自动翻译完成即显示中文块；也可手动点「翻译」。</li>
     <li><b>时间看不懂？</b>页面时间已按本地时区渲染；数据库 / API 原始值统一为 GMT。</li>
     <li><b>推送没收到？</b>查「推送记录」面板的状态列；企业微信需在内网环境打开消息（截图链接指向内网代理）。</li>
-    <li><b>安全提示</b>：系统无鉴权，仅限内网使用；AI Key 明文存于 <code>data/runtime.json</code>，勿外传。</li>
+    <li><b>登录/权限</b>：系统需认证。管理员首次部署在 <code>data/admin_init.txt</code> 写 <code>用户名:密码</code> 后重启；
+      Agent 调用用 Bearer Token（页面「Token 管理」创建，完整值仅显示一次）。未初始化时接口返回 503。</li>
+    <li><b>写请求报 403/CSRF 失败？</b>浏览器会话写请求必须带 <code>X-CSRF-Token</code>（前端已自动处理；
+      自写脚本请先 <code>GET /api/auth/me</code> 取 csrf，或改用 Bearer Token 免 CSRF）。</li>
+    <li><b>事件审核显示"历史决定"？</b>底层情报在审核后发生了变化（事件版本已推进），需基于当前版本重新审核。</li>
+    <li><b>首页显示"无真实样本"？</b>今日只有模拟推送（未配置凭据），真实成功率无分母——配置真实凭据后才有真实样本。</li>
+    <li><b>恢复后调度/推送都不动了？</b>这是安全设计：恢复实例默认 <code>scheduler.enabled=false</code>、
+      <code>outbound.enable=false</code>，需人工确认后显式开启；旧 Token/会话在恢复时已清除，需用 admin_init 重新初始化。</li>
+    <li><b>安全提示</b>：虽已内建认证，仍建议仅监听回环（<code>server.host=127.0.0.1</code>）或内网；
+      AI Key 明文存于 <code>data/runtime.json</code>，勿外传。</li>
   </ul>
 </div>
 

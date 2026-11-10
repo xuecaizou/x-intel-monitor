@@ -286,9 +286,9 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <text x="536" y="352" font-size="11" fill="#334155">wecom/dingtalk加签/</text>
     <text x="536" y="370" font-size="11" fill="#334155">pushplus/wxpusher</text>
     <rect x="750" y="290" width="150" height="110" rx="10" fill="rgba(217,119,6,.05)" stroke="rgba(217,119,6,.4)"/>
-    <text x="825" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/grading.py</text>
-    <text x="766" y="334" font-size="11" fill="#334155">关键词兜底分级</text>
-    <text x="766" y="352" font-size="11" fill="#334155">（AI 未覆盖时）</text>
+    <text x="825" y="312" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">app/integrity.py</text>
+    <text x="766" y="334" font-size="11" fill="#334155">完整性分级 / 审核三态</text>
+    <text x="766" y="352" font-size="11" fill="#334155">（valid·stale·none）</text>
     <!-- 底层 -->
     <rect x="200" y="340" width="0" height="0" fill="none"/>
     <rect x="380" y="256" width="0" height="0" fill="none"/>
@@ -322,14 +322,19 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <tr><td><code>app/geo_rules.py</code></td><td>地理标签规则层</td><td>国旗 → 强地理词（国名/城市/州省）→ 企业名（仅弱线索，默认不采信）；ASCII 词边界 + 最长匹配 + URL/handle 掩码 + 多国判 ambiguous</td></tr>
 <tr><td><code>app/db.py</code></td><td>SQLite 数据层（单连接 + 线程锁）</td><td>tweets（含 AI/geo/媒体/状态列）· x_accounts（含频率）· push_logs · kv；自动 ALTER 迁移</td></tr>
     <tr><td><code>app/twitter.py</code></td><td>X 数据采集（监控源 01）</td><td>三级降级（syndication→Nitter→Cookie）· 置顶 id 增量短路 · 到期账号调度 · 媒体提取解码 · 统一经代理</td></tr>
-    <tr><td><code>app/rssfetch.py</code></td><td>RSS 源采集（监控源 02）</td><td>feedparser 解析 RSS/Atom · guid 增量短路 · 独立到期调度 · 条目带「RSS:」前缀复用 tweets 管道（AI/推送/筛选全通用）· test_source 连通测试</td></tr>
-    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；JSON 容错解析；中英对照 prompt；批量处理；额度异常如实落库</td></tr>
-    <tr><td><code>app/engine.py</code></td><td>主管道编排</td><td>run_fetch 总控（锁防重入）· 四维推送过滤 · 摘要+即时分发 · backfill 补标 · 单条 AI</td></tr>
+    <tr><td><code>app/rssfetch.py</code></td><td>RSS 源采集（监控源 02）</td><td>feedparser 解析 · <b>逐条扫描去重</b>（首条 GUID 短路已废除，避免置顶/非首位新增漏采）· source_id=rss:{id} 归属稳定（改名不重复）· 位点仅入库后推进 · 受控抓取（逐跳校验/≤8MB）· test_source 同标准校验</td></tr>
+    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签/分类</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；JSON 容错解析；<b>纯计算不写库</b>（提交归调用方走权威路径）；429/额度耗尽立即停止本轮（AIQuotaError，不吞）</td></tr>
+    <tr><td><code>app/engine.py</code></td><td>主管道编排</td><td>run_fetch 总控（锁防重入）· <b>六维</b>推送过滤（等级/分类/国家/行业/标签/关键词 + 且或模式）· 逐实例投递 · backfill 补标 · 单条/批量 AI</td></tr>
     <tr><td><code>app/scheduler.py</code></td><td>定时调度</td><td>APScheduler 优先，降级 threading；next_run_in 供前端倒计时</td></tr>
     <tr><td><code>app/notify/</code></td><td>推送实现</td><td>三件套 Markdown 模板（截图/原文/译文/研判/地理）；四通道 send；模拟模式判定</td></tr>
-    <tr><td><code>app/grading.py</code></td><td>兜底分级</td><td>AI 未覆盖时按关键词判 high/medium</td></tr>
-    <tr><td><code>api/routes.py</code></td><td>REST 路由（36 端点）</td><td>推文/账号/AI/通道/过滤/统计/报告任务；凭据脱敏；媒体代理域名白名单</td></tr>
-    <tr><td><code>app/reports.py</code></td><td>报告任务桥接模块</td><td>线索包生成 · claim 原子领取（409 防双领）· 复跑机械门禁验收（subprocess py -3.13, list 传参, timeout 180s）· 按通道能力推送</td></tr>
+    <tr><td><code>app/integrity.py</code></td><td>完整性分级与审核语义</td><td>structural_grade（原始分级不被抹掉）· review_state 三态 valid/stale/none · may_auto_downstream 门控</td></tr>
+    <tr><td><code>app/eventexport.py</code></td><td>事件标准化导出</td><td>独立只读事务快照 · 五桶 IOC 分离 · schema_version · CSV 公式注入防护</td></tr>
+    <tr><td><code>app/auth.py</code></td><td>认证与授权</td><td>会话 Cookie(SameSite=Lax)+CSRF · Bearer Token（read/write/admin）· 未初始化 503 · 无匿名兜底</td></tr>
+    <tr><td><code>app/safefetch.py</code></td><td>出站与文件安全</td><td>safe_join/safe_report_path 受控目录 · validate_url 按用途白名单 · fetch_limited 逐跳校验/≤8MB/限超时</td></tr>
+    <tr><td><code>app/backup.py</code></td><td>一致性备份与恢复</td><td>SQLite backup API（含 WAL）· restore 默认强制暂停调度与外发 · 旧 Token/会话清除</td></tr>
+    <tr><td><code>app/wecom_media.py</code></td><td>企微附件</td><td>upload_media→file 两步法 · 20MB 上限 · webhook 出站校验</td></tr>
+    <tr><td><code>api/routes.py</code></td><td>REST 路由（85 端点）</td><td>推文/账号/AI/通道/过滤/统计/报告任务/事件聚合/认证/导出；凭据脱敏；媒体代理白名单+逐跳校验</td></tr>
+    <tr><td><code>app/reports.py</code></td><td>报告任务桥接模块</td><td>线索包生成 · claim 原子领取（409 防双领，10 分钟陈旧回收）· 复跑机械门禁（解释器默认 <code>sys.executable</code>，可配 <code>report.gate_python</code>，timeout 180s）· 受控交付目录 · 分项推送与部分补发</td></tr>
     <tr><td><code>web/</code></td><td>前端（零依赖静态页）</td><td>index.html 控制台（亮色/左侧菜单视图切换/批量栏/弹窗）· help.html 帮助 · arch.html 本页</td></tr>
   </table>
 
@@ -343,13 +348,17 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <tr><td><code>push_logs</code></td><td>channel · kind（摘要/即时/测试/过滤/报告交付）· status（成功/模拟成功/失败）· detail · content</td></tr>
     <tr><td><code>report_tasks</code></td><td>报告任务桥接：title · keywords(JSON) · tier（速报/完整）· notes · tweet_ids(JSON ≤50) · package_path（线索包 data/report_tasks/task_&lt;id&gt;.json）· status（待写/写作中/已交付待推/已推送/待人工/已取消）· assignee · deliver_dir/docx（Agent 回写）· gate_exit/gate_summary（系统复跑门禁结果）· word_count/ledger_total/ledger_pass · warnings(JSON) · auto_push</td></tr>
     <tr><td><code>kv</code></td><td>x_nitter_instance（可用实例缓存）· acc_top_*（增量位点）· acc_last_*（频率记账）· last_fetch（最近抓取结果）· x_gql_queryid/x_uid_*（Cookie 层缓存）</td></tr>
-    <tr><td><code>runtime.json</code></td><td>页面改动持久层：ai 配置（含 Key 明文，勿外传）· channels 凭据与开关 · push.filters</td></tr>
+    <tr><td><code>runtime.json</code></td><td>页面改动持久层：ai 配置（含 Key 明文，勿外传）· channels 凭据与开关 · push.filters · scheduler/outbound 安全开关</td></tr>
+    <tr><td><code>events</code> / <code>event_evidence</code></td><td>事件聚合：稳定 <code>evt_</code> ID · version · status（候选/已确认/已归档）· <b>evidence_fingerprint</b>；关联表 <b>evidence_id（行 id，仅审计）与 tweet_id（业务身份）严格分离</b> · basis · source_kind（original 才计独立证据）</td></tr>
+    <tr><td><code>event_revisions</code> / <code>event_reviews</code></td><td>版本留痕（create/update/split/unlink/merge/evidence_changed/review）· 审核绑定 (event_version, evidence_fingerprint)，三态 valid/stale/none</td></tr>
+    <tr><td><code>auth_users</code> / <code>auth_tokens</code> / <code>auth_sessions</code></td><td>管理员（PBKDF2 哈希）· API Token（read/write/admin，吊销即失效）· 会话（12h，CSRF 绑定）</td></tr>
+    <tr><td><code>deliveries</code> / <code>delivery_msgs</code> / <code>delivery_attempts</code></td><td>逐实例可靠投递（替代全局 pushed 调度职责）· 尝试记录 · 租约与 owner token 防双领</td></tr>
   </table>
 
   <h3>关键机制</h3>
   <ol>
     <li><b>三级降级抓取</b>：A syndication（免登录但匿名额度易 429）→ B Nitter RSS（实例缓存直连 + twiiit 轮换发现，按「<code>&lt;?xml</code> 开头」验收防 CF/Anubis 挑战页）→ C Cookie 直连（实验性）。任一层成功即止，全失败才整体标红。</li>
-    <li><b>增量短路</b>：kv 记录每账号已入库的置顶雪花 id；新一轮 RSS 仍会整体拉取（X 无条件拉取接口），但会在置顶 id 处截断——无更新时 0 入库、0 AI、0 推送。</li>
+<li><b>增量去重</b>：X 按置顶雪花 id 截断（无更新时 0 入库/0 AI/0 推送）；RSS <b>逐条扫描</b>由 <code>UNIQUE(source_id, tweet_id)</code> 保证幂等（<b>不再按首条 GUID 短路</b>——置顶条目或非首位新增不会漏采），位点 <code>rss_top_{id}</code> 仅在入库完成后推进、仅作追踪参考。</li>
     <li><b>排序与时区</b>：雪花 ID 全局时间有序，列表按 <code>CAST(tweet_id AS INTEGER) DESC</code> 排序，补抓批次内不乱序；<code>published_at</code> 存 GMT 裸值，前端按 UTC 解析转本地时区显示。</li>
     <li><b>AI 额度保护</b>：自动阶段每轮限 auto_limit 条；研判失败的推文标 ai_status=error 不自动重试；无地理信息的推文标「未知」不被补标任务反复处理。</li>
     <li><b>模拟模式</b>：通道凭据留空 = 模拟——消息照常经模板生成并写入推送日志（标「模拟成功」），不外发；填入凭据即真实推送，无需重启。</li>
@@ -358,9 +367,54 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
 <li><b>推送门控</b>：AI 实时开启时，仅 ai_status='ok' 的推文进入推送（失败重试 2 轮后附错误说明放行）——保证推送内容必经研判；推送后标记 pushed 防重复。</li>
 <li><b>混合分类</b>：16 类情报分类采用 脚本规则（9 组关键词零成本命中）+ AI 批量兜底（每 10 条一次调用）双通道；新推文研判时顺带标注分类。</li>
 <li><b>syndication 熔断</b>：连续 3 轮失败后 30 分钟内跳过该层（省每轮 15s+ 无效等待），成功自动复位。</li>
-<li><b>报告任务桥接</b>：系统只做任务管理与验收（建任务/线索包落盘/claim 原子领取/复跑机械门禁/推送），报告正文由外部 report-writer Agent 产出——验收不信任 Agent 自报 gate 结果，系统必须自己复跑已配置的门禁脚本（py -3.13 subprocess，exit 0=已交付待推，否则待人工，宁拦住不放过）；推送按通道能力分发（企微附件两步法，其余通道摘要+内网获取提示）。</li>
+<li><b>报告任务桥接</b>：系统只做任务管理与验收（建任务/线索包落盘/claim 原子领取/复跑机械门禁/推送），报告正文由外部 report-writer Agent 产出——验收不信任 Agent 自报 gate 结果，系统必须自己复跑已配置的门禁脚本（<b>解释器默认当前 Python，可配 report.gate_python</b>，exit 0=已交付待推，否则待人工，宁拦住不放过）；交付路径必须在 <code>data/report_tasks</code> 下（<code>safe_report_path</code>），绝对路径/穿越一律转待人工；推送按通道能力分发（企微附件两步法，其余通道摘要+内网获取提示）。</li>
 <li><b>AI 模型拉取</b>：<code>GET {base_url}/models</code>（OpenAI 兼容标准端点）→ 前端 datalist 下拉，仍可手输；先保存配置再拉取，保证用最新地址与 Key。</li>
   </ol>
+
+  <h3>认证与授权</h3>
+  <ul>
+    <li>浏览器：<code>/login</code> → <code>POST /api/auth/login</code> → HttpOnly Cookie（SameSite=Lax，12h）+ CSRF；
+      <b>写请求必须带 <code>X-CSRF-Token</code></b>。</li>
+    <li>脚本/Agent：<code>Authorization: Bearer xintel_…</code>，角色 <b>read / write / admin</b>（逐端点依赖声明）。</li>
+    <li>未初始化管理员时一律 <b>503</b>，<b>不存在匿名兜底</b>；Token 吊销即时失效，完整值仅创建时显示一次。</li>
+    <li>初始化/重置：本机 <code>data/admin_init.txt</code>（<code>用户名:密码</code>，密码≥8 位）。</li>
+  </ul>
+
+  <h3>事件聚合与审核（版本 / 指纹 / 快照）</h3>
+  <ul>
+    <li><b>身份契约</b>：<code>evidence_id</code> = 关联表行 id（仅审计）· <code>tweet_id</code> = 业务身份；
+      展示/跳转/解除/拆分/导出一律使用 <code>tweet_id</code>（查询全部唯一别名，<code>collected_at</code> 与
+      <code>linked_at</code> 分开）。</li>
+    <li><b>证据指纹</b>：成员 + 每条证据 <code>analysis_version</code> 的 SHA1；底层情报变化 → 读路径检测 →
+      事件版本推进 + <code>evidence_changed</code> 留痕（幂等）。</li>
+    <li><b>审核三态</b>：<code>valid</code>（绑定当前版本且指纹一致）/ <code>stale</code>（历史决定，页面标注
+      "需重新审核"）/ <code>none</code>；审核写入锁内复验版本并绑定指纹，同一版本只能一条决定。</li>
+    <li><b>写事务</b>：内容修改/版本检查/推进/审计同一事务（<code>UPDATE … WHERE version=?</code>，并发只允许一个成功）；
+      加/移证据、合并、拆分为单事务；<b>拆分零有效成员直接失败且不创建空事件</b>。</li>
+    <li><b>导出一致性</b>：独立只读连接（WAL 快照）读取全部数据，与写请求完全隔离；四类导出同口径。</li>
+  </ul>
+
+  <h3>统计与投递口径</h3>
+  <ul>
+    <li><b>来源</b>：总数 = X + RSS；启用数 = 两类启用之和（<b>启用但异常仍计入启用</b>）；逐源四态
+      <code>ok / error / unknown / disabled</code>（启用但无抓取记录 = unknown，不冒充正常）；聚合健康
+      <code>normal / partial_error / error / unknown / idle</code>，<b>一轮 X 成功不掩盖 RSS 已知失败</b>。</li>
+    <li><b>推送成功率</b>：真实/模拟分列；分母 = 真实尝试（逻辑投递，非重试次数），仅模拟时显示
+      <b>"无真实样本"</b>，不显示 100%。"今日"与"近 24 小时"为不同窗口，不强行相等。</li>
+    <li><b>AI 写入</b>：模型计算与提交职责分离；成功经 <code>apply_ai_result</code> 原子提交（版本+人工保护），
+      失败/配额状态经 <code>update_ai_guarded</code> 写回（不覆盖期间人工修改，冲突留审计）；
+      <b>429/额度耗尽立即停止本轮</b>后续调用。</li>
+  </ul>
+
+  <h3>出站与恢复安全</h3>
+  <ul>
+    <li><b>受控抓取</b>：RSS/媒体/来源测试统一 <code>fetch_limited</code>——仅 http/https、<b>重定向逐跳校验</b>、
+      响应 ≤8MB、显式超时；私网/回环/链路本地默认拦截，按用途白名单精确放行，
+      <b>AI 网关白名单不会扩大到 RSS/媒体/webhook</b>。</li>
+    <li><b>备份恢复</b>：SQLite online backup（含 WAL 未检查点数据）；<code>restore_to</code> 默认
+      <b>强制 scheduler.enabled=false + outbound.enable=false</b>（备份原件不动）并<b>清除旧 Token/会话</b>，
+      摘要区分"原件哈希"与"恢复变更"；启动后需实际验证（healthz、调度暂停日志、抓取/推送日志为空）。</li>
+  </ul>
 </div>
 
 <footer>X-Intel · 系统架构与功能架构说明 · 配套阅读：/help（使用与 API）· /readme（README 双格式）</footer>

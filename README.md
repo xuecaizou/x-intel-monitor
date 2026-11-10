@@ -118,7 +118,7 @@ push:
 
 ## REST API 参考
 
-交互式文档 `/docs` · OpenAPI `/openapi.json` · 全部接口无鉴权，仅限内网。
+交互式文档 `/docs` · OpenAPI `/openapi.json` · **全部接口需认证**（浏览器会话 Cookie + CSRF，或 `Authorization: Bearer xintel_…`）；未初始化管理员时一律 503，不存在匿名兜底。
 
 ### 推文数据与管理
 
@@ -195,7 +195,7 @@ push:
 - **AI 报 429 / 额度用尽？** 供应商侧额度问题，报错如实显示在推文卡上；换 Key 或充值后点卡上按钮重试，或用「补齐地区标签」批量补跑。
 - **推文为什么是英文？** 等 AI 自动翻译完成即显示中文块；也可手动点「翻译」。
 - **时间看不懂？** 页面时间已按本地时区渲染；数据库/API 原始值统一为 GMT。
-- **安全提示**：系统无鉴权，仅限内网使用；AI Key 明文存于 `data/runtime.json`，勿外传。
+- **安全提示**：系统已内建认证（会话 Cookie + CSRF / Bearer Token，角色 read·write·admin），但仍建议仅监听回环或内网；AI Key 明文存于 `data/runtime.json`，勿外传。
 
 ## 目录结构
 
@@ -209,11 +209,17 @@ x-intel-monitor/
 │   ├── main.py          # FastAPI 入口（lifespan 初始化 + /help 路由）
 │   ├── config.py        # 三层配置合并（默认←config.yaml←runtime.json）
 │   ├── db.py            # SQLite：tweets(含AI/geo列) / x_accounts / push_logs / kv
-│   ├── grading.py       # 关键词兜底分级
-│   ├── engine.py        # 管道：抓取→去重→AI→过滤→摘要/即时推送
+│   ├── engine.py        # 管道：抓取→去重→AI→过滤→逐实例投递
 │   ├── scheduler.py     # APScheduler（降级 threading）
 │   ├── twitter.py       # 三级降级抓取 + 媒体提取 + 增量短路
-│   ├── ai.py            # OpenAI 兼容研判/翻译/标签 + 批量处理
+│   ├── rssfetch.py      # RSS/Atom 采集：逐条扫描去重 + source_id 归属
+│   ├── ai.py            # OpenAI 兼容研判/翻译/标签/分类（纯计算，提交归调用方）
+│   ├── integrity.py     # 完整性分级 + 审核三态（valid/stale/none）
+│   ├── eventexport.py   # 事件标准化导出（JSON/时间线 CSV/IOC JSON+CSV）
+│   ├── auth.py          # 管理员/会话/CSRF/Token（read·write·admin）
+│   ├── safefetch.py     # 出站 URL/路径安全（逐跳校验/大小上限/受控目录）
+│   ├── backup.py        # 一致性备份与安全恢复（默认暂停调度与外发）
+│   ├── wecom_media.py   # 企微附件两步法（upload_media→file）
 │   └── notify/          # Markdown 模板 + 四通道
 ├── api/routes.py        # REST 路由
 ├── web/index.html       # 控制台（亮色）
@@ -223,7 +229,11 @@ x-intel-monitor/
 
 - **事件聚合**：多来源情报归并为事件（稳定 `evt_` ID + 版本）；关联依据分级（人工/同一公告/同一受害单位/仅共享标识）；
   **共享 CVE/IP/组织名不得自动合并**，仅作候选；转载不计独立证据；支持人工合并/拆分/解除并全程留痕
-- **人工审核**：审核绑定事件版本，旧版本不能批准新内容；审核队列 + 操作者留痕
-- **标准化导出**：事件 JSON / 时间线 CSV / IOC JSON / IOC CSV（schema_version、事件版本、一致性快照、CVE 与受害资产/攻击指标分列、
-  partial 逐条标注、CSV 公式注入防护）
+- **人工审核**：审核绑定「事件版本 + 证据指纹」，旧版本/内容已变不能批准新内容（三态 valid/stale/none）；
+  审核队列 + 操作者留痕；事件详情页对过期审核显示"历史决定（vN）… 需重新审核"
+- **版本与并发**：底层情报变化（AI 结果落地/人工修订）经证据指纹检测→事件版本推进 + `evidence_changed` 留痕；
+  内容修改/版本检查/审计同一事务（乐观锁 `expected_version` 并发只允许一个成功）；写事件、加/移证据、合并、拆分为单事务
+- **标准化导出**：事件 JSON / 时间线 CSV / IOC JSON / IOC CSV（schema_version、事件版本、**独立只读事务一致性快照**、
+  五桶分列 cve/attack/victim/reference/invalid、CVE 独立 vulnerability、缺角色证据默认 `role=unknown`、
+  `verified` 仅来自人工审核绑定当前版本、partial 逐条标注、去重保留全部来源、CSV 公式注入防护）
 - **报告任务**
