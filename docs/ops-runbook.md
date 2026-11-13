@@ -137,3 +137,41 @@ python offline_test.py
 XINTEL_TOKEN=<admin token> python healthcheck.py
 XINTEL_TOKEN=<admin token> python smoke_test.py --nolive
 ```
+
+## 9. 报告编写工作台（协作写作 · 2026-11-14）
+
+### 9.1 依赖安装
+
+| 组件 | 用途 | 安装 |
+| --- | --- | --- |
+| pycrdt / pycrdt-websocket（0.14.13 / 0.16.9，已锁定） | CRDT 协作内核 | `pip install pycrdt==0.14.13 pycrdt-websocket==0.16.9`（Python 3.14 有 wheel；模块在 `pycrdt.websocket` 子包） |
+| pandoc（验证版本 3.6.3） | Markdown → DOCX 本地转换 | 便携版解压即可（如 `D:\tools\pandoc\pandoc.exe`）；不入库 |
+| node/npm + esbuild（仅重新构建前端包时需要） | 协作编辑器前端打包 | 已提交构建产物 `web/vendor/collab.bundle.js`；重建：`npm install && npm run build`（yjs 13.6.33 / y-websocket 2.1.0 / y-codemirror.next 0.3.6 锁定 Yjs 13 稳定线） |
+
+### 9.2 配置（data/runtime.json）
+
+```json
+"word": { "pandoc_path": "D:/tools/pandoc/pandoc.exe", "timeout_seconds": 120, "max_md_bytes": 2000000 },
+"docs": { "max_asset_bytes": 8000000 }
+```
+
+`word.pandoc_path` 为空或缺文件时，Word 导出按钮返回**明确错误提示**，其余功能（采集/协作/导出 MD）不受影响。
+`app/assets/reference.docx` 为中文排版样式（正文宋体/标题黑体），重建：`py -3 scripts/make_reference_docx.py <pandoc路径>`。
+
+### 9.3 使用与权限
+
+- 成员管理：管理员在「控制台」创建用户（read/write/admin）；会话角色以 auth_users 为准（本轮修正了历史缺陷"会话恒为 admin"）。
+- 文档权限：创建者/显式 ACL（`PUT /api/writing/docs/{uid}/acl`）= 可编辑；其余认证用户默认只读。**只读由服务端强制**（WS 层丢弃其更新），前端禁用仅为体验。
+- Agent：`POST /api/agent/tokens {"name","docs":"all"或逗号分隔doc_uid}` → `agent_` 令牌（可吊销、范围明确）；示例脚本 `python scripts/agent_demo.py --token agent_xxx --doc doc_xxx [--edit]`。
+- Word 导出：编辑器「下载 Word」= 捕获当前文本为不可变修订（kind=export）→ pandoc 子进程转换（list 传参/timeout/临时目录/产物 ZIP+OOXML 校验）；同 rev 同内容哈希复用产物。远程图片不自动抓取（明确缺图提示），本地图片走「素材」上传（attachment: 引用，≤8MB）。
+- 导出不改变审核/交付/推送状态，与报告任务门禁（spec_gate）完全独立；正式对外交付仍走报告任务链路。
+
+### 9.4 备份与迁移
+
+- 新增 13 张表（doc_templates/template_versions/writing_candidates/candidate_revisions/ai_recommend_tasks/doc_documents/doc_acl/doc_updates/doc_revisions/doc_suggestions/doc_exports/doc_agent_edits/ws_tickets）由 `db.init_db()` 自动创建，**可重复执行**；已验证"旧库 DROP 后重启重建 + 旧数据保留"。
+- 协作正文权威存储在主库 `doc_updates`（CRDT 增量日志）——单文件备份即完整覆盖；`app/backup.py` 校验白名单已含全部新表，恢复演练见 `tests/test_writing_migration.py`（14 断言）。
+
+### 9.5 回滚
+
+- 代码回滚到 `034bf65^`（本批之前）：`git checkout 034bf65 -- app/ api/ web/ editor/ tests/ offline_test.py`（或整体 `git reset --hard 034bf65`）。新表留在库中**不影响旧代码**（旧代码不读它们）；如需彻底清理：`DROP TABLE` 上述 13 表（先停服务，属数据删除操作需自行确认）。
+- 数据回滚≠代码回滚：协作修订/导出记录产生后，回退代码不会删除这些行。

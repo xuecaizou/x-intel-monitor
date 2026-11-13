@@ -55,6 +55,14 @@
 - 推送记录时间轴；抓取倒计时（进度环）+「立即抓取」
 - 内建帮助文档 `/help`：功能说明、REST API 参考、架构图、推荐 Prompt 模板、FAQ；Swagger `/docs`、OpenAPI `/openapi.json`
 
+### 报告编写工作台（协作写作 · 2026-11-14）
+- **待编写线索候选**：情报卡片「+待编写」/批量「加入待编写」/事件详情「创建写作候选」/手工新建；规范化去重合并、优先级/负责人/状态机（待处理→写作中→已转报告/暂缓/不采用）、AI 选题推荐（任务链：排队→运行→完成/失败→重试，重评不覆盖人工决定，标记"线索有更新"）
+- **多模板管理**：新建/复制/停用/发布不可变版本/版本历史/变量白名单预览（缺失变量与未定义占位明确提示）；模板正文支持多人实时协作；报告固定发布版本，模板后续修改不影响既有报告
+- **Markdown 实时协作**：独立编辑器页 `/editor?doc=…`（CodeMirror 6 + Yjs CRDT）；两浏览器实时同步、远程光标/成员、断线重连、撤销重做、版本历史与恢复、提交审阅（绑定版本，批准不继承新内容）；"已同步"=服务端落库确认（awareness saved_seq）
+- **Agent 协作**：可吊销、范围明确的 agent_ 令牌；读取正文/来源快照、提交修改建议（锚点精确匹配，零/多匹配明确失败）、受控直接修改（base_rev 乐观锁 + client_id 幂等）；示例 `scripts/agent_demo.py`
+- **一键下载 Word**：pandoc 本地转换真实可编辑 .docx（中文宋体/黑体样式、标题/列表/表格/代码/受控本地图片），固定版本捕获、内容哈希缓存、超时与缺依赖明确提示；导出不改审核状态、与报告门禁独立
+- **权限**：成员管理（read/write/admin）+ 文档级 ACL（只读由服务端 WS 层强制）+ 审核仅管理员；详情见 `docs/ops-runbook.md` §9
+
 ## 快速开始
 
 ```bash
@@ -119,6 +127,30 @@ push:
 ## REST API 参考
 
 交互式文档 `/docs` · OpenAPI `/openapi.json` · **全部接口需认证**（浏览器会话 Cookie + CSRF，或 `Authorization: Bearer xintel_…`）；未初始化管理员时一律 503，不存在匿名兜底。
+
+### 报告编写工作台（协作写作）
+
+| 方法 | 端点 | 说明 |
+|---|---|---|
+| GET/POST | `/api/writing/candidates` | 候选列表（status/q/source_type）/新建（去重合并返回 merged） |
+| POST | `/api/writing/candidates/from-tweets` `/from-event` | 批量情报合并 / 事件建候选 |
+| PUT/DELETE | `/api/writing/candidates/{uid}` | 编辑（乐观锁 expected_version）/删除（仅待处理·暂缓·不采用） |
+| POST | `/api/writing/candidates/{uid}/decision` `/convert` | 采纳/暂缓/不采用 / 转为报告（单事务幂等，返回 doc_uid） |
+| POST/GET | `/api/writing/recommend` · `/api/writing/recommend-tasks` | AI 推荐排队 / 任务状态；`/retry` 重试 |
+| GET/POST/PUT/DELETE | `/api/writing/templates` · `/{tid}/publish` `/duplicate` `/status` `/versions` `/preview` | 模板 CRUD 与发布（维护=admin，预览=read） |
+| GET/POST | `/api/writing/docs` `/api/writing/docs/{uid}` | 文档列表 / 详情（含 my_permission） |
+| GET | `/api/writing/docs/{uid}/revisions[/{rev}]` | 版本历史 / 修订内容 |
+| POST | `/api/writing/docs/{uid}/restore` `/submit-review` | 恢复历史（新修订）/ 提交审阅（固定版本） |
+| POST | `/api/writing/docs/{uid}/review` | 审核批准/驳回（admin） |
+| GET/POST | `/api/writing/docs/{uid}/suggestions` · `/{sid}/resolve` | 建议（读权限可提）/ 接受·拒绝（写权限） |
+| GET | `/api/writing/docs/{uid}/export.md` `/export/word` `/export/word/{eid}/download` `/exports` | 下载 MD / 发起 Word 导出 / 下载 / 记录 |
+| POST/GET | `/api/writing/docs/{uid}/assets` | 受控素材上传（base64 ≤8MB）/列表 |
+| PUT | `/api/writing/docs/{uid}/acl` `/title` | ACL（admin）/ 标题 |
+| POST | `/api/writing/docs/{uid}/ws-ticket` | WebSocket 一次性票据（60s） |
+| GET | `/api/writing/summary` | 首页汇总（服务端全量聚合） |
+| POST | `/api/auth/users` · GET `/api/auth/users` · POST `/{name}/role` | 成员管理（admin） |
+| POST | `/api/agent/tokens`（admin）· `/api/agent/docs…`（agent） | Agent 令牌 / Agent 文档读取·建议·受控修改 |
+| WS | `/ws/docs/{doc_uid}` | Yjs 实时协作（会话 Cookie 或 ticket；Origin 校验） |
 
 ### 推文数据与管理
 

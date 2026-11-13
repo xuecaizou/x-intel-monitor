@@ -1,0 +1,977 @@
+PASS I1 DATA_DIR 为临时目录
+PASS I2 不在生产 data/ 下
+PASS I3 runtime.json 写入临时目录
+PASS I4 生产 runtime.json 未被修改
+PASS I5 数据库文件在临时目录
+PASS I6 生产库未被测试初始化影响（表数不因测试新增）
+PASS I7 访问生产路径立即失败
+PASS I8 测试默认禁止真实外联
+PASS I9 临时目录结构完整
+
+==== 隔离测试：9 PASS / 0 FAIL ====
+PASS E1 全部套件通过 → 入口退出 0
+PASS E1b 输出含套件级汇总
+PASS E2 单套件退出 1 → 入口必须退出非零
+PASS E3 全部套件退出 1 → 入口必须退出非零
+PASS E4 必需套件缺失 → 入口必须退出非零
+PASS E4b 缺失套件在汇总中显式标 FAIL
+
+==== 入口失败传递自测：6 PASS / 0 FAIL ====
+== B1 计算与提交职责分离：process_tweet 不再直接写库 ==
+PASS B1-1 process_tweet 调用后库内未被写入（提交职责归调用方）
+PASS B1-2 返回待提交字段
+PASS B1-3 无配额标志
+== B2 权威提交：迟到结果不覆盖人工修改 ==
+PASS B2-1 版本已变 → 拒绝应用
+PASS B2-2 人工值保留
+PASS B2-3 冲突留审计
+== B3 失败状态写回保护（update_ai_guarded） ==
+PASS B3-1 迟到失败不覆盖人工接管状态
+PASS B3-2 人工期间状态未被改写
+PASS B3-3 失败写回冲突也留审计
+PASS B3-4 版本未变且无人工保护 → 允许写回
+PASS B3-5 状态写回不推进版本
+== B4 run_ai_stage：429 停止整轮模型调用，统计不记成功 ==
+PASS B4-1 首条即 429 → ai_status=error 且带配额标注
+PASS B4-2 整轮仅 1 次 HTTP 调用（后续条目不再烧钱）
+PASS B4-3 成功计数为 0（统计不记成功）
+PASS B4-4 第三条未被处理（保持未研判，等下轮配额恢复）
+== B5 run_ai_stage：人工修改与迟到结果竞争（成功路径也走权威提交） ==
+PASS B5-1 人工保护版本下 AI 成功结果不覆盖
+PASS B5-2 冲突被审计
+== B6 process_ai_tasks：429 停止 + 任务标记配额失败 + 统计不虚记 ==
+PASS B6-1 任务状态标注配额失败
+PASS B6-2 后台路径也仅 1 次 HTTP 调用
+PASS B6-3 done=0（失败不计成功）
+PASS B6-4 进度说明含剩余未处理
+== B7 batch_process：429 停止本轮且 quota_stopped 计数 ==
+PASS B7-1 返回 quota_stopped
+PASS B7-2 仅 1 次调用（不逐条烧钱）
+PASS B7-3 done=0
+== B8 classify_batch：权威提交（人工分类不被覆盖）+ 429 停止 ==
+PASS B8-1 人工分类不被 AI 批量覆盖
+PASS B8-2 未被人工接管的条目正常写入
+PASS B8-3 done 计数正确（原实现恒 0）
+[classify] 配额停止本轮: AI 接口 HTTP 429: rate limit
+PASS B8-4 分类 429 → quota_stopped 含剩余条目
+PASS B8-5 分类 429 仅 1 次调用
+== B9 模型成功但落库失败：一次失败计一次，不重复调用收费模型 ==
+PASS B9-1 模型仅研判+翻译各一次（落库异常不引发重复调用，若重复会是 4 次）
+PASS B9-2 落库失败尝试 1 次
+PASS B9-3 任务标记失败而非卡处理中
+== B10 AIQuotaError 不被通用异常吞掉（分类正确传递到边界） ==
+PASS B10-1 429 → AIQuotaError（不被 RuntimeError 覆盖）
+
+==== B 组 AI写入/人工保护/配额停止：33 PASS / 0 FAIL ====
+== C1 审核绑定当前版本 → 人工认可有效 ==
+PASS C1-1 原子绑定成功且记录版本
+PASS C1-2 review_state=valid
+PASS C1-3 有效等级升级 verified（人工认可）
+PASS C1-4 原始结构分级 partial 保留不被抹掉
+PASS C1-5 修复痕迹保留
+== C2 版本推进后旧审核自动失效（历史决定不冒充当前批准） ==
+PASS C2-1 review_state=stale
+PASS C2-2 有效等级回落结构分级 partial
+PASS C2-3 下游恢复「须标注未完成」门控
+PASS C2-4 旧审核记录保留（历史决定可查）
+== C3 审核原子绑定竞争：处理期间版本被推进 → 拒绝 ==
+PASS C3-1 版本不符绑定被拒
+PASS C3-2 未留下错误绑定
+== C4 无版本记录的历史审核数据保守按 stale ==
+PASS C4-1 未记录绑定版本 → stale（不得冒充当前批准）
+PASS C4-2 有效等级不被无版本审核升级
+== C5 导出三表达一致（证据含结构/有效/审核三块） ==
+PASS C5-1 导出含原始结构分级
+PASS C5-2 导出审核块为三态结构
+PASS C5-3 stale 审核 → 不可作为已核验结论
+PASS C5-4 未审核完整研判：none + 可作结论
+== C6 API 端点：绑定竞争返回 409，成功返回绑定版本 ==
+PASS C6-1 审核成功返回绑定版本
+PASS C6-2 版本竞争 → 409 且提示重新审核
+PASS C6-3 竞争后未留下绑定
+
+==== C 组审核版本与完整性：20 PASS / 0 FAIL ====
+== D1 身份分离：evidence_id 与 tweet_id 明确不同 ==
+PASS D1-1 证据行含两个身份字段
+PASS D1-2 tweet_id 是真实推文身份（4091/4092）
+PASS D1-3 evidence_id 是关联表行 id（1/2，与推文 id 明显不同）
+PASS D1-4 不再有泄漏的裸 id 键
+PASS D1-5 created_at 歧义消除：collected_at(推文) 与 linked_at(关联) 均唯一存在
+== D2 解除：使用正确身份 + 失败不报成功 ==
+PASS D2-1 用关联行 id 解除 → 明确失败（不误删）
+PASS D2-2 证据未被误删
+PASS D2-3 用 tweet_id 解除 → 成功
+PASS D2-4 不存在的 tweet_id 解除 → 失败
+== D3 拆分：零有效成员失败且不产生空事件 ==
+PASS D3-1 传关联行 id → 拆分失败
+PASS D3-2 未创建空事件（事件总数不变）
+PASS D3-3 传真实 tweet_id → 拆分成功
+PASS D3-4 新事件含被拆出的真实推文
+PASS D3-5 原事件证据清空（t_b 已解除 + t_a 已拆出）
+PASS D3-6 API 零有效成员 → 400
+PASS D3-7 API 拆分失败不产生空事件
+PASS D3-8 API 正确身份拆分 → 200 + 新事件
+== D4 导出身份正确（tweet_id/evidence_id 双表达） ==
+PASS D4-1 导出 tweet_id 为真实推文身份
+PASS D4-2 导出 evidence_id 为关联行 id（与推文身份互异）
+PASS D4-3 导出 collected_at 来自推文列
+PASS D4-4 IOC 导出的 tweet_id 也是真实推文身份
+PASS D4-5 事件 JSON 证据 tweet_id 正确
+== D5 详情接口返回正确身份（前端契约） ==
+PASS D5-1 详情接口证据含 tweet_id（不再有裸 id）
+PASS D5-2 详情接口 tweet_id=真实推文
+
+==== D 组事件证据身份/解除/拆分：24 PASS / 0 FAIL ====
+== E1 乐观锁并发竞争：相同 expected_version 只允许一个成功 ==
+PASS E1-1 四线程同 expected_version 仅一个成功
+PASS E1-2 版本只推进一次
+PASS E1-3 审计只有一条 update（同事务写入）
+PASS E1-4 失败者拿到当前版本号
+== E2 内容修改/版本检查/推进/审计 同事务 ==
+PASS E2-1 更新成功且返回新版本
+PASS E2-2 版本推进与审计一致
+PASS E2-3 旧 expected_version 再更新 → 拒绝并返回当前版本
+== E3 事件审核绑定版本+指纹 ==
+PASS E3-1 绑定当前版本成功
+PASS E3-2 审核绑定证据指纹（非空）
+PASS E3-3 review_state=valid
+PASS E3-4 旧版本不能批准新内容（锁内复验）
+== E4 底层情报变化 → 事件版本推进，旧审核成历史决定 ==
+PASS E4-1 指纹检测到内容变化（版本推进 + 留痕）
+PASS E4-2 幂等：指纹一致不再推进
+PASS E4-3 留痕 action=evidence_changed
+PASS E4-4 旧审核自动变 stale（不得冒充当前批准）
+PASS E4-5 旧审核记录保留（历史决定可查）
+PASS E4-6 新版本重新审核 → valid
+== E5 导出与并发写入交错：独立只读事务，无 cannot commit ==
+PASS E5-1 并发写入期间导出无异常（含 cannot commit 消失）
+PASS E5-2 导出全程成功（6 轮）
+== E6 拆分原子性：双向版本推进 + 指纹一致 ==
+PASS E6-1 拆分成功
+PASS E6-2 源事件版本推进
+PASS E6-3 双方指纹非空且互异（成员不同）
+PASS E6-4 源事件审计含 split
+== E7 导出审核块：历史决定标注（state 字段） ==
+PASS E7-1 导出 review 含 state 与 current_version
+PASS E7-2 导出含版本与指纹驱动的事件字段
+
+==== E 组事件版本/审核/一致性快照：25 PASS / 0 FAIL ====
+== F1 缺角色证据默认 unknown（绝不默认 attack） ==
+PASS F1-1 ip/domain 无角色证据 → reference 桶
+PASS F1-2 role=unknown（不是 attack）
+== F2 组织名子串不再决定 victim（只留 hint） ==
+PASS F2-1 组织名子串命中也不进 victim 桶
+PASS F2-2 org_overlap 仅作人工复核 hint
+== F3 CVE 独立 vulnerability ==
+PASS F3-1 CVE 进 cve 桶且 role=vulnerability
+== F4 事实核验不由结构完整性推导 ==
+PASS F4-1 结构完整但未人工审核 → verified=false（核验≠完整）
+PASS F4-2 人工审核绑定当前版本 → verified=true
+PASS F4-3 内容变化后核验状态回落 false
+== F5 invalid 独立桶 + partial 逐条标注 ==
+PASS F5-1 invalid 来源指标 → invalid 桶（不进 reference/attack）
+PASS F5-2 invalid 桶带独立标注
+PASS F5-3 partial 逐条标注：不可作结论 + 须标注未完成
+== F6 去重保留全部来源与角色冲突 ==
+PASS F6-1 同一 value 来自两条来源全部保留（不全局去重丢源）
+PASS F6-2 source_count=2
+PASS F6-3 角色冲突标注（reference/invalid 两桶）
+PASS F6-4 同源同值只保留一条
+== F7 JSON/CSV 一致 + 公式注入防护 ==
+PASS F7-1 CSV 数据行数 = JSON 各桶总数
+PASS F7-2 CSV 列与新口径一致
+PASS F7-3 CSV 公式注入被转义（前导 '）
+
+==== F 组 IOC 导出：18 PASS / 0 FAIL ====
+== G1 准备生产态环境（调度/外发全开 + 管理员 Token） ==
+PASS G1-1 生产态配置就绪
+== G2 一致性备份（含 WAL 未检查点数据） ==
+PASS G2-1 备份 integrity ok
+PASS G2-2 备份含最近提交数据（backup API 非 cp 主库）
+== G3 恢复到隔离目录：安全关闭 + 凭据清除 + 哈希区分 ==
+PASS G3-1 原件一致性 verify_original ok
+PASS G3-2 恢复副本 scheduler.enabled=false
+PASS G3-3 恢复副本 outbound.enable=false
+PASS G3-4 备份原件配置未被改动（原件 scheduler 仍 true）
+PASS G3-5 摘要区分原件哈希与恢复变更哈希
+PASS G3-6 旧 Token/会话清除数量入摘要
+PASS G3-7 恢复库 Token 表为空（不复活已吊销凭据）
+PASS G3-8 管理员账号保留（需 admin_init 重置密码后登录）
+== G4 实际启动恢复实例：运行时证明无调度/外发/旧凭据 ==
+PASS G4-1 恢复实例真实启动（healthz 可达）
+PASS G4-2 旧备份签发的 Token 被运行实例拒绝（401）
+PASS G4-3 启动日志声明调度已按配置暂停（运行时证据，非源码字符串）
+PASS G4-4 启动日志无调度启动痕迹
+== G5 恢复实例不产生调度/外发痕迹（运行后复检） ==
+PASS G5-1 启动期间 fetch_logs 空（无调度抓取）
+PASS G5-2 启动期间 push_logs 空（无外发）
+
+==== G 组恢复后安全状态：17 PASS / 0 FAIL ====
+== H1 来源测试入口：私网 URL 被业务入口拒绝（零 HTTP 调用） ==
+PASS H1-1 业务入口拒绝回环地址
+PASS H1-2 拒绝路径零 HTTP 调用
+PASS H1-3 云元数据地址被拒绝（不真实访问）
+== H2 RSS 抓取入口：私网 URL 拒绝 ==
+PASS H2-1 抓取入口拒绝回环
+PASS H2-2 零 HTTP 调用
+== H3 受控抓取：重定向逐跳校验 + 大小上限 ==
+PASS H3-1 重定向到内网被逐跳校验拦截
+PASS H3-2 拦截时未发起第二跳请求
+PASS H3-3 响应超 8MB 被拒绝
+== H4 用途授权隔离：AI 网关白名单不扩大到 RSS/媒体 ==
+PASS H4-1 ai_gateway 白名单不放行 rss 用途
+PASS H4-2 ai_gateway 用途按显式授权放行（合法内网网关）
+== H5 媒体代理入口：白名单外拒绝 + 重定向内网拒绝 ==
+PASS H5-1 白名单外主机 → 400
+PASS H5-2 私网地址 → 400（域名白名单+IP 校验双重防护）
+PASS H5-3 twimg 302 到内网 → 拒绝（不跟随）
+PASS H5-4 第二跳内网请求未发出
+== H6 报告交付入口：受控目录（拒绝绝对路径/穿越） ==
+PASS H6-1 绝对路径 → 待人工 + 拒绝说明
+PASS H6-2 相对路径穿越 → 拒绝
+PASS H6-3 受控相对路径 → 正常交付流程
+== H7 企微附件 webhook 出站校验 ==
+PASS H7-1 私网 webhook → 业务拒绝（errcode 90002）
+PASS H7-2 拒绝路径零 HTTP 调用
+PASS H7-3 非 https webhook → 拒绝
+== H8 代理边界：低信任用途配代理须显式受控出口 ==
+PASS H8-1 未声明 trusted_proxy → 代理路径拒绝
+PASS H8-2 显式受控出口 → 放行（代理侧策略由管理员负责，文档已注明局限）
+
+==== H 组安全辅助函数接入实际业务：22 PASS / 0 FAIL ====
+== I1 固定反例：首条保持不变，只在第二条新增 ==
+PASS I1-1 首轮入库 2 条
+PASS I1-2 首条不变+第二条新增 → 仍发现新条目（反例闭合）
+PASS I1-3 A 未重复入库（仍 1 条）
+PASS I1-4 NEW 已入库
+== I2 置顶条目在首位（真实 RSS 场景） ==
+PASS I2-1 置顶未变 + 中部新增 → 不漏采
+== I3 入库失败不推进位点，重跑补齐不重复 ==
+PASS I3-1 入库异常时位点未推进
+PASS I3-2 重跑补齐（X1+X2 共 2 条）
+PASS I3-3 位点在成功轮推进
+== I4 重跑整轮幂等（零重复） ==
+PASS I4-1 相同 feed 重跑 → 0 新增
+PASS I4-2 数据不重复
+== I5 来源改名：不重复入库且归属不变（真实 sid 夹具） ==
+PASS I5-1 改名后仅新增条目入库（旧条目不重复）
+PASS I5-2 归属完整（source_id 下 3 条）
+PASS I5-3 无重复条目
+== I6 新条目在首位（原测试场景仍有效） ==
+PASS I6-1 首位新增 → 正常入库
+
+==== I 组 RSS 漏采：14 PASS / 0 FAIL ====
+== J1 固定场景：3 X + 1 RSS 全启用，RSS 抓取异常 ==
+PASS J1-1 来源总数 = X+RSS = 4
+PASS J1-2 启用数 = 4（异常源仍计入启用）
+PASS J1-3 健康状态 = partial_error（X 成功不掩盖 RSS 失败）
+PASS J1-4 RSS 侧 error 计数 = 1
+PASS J1-5 RSS 逐源 state=error
+== J2 未运行源显示 unknown（不假正常） ==
+PASS J2-1 启用但无抓取记录 → state=unknown
+PASS J2-2 unknown 不计入正常
+== J3 停用源：disabled，不计健康、不计启用 ==
+PASS J3-1 停用源 state=disabled
+PASS J3-2 停用不计入启用数（6 源 5 启用：3正常+1未运行+1停用 X +1 RSS）
+PASS J3-3 disabled 独立计数
+== J4 全部异常 → error；未运行 → unknown 聚合 ==
+PASS J4-1 全部启用源异常 → error（启用 3 全失败）
+PASS J4-2 部分异常 → partial_error（RSS 失败依旧被保留）
+== J5 推送统计：真实/模拟分列，模拟不冒充成功率 ==
+PASS J5-1 仅模拟 → real_total=0
+PASS J5-2 仅模拟 → real_rate=None（无真实样本，不是 100%）
+PASS J5-3 模拟单列
+PASS J5-4 混合：真实分母=2（不含模拟）
+PASS J5-5 真实成功率按真实分母（1/2=50%）
+PASS J5-6 ok 兼容字段仍含模拟（旧口径不变）
+== J6 API 与内部口径一致 + 窗口独立 ==
+PASS J6-1 API sources 与内部一致
+PASS J6-2 API 含真实成功率字段
+PASS J6-3 '今日'与'近24h'两个窗口独立存在（today 与 cnt24 不强行相等）
+PASS J6-4 前端契约字段齐备（total/enabled/health/items.state）
+
+==== J 组首页统计和来源健康：22 PASS / 0 FAIL ====
+== C1 AI 首败进入可重试集合 ==
+PASS C1-1 error且retries<2 可重试
+== E1 批量删除保护收藏 ==
+PASS E1-1 收藏不被批量删除
+PASS E1-2 非收藏正常删除
+== F1 来源统计键 ==
+PASS F1-1 X 源 24h 计数（无@前缀）
+PASS F1-2 RSS 源 24h 计数（含RSS:前缀）
+PASS F1-3 总来源数含 X 与 RSS
+== B6 RSS 跟随全局读统一字段 ==
+PASS B6-1 读取 fetch.interval_minutes
+PASS B6-2 无 fetch 字段回退 15
+PASS B6-3 空配置回退 15
+== C9 IOC 导出建议（静态） ==
+PASS C9-1 导出模板不含'优先封禁'建议
+PASS C9-2 导出模板区分 CVE 与封禁指标
+
+==== 第一批回归测试：11 PASS / 0 FAIL ====
+== 场景1 默认法国/实例日本 ==
+PASS S1-1 日本情报进入日本实例投递
+PASS S1-2 法国默认规则未拦截日本投递
+== 场景2 超 2000 候选不饥饿 ==
+PASS S2-1 最旧合格记录第一轮即处理
+PASS S2-2 五轮后全量建投递
+== 场景3 摘要上限 8，剩余 2 条后续发送 ==
+PASS S3-1 第一轮摘要后剩余 2 条待发送
+PASS S3-2 第二轮补发剩余 2 条
+== 场景4 A 成功 B 失败，只重试 B ==
+PASS S4-1 A 成功
+PASS S4-2 B 失败进入等待重试
+PASS S4-3 B 重试成功
+PASS S4-4 A 未被重复发送
+== 场景5 模拟后转真实，真实资格仍在 ==
+PASS S5-1 模拟独立记录（模拟成功）
+PASS S5-2 转真实后真实发送成功
+== 场景6 实例身份稳定性 ==
+PASS S6-1 改名/排序身份不变
+PASS S6-2 删除重建不误继承
+== 场景7 新实例不补发历史；显式补发按范围 ==
+PASS S7-1 新实例默认不补发历史（旧推文零投递）
+PASS S7-2 历史候选可预览（时间窗内）
+PASS S7-3 显式执行按 limit 3
+== 场景8 暂停恢复/规则快照 ==
+PASS S8-1 暂停期间不创建投递
+PASS S8-2 重试/重发使用规则快照不静默改义
+== 场景9 原子领取防重复 ==
+PASS S9 并发双领仅一个成功
+== 场景10 退避与永久失败 ==
+PASS S10-1 可重试错误进入等待重试
+PASS S10-2 无效配置→永久失败停止自动重试
+== 场景11 崩溃恢复与结果不明 ==
+PASS S11-1 租约过期被识别
+PASS S11-2 落库前崩溃 → 结果不明
+PASS S11-3 人工重试后恢复
+== 场景12 迁移幂等，不伪造历史成功 ==
+PASS S12-1 迁移重复执行不重复登记
+PASS S12-2 迁移不创建投递（不伪造历史成功）
+== 场景13 报告分项交付 ==
+PASS S13-1 附件失败 → 部分已推送（不被正文成功掩盖）
+PASS S13-2 分项明细含失败附件
+PASS S13-3 全失败保持原状态并带 error
+PASS S13-4 仅模拟不推进真实完成
+PASS S13-5 部分实例成功 → 部分已推送
+PASS S13-6 补发跳过已成功实例
+== 场景14 待人工重新验收 + 并发推送 ==
+PASS S14-1 待人工可重新交付并重新验收
+PASS S14-2 重复推送被原子领取拒绝
+== 场景15 删除入口保护 ==
+PASS S15-1 保护集含报告引用与收藏
+PASS S15-2 批量删除跳过保护对象
+PASS S15-3 cleanup 同样保护
+== 场景16 投递状态独立可见 ==
+PASS S16 状态分布独立可见（成功/模拟/重试/永久/不明）
+
+==== 第二批验收测试：39 PASS / 0 FAIL ====
+== T1 独立发送尝试记录 + 令牌 ==
+PASS T1-1 尝试记录存在且含开始/结束/结果
+PASS T1-2 含下次重试时间
+PASS T1-3 尝试历史保留（不被覆盖）
+== T2 令牌：旧工作者不可覆盖新状态 ==
+PASS T2-1 令牌不匹配写回被拒
+PASS T2-2 令牌匹配写回成功
+PASS T2-3 终态不可覆盖
+== T3 报告分项补发（正文成功仅补失败附件） ==
+PASS T3-1 附件失败 → 部分已推送
+PASS T3-2 补发仅失败附件（审阅.html）
+PASS T3-3 正文未重复发送
+== T4 模拟/真实切换三态 ==
+PASS T4-1 真实成功
+PASS T4-2 转模拟：独立模拟成功记录
+PASS T4-3 已有真实成功不被模拟覆盖
+PASS T4-4 模拟记录转回待发送（真实资格恢复）
+PASS T4-5 转回真实后补发成功
+PASS T4-6 发送中租约过期 → 结果不明（模拟不掩盖）
+== T5 enabled_since 稳定性 ==
+PASS T5-1 改名/重复调用不刷新边界
+== T6 已过滤随规则变更重新评估 ==
+PASS T6-1 未命中 → 已过滤
+PASS T6-2 已过滤转回待重新评估
+PASS T6-3 新规则下命中并投递
+== T7 回退兼容标记语义 ==
+PASS T7-1 已过滤 → pushed=1（回退旧代码不重发）
+PASS T7-2 仅待发送不置 pushed（回退后旧代码可接管补发）
+== T8 runtime.json 并发保存 ==
+PASS T8-1 并发保存无异常且数据完整
+== S-A X 全失败但 RSS 正常入库 ==
+PASS S-A0 X 异常可复现
+PASS S-A1 X 段独立 try-except（不阻断 RSS）
+== S-B/S-C 位点与 RSS 全扫 ==
+PASS S-C1 首条不变仍发现后续新增
+PASS S-D1 来源改名后不重复入库且归属不变
+== S-B 位点后置（入库失败不推进） ==
+PASS S-B1 入库异常时位点未推进
+== S-E 长正文完整保存 + 独立截断 ==
+PASS S-E1 全文保存（≥10000）
+PASS S-E2 内容哈希已记录
+PASS S-E3 模型输入独立截断（ai 层 1200）
+== S-F 配置生效 ==
+PASS S-F1 timeout 配置读取
+PASS S-F2 timeout/retries 映射正确
+PASS S-F3 首抓上限不再被 max_items 压制
+PASS S-F4 RSS 全局频率读统一字段
+== S-G 严格校验 ==
+PASS S-G1 空 JSON 判不可信
+PASS S-G2 缺 assessment 判不可信
+PASS S-G3 非法枚举纠正+越界置信度钳制
+PASS S-G3b severity 归 info/confidence 归 100
+PASS S-G4 字符串不逐字符拆分（单值容错）
+PASS S-G5 修复过程被标注
+== S-H 批量分类单一身份 ==
+PASS S-H1 序号不误写、重复忽略、未知忽略
+== S-I 后台 AI 任务 ==
+PASS S-I1 任务可提交
+PASS S-I2 原子领取
+PASS S-I3 二次领取被拒（租约内）
+PASS S-I4 进度/分计可查询
+PASS S-I5 处理中租约过期可恢复领取
+== S-J 人工修订保护 ==
+PASS S-J1 人工修订跳过自动研判
+PASS S-J2 人工有效值保留
+== S-K 前端 org 解析（静态） ==
+PASS S-K1 org 数组优先、仅字符串才回退解析
+
+==== 第三批验收测试：49 PASS / 0 FAIL ====
+PASS M1 A成功B待重试 → pushed=1（旧代码不会重发）
+PASS M1b 旧查询不选中（B 的待重试在降级后丢失）
+PASS M2 仅模拟 → pushed=1（旧代码不会补发真实）
+PASS M2b 旧查询不选中（真实资格在降级后丢失）
+PASS M3 全部过滤 → pushed=1（旧代码不会重发）
+PASS M3b 旧查询不选中
+PASS M4 永久失败 → pushed=1
+PASS M4b 旧查询不选中（失败不再重试）
+PASS M5 结果不明 → pushed=1
+PASS M5b 旧查询不选中（不明不自动重发）
+PASS M6 仅待发送 → pushed=0（旧代码可接管补发）
+PASS M6b 旧查询选中该条
+
+=== 场景矩阵 ===
+场景              A状态       B状态       pushed  旧查询命中
+A成功B待重试         成功        待发送       1       False
+仅模拟             模拟成功      -         1       False
+全部过滤            已过滤       已过滤       1       False
+永久失败            永久失败      -         1       False
+结果不明            结果不明      -         1       False
+仅待发送            待发送       -         0       True
+
+=== 降级结论（实测） ===
+- 旧版本以 tweets.pushed 为唯一门控：
+  · 任一终态（成功/模拟/永久失败/结果不明/已过滤）→ pushed=1 → 旧代码**不会重发**；
+  · 仅"待发送"（尚无终态）→ pushed=0 → 旧代码会接管补发。
+- 因此降级后的实际行为：
+  · A 成功、B 待重试：B **丢失**（不会重发）——这是降级损失，不是无损；
+  · 仅模拟成功：真实资格 **丢失**；
+  · 永久失败/结果不明：**停止处理**（符合预期，但旧代码无"人工重试"入口）；
+  · 全部过滤：行为一致（不应重发）。
+- 结论修正：此前"B 会被旧代码重发"的说法错误——实际是不重发（丢失）。
+  降级前必须导出未完成/不明任务，按 §降级流程人工处理。
+
+==== T7 矩阵：12 PASS / 0 FAIL ====
+== A1 任务与成员持久化 ==
+PASS A1-1 任务落库
+PASS A1-2 重启后任务仍存在
+== A2 原子领取 + owner token ==
+PASS A2-1 首次领取成功
+PASS A2-2 租约内二次领取被拒
+PASS A2-3 租约过期可被接管
+== A3 有界并发（同任务只能一个 worker） ==
+PASS A3-1 四线程并发仅一个成功
+== A4 容量限制 ==
+PASS A4-1 可查询活跃任务数（供路由限流）
+== A5 模型成功但落库失败 ==
+PASS A5-1 模型调用与落库失败分开计数
+PASS A5-2 任务状态为失败/部分
+== A6 人工修订 vs 迟到 AI 结果 ==
+PASS A6-1 直接写库会覆盖人工值（记录限制）
+PASS A6-2 引擎路径阻止自动研判覆盖
+PASS A6-3 约束：update_ai 无版本检查（B 组已闭合：引擎路径全部改走 apply_ai_result/update_ai_guarded，raw update_ai 仅剩低层管理写）
+== A7 修复/截断结果状态 ==
+PASS A7-1 修复/截断被标注为 issues
+PASS A7-2 空结果 fatal
+PASS A7-3 ai_repair 字段可供下游区分
+
+==== AI 任务/人工修订：15 PASS / 0 FAIL ====
+== SSRF 目标校验 ==
+PASS 回环 IPv4 拦截
+PASS 私网 IPv4 拦截
+PASS IPv6 回环拦截
+PASS 链路本地（云元数据）拦截
+PASS file 协议拦截
+PASS gopher 协议拦截
+PASS IPv4 映射 IPv6 拦截
+PASS 管理员白名单例外（内网 AI 网关）
+PASS 同一地址在 RSS 用途仍被拒（例外不共享）
+
+== 路径越界 ==
+PASS 路径拦截：上跳穿越
+PASS 路径拦截：盘符
+PASS 路径拦截：绝对路径
+PASS 路径拦截：UNC
+PASS 路径拦截：编码变体(..%2f)
+PASS 合法相对路径通过
+
+== 报告文件（纯文件名约束） ==
+PASS 合法交付文件解析
+PASS 文件名拦截：../evil.docx
+PASS 文件名拦截：C:\evil.docx
+PASS 文件名拦截：sub/dir.docx
+
+== 重定向逐跳校验（禁自动跟随） ==
+PASS 重定向到内网被拦截
+PASS 响应大小限制
+
+==== 安全防护测试：21 PASS / 0 FAIL ====
+== A1 未初始化 ==
+PASS A1-1 未初始化时接口返回 503
+PASS A1-2 未初始化无匿名放行
+== A2 匿名访问被拒 ==
+PASS A2-1 匿名读被拒 401
+PASS A2-2 匿名写被拒 401
+== A3 管理员 Token ==
+PASS A3-1 管理员 Token 可读
+PASS A3-2 管理员可列 Token
+PASS A3-3 只读 Token 可读
+PASS A3-4 只读 Token 不能改配置（403）
+PASS A3-5 只读 Token 不能删除数据（403）
+PASS A3-6 只读 Token 不能触发发送（403）
+PASS A3-7 只读 Token 不能补发（403）
+PASS A3-8 只读 Token 不能管理 Token（403）
+PASS A3-9 写 Token 可改配置
+PASS A3-10 写 Token 不能管理 Token（403）
+== A4 无效/吊销 Token ==
+PASS A4-1 无效 Token 401
+PASS A4-2 非本系统 Token 401
+PASS A4-3 吊销后 401
+== A5 登录 / CSRF / 会话 ==
+PASS A5-1 错误密码 401
+PASS A5-2 登录成功
+PASS A5-3 登录返回 CSRF token
+PASS A5-4 Cookie 为 HttpOnly
+PASS A5-5 会话可查询身份
+PASS A5-6 会话写请求缺 CSRF → 403
+PASS A5-7 带正确 CSRF 可写
+PASS A5-8 错误 CSRF → 403
+== A6 会话过期 ==
+PASS A6-1 过期会话被拒 401
+== A7 登出 ==
+PASS A7-1 登出成功
+PASS A7-2 登出后会话失效
+== A8 健康检查 ==
+PASS A8-1 匿名可访问健康检查
+PASS A8-2 健康检查最小信息（不含路径/版本/配置）
+== A9 认证失败不回退匿名 ==
+PASS A9-1 空 Bearer 仍 401
+PASS A9-2 伪造会话 401
+
+==== 认证授权：32 PASS / 0 FAIL ====
+== 准备数据（含 WAL 未检查点写入） ==
+  备份前计数: {'tweets': 2, 'deliveries': 1, 'msgs': 1, 'attempts': 1, 'ai_tasks': 1, 'refs': 1}
+PASS W1 WAL 模式已启用（备份含未检查点数据）
+== 在线备份（SQLite backup API） ==
+PASS W2 备份目录与 manifest 生成
+PASS W3 SQLite 备份完整性 ok
+PASS W4 manifest 含代码版本/schema/哈希
+PASS W5 manifest 标注含密钥（访问保护提示）
+  备份耗时 0.10s，文件 4 个
+== 恢复演练（隔离目录，不覆盖现有） ==
+PASS W6 恢复哈希校验通过
+PASS W7 情报数量一致
+PASS W8 投递/消息/尝试一致
+PASS W9 AI 任务一致
+PASS W10 报告引用一致
+PASS W11 来源表一致
+PASS W12 恢复后人工修订保留
+PASS W13 恢复目录含 runtime/report_tasks 路径
+== 降级导出（暂停调度后） ==
+PASS W14 可导出未完成/不明任务
+== 损坏备份检测 ==
+PASS W15 损坏备份被识别
+
+==== 备份恢复演练：15 PASS / 0 FAIL ====
+== L1-1 AI 开始 → 用户修改 → AI 返回 ==
+PASS L1-1a 迟到结果不覆盖人工值
+PASS L1-1b 返回未被应用+原因
+PASS L1-1c 冲突写入审计
+== L1-2 两个 AI 任务乱序返回 ==
+PASS L1-2a 先到结果生效
+PASS L1-2b 后到结果不覆盖
+PASS L1-2c 后到结果被拒（版本已推进）
+== L1-3 原文更新后旧分析返回 ==
+PASS L1-3a 版本因原文更新推进
+PASS L1-3b 旧分析不应用
+PASS L1-3c 当前有效值未被旧结果写入
+== L1-4 人工撤销覆盖（显式重新分析） ==
+PASS L1-4a 人工保护生效
+PASS L1-4b 显式清除保护
+PASS L1-4c 清除后新结果可应用
+== L1-5 冲突不改变当前值且不自动重试 ==
+PASS L1-5a 每次冲突都留审计（2 条）
+PASS L1-5b 当前值仍为人工值
+== L2 完整性分级 ==
+PASS L2-1 严格有效 → verified
+PASS L2-2 仅枚举纠正 → normalized
+PASS L2-3 修复/截断 → partial
+PASS L2-4 缺必需字段 → partial
+PASS L2-5 无效 → invalid
+PASS L2-6 verified 允许且不标注
+PASS L2-7 partial 允许但必须标注
+PASS L2-8 invalid 禁止下游
+PASS L2-9 人工审核（绑定当前版本）后视为 verified
+PASS L2-9b 无版本绑定审核保守 stale 不升级
+== L2 下游一致性（推送/报告共用同一函数） ==
+PASS L2-10 推送调用统一判断
+PASS L2-11 报告线索包调用统一判断
+PASS L2-12 线索包含 integrity 分级
+PASS L2-13 线索包标注必须人工
+== 出站例外：按用途白名单 ==
+PASS L2/OUT-1 RSS 用途默认禁止私网
+PASS OUT-2 管理员授权的 AI 网关可访问
+PASS OUT-3 同一内网地址在 RSS 用途仍被拒（不共享例外）
+PASS OUT-4 RSS 访问其它内网地址被拒
+PASS OUT-5 低信任用途走代理需 trusted_proxy 声明
+PASS OUT-6 声明受控出口后允许
+== 认证关闭约束 ==
+[auth] 拒绝 auth.enabled=false：非测试模式（需 XINTEL_TEST=1），认证保持启用
+PASS AUTH-1 非测试模式拒绝关闭认证
+PASS AUTH-2 测试模式允许关闭
+PASS AUTH-3 Token 管理仅 admin
+== 进程模型声明 ==
+PASS PROC-1 调度为进程内单实例（无跨进程锁）
+PASS PROC-2 单进程支持范围已文档化
+
+==== 第五批验收：39 PASS / 0 FAIL ====
+== 构造待恢复环境（含各类状态 + 附件 + 生产态配置） ==
+  备份前: {'tweets': 5, 'deliveries': 4, 'msgs': 3, 'attempts': 3, 'tasks': 1, 'refs': 1, 'users': 1, 'tokens': 1}
+== R1 一致性备份 ==
+PASS R1-1 备份完整性 ok
+PASS R1-2 manifest 含 commit/schema/哈希
+  备份耗时 0.11s
+== R2 恢复到隔离目录 ==
+PASS R2-1 恢复哈希校验通过
+PASS R2-2 恢复耗时 < 60s
+PASS R2-1b 原件一致性 verify_original ok
+PASS R2-3 情报数一致
+PASS R2-4 投递/消息/尝试一致
+PASS R2-5 AI 任务/引用一致
+== R3 关键关联与附件哈希 ==
+PASS R3-1 人工修订值保留
+PASS R3-2 分析版本保留
+PASS R3-3 完整性分级保留
+PASS R3-4 任务状态（成功/结果不明/发送中）保留
+PASS R3-5 投递实例 ID 完整
+PASS R3-6 报告附件已恢复
+PASS R3-7 附件哈希一致
+PASS R4-1 管理员凭据随备份恢复
+PASS R4-2 旧 Token 已全部清除（不复活已吊销凭据）
+PASS R4-3 旧会话已全部清除
+== R4 恢复后不外发（应用启动行为） ==
+PASS R4-4 恢复后仍保有 发送中/结果不明/待发送（不自动清零/重发）
+PASS R4-5a 恢复副本 scheduler.enabled=false
+PASS R4-5b 恢复副本 outbound.enable=false
+PASS R4-5c 备份原件配置未被改动
+PASS R4-5d 摘要区分原件哈希与恢复变更
+PASS R4-5e 摘要记录 Token/会话清除数量
+PASS R4-5 启动调度受配置控制（可关闭）
+PASS R4-7 dispatch 遵守 outbound.enable
+PASS R4-8 报告推送遵守 outbound.enable
+PASS R4-9 调度暂停开关存在
+PASS R4-6 可导出恢复后的待处理任务
+PASS R5-1 事件相关表存在
+
+=== 演练耗时：备份 0.11s / 恢复 0.04s / 总计 0.26s ===
+=== 限制：恢复后需人工清理 auth_sessions、复核 auth_tokens 吊销状态 ===
+=== 2026-11-09 G 组修订：Token/会话恢复时自动清除；调度/外发恢复时强制关闭 ===
+
+==== 恢复演练：30 PASS / 0 FAIL ====
+== E1 事件创建：稳定 ID / 版本 / 证据关联 ==
+PASS E1-1 稳定事件 ID（evt_ 前缀）
+PASS E1-2 初始版本 v1
+PASS E1-3 事件可查
+PASS E1-4 证据关联
+PASS E1-5 版本历史含 create
+== E2 共享标识仅作候选，不自动合并 ==
+PASS E2-1 共享 CVE/IP/组织名 → 候选
+PASS E2-2 候选明确 auto_merge=False
+PASS E2-3 候选未自动写入证据
+== E3 转载不冒充独立证据 ==
+PASS E3-1 证据添加成功且版本推进
+PASS E3-2 独立证据仍为 1（转载不计数）
+PASS E3-3 同推文重复关联被拒
+== E4 合并 / 拆分 / 解除（可追溯） ==
+PASS E4-1 合并成功
+PASS E4-2 源事件归档
+PASS E4-3 目标事件含源事件全部证据
+PASS E4-4 合并留痕
+PASS E4-5 拆分生成新事件
+PASS E4-6 拆分后原事件减少 1 条
+PASS E4-7 新事件有 1 条
+PASS E4-8 解除关联成功
+PASS E4-9 解除留痕
+== E5 审核（版本绑定，旧版本不能批准新内容） ==
+PASS E5-1 当前版本可审核
+PASS E5-2 审核记录含版本/操作者
+PASS E5-3 内容变化推进版本
+PASS E5-4 旧版本不能批准新内容
+PASS E5-5 新版本可重新审核
+PASS E5-6 同版本重复审核被拒
+PASS E5-7 审核队列可查（不含已审当前版本）
+== E6 导出：JSON/CSV 结构、类型、公式注入、分级 ==
+PASS E6-1 schema_version 存在
+PASS E6-2 含事件版本/状态/时间
+PASS E6-3 证据含来源与时间
+PASS E6-4 含核验/完整性状态
+PASS E6-5 partial 逐条标注且不可作结论
+PASS E6-6 invalid 不混入（无 invalid 证据）
+PASS E6-7 CVE 独立分组
+PASS E6-8 受害资产与攻击指标分离
+PASS E6-9 confidence 为整数类型
+PASS E6-10 不泄漏凭据/路径
+PASS E6-11 时间线 CSV 有表头
+PASS E6-12 CSV 公式注入被转义
+PASS E6-13 CSV 行数=证据数
+PASS E6-14 CSV 含完整性列
+PASS E6-15 IOC CSV 含 kind/role
+PASS E6-16 IOC JSON 与事件 JSON 口径一致
+== E7 引用保护（事件证据不可删） ==
+PASS E7-1 事件证据进保护集
+PASS E7-2 批量删除跳过事件证据
+PASS E7-3 cleanup 同样保护
+
+==== 第六批验收：46 PASS / 0 FAIL ====
+== W1 候选：人工/去重/决定/状态/乐观锁 ==
+PASS W1-1 人工建候选 200
+PASS W1-2 稳定 ID 前缀
+PASS W1-3 规范化去重合并
+PASS W1-4 合并后 tweet_ids 并集
+PASS W1-5 乐观锁编辑成功
+PASS W1-6 过期版本 409
+PASS W1-7 暂缓决定
+PASS W1-8 恢复采纳（状态回待处理）
+PASS W1-9 不采用
+PASS W1-10 不采用可删
+PASS W1-11 AI 重评不覆盖人工决定
+PASS W1-12 标记线索有更新
+== W2 模板：白名单变量/发布不可变/复制/停用 ==
+PASS W2-1 建模板 200
+PASS W2-2 发布 v1
+PASS W2-3 缺失变量提示
+PASS W2-4 未定义占位报告（不执行）
+PASS W2-5 发布 v2
+PASS W2-6 v1 快照不可变
+PASS W2-7 复制模板
+PASS W2-8 停用
+PASS W2-9 read 角色不能建模板
+PASS W2-10 write 角色不能建模板
+PASS W2-11 同名拒绝
+== W3 候选转报告：单事务/幂等/固定模板版本 ==
+PASS W3-1 转换成功
+PASS W3-2 报告任务创建
+PASS W3-3 候选状态已转报告
+PASS W3-4 文档固定模板版本 v1
+PASS W3-5 重复转换幂等
+PASS W3-6 不产生重复报告任务
+PASS W3-7 旧报告模板版本仍为 1
+== W4 文档：修订/恢复/审阅绑定 ==
+PASS W4-1 文档详情+权限
+PASS W4-2 受控修改成修订
+PASS W4-3 提交审阅固定修订
+PASS W4-4 待审阅可审核
+PASS W4-5 审核绑定提交时修订
+PASS W4-6 新内容不继承旧批准（review_rev 不随内容推进）
+PASS W4-7 恢复形成新修订
+PASS W4-8 历史未被破坏
+PASS W4-9 只读用户拒绝恢复
+PASS W4-10 无 ACL 的 write 角色默认只读
+== W5 文档 ACL ==
+PASS W5-1 授予写权限
+PASS W5-2 授权后可写
+PASS W5-3 降权后拒绝
+PASS W5-4 默认权限 read 可读
+== W6 Agent 契约：令牌/范围/幂等/冲突 ==
+PASS W6-1 建 Agent Token（admin）
+PASS W6-2 范围限定存储
+PASS W6-3 Agent 读取文档
+PASS W6-4 Agent 不能建 Token
+PASS W6-5 Agent 不能访问模板接口（401/403）
+PASS W6-6 范围外文档 403
+PASS W6-7 受控修改成功
+PASS W6-8 client_id 幂等
+PASS W6-9 幂等不重复插入
+PASS W6-10 base_rev 过期 409
+PASS W6-11 零匹配 422
+PASS W6-12 多匹配建议 422
+PASS W6-13 建议创建
+PASS W6-14 接受建议应用
+PASS W6-15 建议内容已入正文
+PASS W6-16 迟到建议冲突（不覆盖人工修改）
+PASS W6-17 人工修改保留
+PASS W6-18 emoji/中文锚点修改
+== W7 Word 导出（pandoc 可用时真实转换） ==
+PASS W7-1 导出任务受理
+PASS W7-2 导出完成
+PASS W7-3 OOXML 部件完整
+PASS W7-4 标题入文
+PASS W7-5 中文正文
+PASS W7-6 中文文件名安全
+PASS W7-7 同内容缓存命中
+PASS W7-8 不存在导出 404
+== W8 删除保护 + 汇总 ==
+PASS W8-1 候选引用进入保护集
+PASS W8-2 批量删除跳过候选引用
+PASS W8-3 汇总计数为服务端聚合
+PASS W8-4 stats 带 writing 汇总
+== W9 WS ticket 一次性 ==
+PASS W9-1 ticket 可用一次
+PASS W9-2 二次使用失效
+== W10 成员管理 ==
+PASS W10-1 建成员
+PASS W10-2 重名拒绝
+PASS W10-3 改角色
+PASS W10-4 降权后 write 被拒（会话角色生效）
+
+==== 工作台后端验收：80 PASS / 0 FAIL / SKIP 0 ====
+[scheduler] 已按配置暂停（scheduler.enabled=false）——恢复/演练场景不应自动抓取与外发
+[doccollab] 协作服务已启动（/ws/docs）
+服务就绪：http://127.0.0.1:45107
+== C0 准备 ==
+PASS C0-1 初始正文=模板发布版
+== C1 连接鉴权 ==
+[ws] reject: no principal（无会话/ticket/token）
+ERROR:    ASGI callable returned without completing handshake.
+PASS C1-1 无凭据 WS 被拒
+PASS C1-2 恶意 Origin 被拒
+== C2 连接即同步初始内容（仅初始化一次） ==
+[ws] accept doc_fa6d73e02f2e write boss
+PASS C2-1 客户端收到初始正文
+[ws] accept doc_fa6d73e02f2e write boss
+PASS C2-2 第二客户端同内容（无重复初始化）
+PASS C2-3 更新日志仍为初始少量行
+== C3 两客户端并发编辑收敛（N01/N05） ==
+PASS C3-1 B 看到 A 的修改
+PASS C3-2 A 看到 B 的修改
+PASS C3-3 双端收敛一致
+PASS C3-4 服务端文本=收敛结果
+== C4 持久化确认与修订快照 ==
+PASS C4-1 服务端 awareness 含 saved_seq
+PASS C4-2 修订快照生成（save）
+== C5 只读连接：服务端丢弃其更新 ==
+[ws] accept doc_fa6d73e02f2e read reader
+PASS C5-1 只读端修改未进服务端
+PASS C5-2 其他客户端不受影响
+== C6 Agent 活动房间受控修改 → 实时广播 ==
+PASS C6-1 Agent 活动房间修改成功
+PASS C6-2 修改广播到在线客户端
+PASS C6-3 双端再次收敛
+== C7 断开重连：内容保留、不重复初始化（N02） ==
+PASS C7-1 房间清空后离线回放一致
+[ws] accept doc_fa6d73e02f2e write boss
+PASS C7-2 重连后内容完整恢复
+PASS C7-3 重连后编辑正常落库
+PASS C7-4 无重复初始化
+
+==== 实时协作验收：21 PASS / 0 FAIL ====
+== M1 旧库迁移（模拟升级前库）+ 可重复 ==
+PASS M1-1 新表全部重建
+PASS M1-2 旧数据保留
+PASS M1-3 重复迁移幂等（无异常）
+== M2 备份恢复：新表数据进入备份 ==
+PASS M2-1 备份完整性 ok
+PASS M2-2 备份含模板/候选/文档/CRDT 日志
+PASS M2-3 恢复校验通过
+PASS M2-4 恢复后候选/文档/更新一致
+PASS M2-5 恢复后修订正文保留
+== M3 AI 推荐任务链（确定性模型替身，N07） ==
+PASS M3-1 推荐任务完成
+PASS M3-2 AI 候选已创建
+PASS M3-3 重复推荐去重（候选数不变）
+PASS M3-4 模型失败→任务失败留痕
+PASS M3-5 重试恢复
+== M4 汇总聚合（首页口径） ==
+PASS M4-1 候选/文档/模板计数来自全库
+
+==== 迁移/备份/AI推荐验收：14 PASS / 0 FAIL ====
+
+===== tests/test_isolation.py =====
+
+===== tests/test_entry_exit.py =====
+
+===== tests/test_batch7_b.py =====
+
+===== tests/test_batch7_c.py =====
+
+===== tests/test_batch7_d.py =====
+
+===== tests/test_batch7_e.py =====
+
+===== tests/test_batch7_f.py =====
+
+===== tests/test_batch7_g.py =====
+
+===== tests/test_batch7_h.py =====
+
+===== tests/test_batch7_i.py =====
+
+===== tests/test_batch7_j.py =====
+
+===== tests/test_batch1.py =====
+
+===== tests/test_batch2.py =====
+
+===== tests/test_batch3.py =====
+
+===== tests/test_t7_matrix.py =====
+
+===== tests/test_batch4_ai_task.py =====
+
+===== tests/test_batch4_security.py =====
+
+===== tests/test_batch4_auth.py =====
+
+===== tests/test_batch4_backup.py =====
+
+===== tests/test_batch5.py =====
+
+===== tests/test_batch5_restore.py =====
+
+===== tests/test_batch6_events.py =====
+
+===== tests/test_writing_workbench.py =====
+
+===== tests/test_writing_collab.py =====
+
+===== tests/test_writing_migration.py =====
+
+============================================================
+套件级汇总：
+  [PASS] tests/test_isolation.py
+  [PASS] tests/test_entry_exit.py
+  [PASS] tests/test_batch7_b.py
+  [PASS] tests/test_batch7_c.py
+  [PASS] tests/test_batch7_d.py
+  [PASS] tests/test_batch7_e.py
+  [PASS] tests/test_batch7_f.py
+  [PASS] tests/test_batch7_g.py
+  [PASS] tests/test_batch7_h.py
+  [PASS] tests/test_batch7_i.py
+  [PASS] tests/test_batch7_j.py
+  [PASS] tests/test_batch1.py
+  [PASS] tests/test_batch2.py
+  [PASS] tests/test_batch3.py
+  [PASS] tests/test_t7_matrix.py
+  [PASS] tests/test_batch4_ai_task.py
+  [PASS] tests/test_batch4_security.py
+  [PASS] tests/test_batch4_auth.py
+  [PASS] tests/test_batch4_backup.py
+  [PASS] tests/test_batch5.py
+  [PASS] tests/test_batch5_restore.py
+  [PASS] tests/test_batch6_events.py
+  [PASS] tests/test_writing_workbench.py
+  [PASS] tests/test_writing_collab.py
+  [PASS] tests/test_writing_migration.py
+
+共 25 个套件：25 通过 / 0 失败
+全部套件通过。
+exit=0

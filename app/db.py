@@ -259,8 +259,202 @@ def init_db():
             status TEXT DEFAULT '',
             detail TEXT DEFAULT ''
         );
+
+        -- ============ 报告编写工作台（协作写作） ============
+        -- 模板：元信息与发布版本分离；正文是 kind=template 的协作文档
+        CREATE TABLE IF NOT EXISTS doc_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT DEFAULT '',
+            status TEXT DEFAULT '启用',
+            current_version INTEGER,
+            variables TEXT DEFAULT '[]',
+            agent_notes TEXT DEFAULT '',
+            check_rules TEXT DEFAULT '[]',
+            body_doc_uid TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS template_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            body_md TEXT NOT NULL,
+            variables TEXT DEFAULT '[]',
+            agent_notes TEXT DEFAULT '',
+            check_rules TEXT DEFAULT '[]',
+            changelog TEXT DEFAULT '',
+            published_by TEXT DEFAULT '',
+            published_at TEXT,
+            UNIQUE(template_id, version)
+        );
+        -- 待编写线索候选
+        CREATE TABLE IF NOT EXISTS writing_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cand_uid TEXT UNIQUE,
+            source_type TEXT DEFAULT 'manual',
+            title TEXT NOT NULL,
+            angle TEXT DEFAULT '',
+            origin TEXT DEFAULT '',
+            tweet_ids TEXT DEFAULT '[]',
+            event_uid TEXT DEFAULT '',
+            recommend_reason TEXT DEFAULT '',
+            ai_suggestion TEXT DEFAULT '',
+            human_decision TEXT DEFAULT '',
+            decision_note TEXT DEFAULT '',
+            owner TEXT DEFAULT '',
+            priority INTEGER DEFAULT 3,
+            suggested_priority INTEGER,
+            suggested_template_id INTEGER,
+            materials_todo TEXT DEFAULT '[]',
+            status TEXT DEFAULT '待处理',
+            version INTEGER DEFAULT 1,
+            doc_uid TEXT DEFAULT '',
+            report_task_id INTEGER,
+            evidence_snapshot TEXT DEFAULT '',
+            last_ai_run TEXT DEFAULT '',
+            has_update INTEGER DEFAULT 0,
+            dedup_key TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_wcand_status ON writing_candidates(status);
+        CREATE TABLE IF NOT EXISTS candidate_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cand_uid TEXT NOT NULL,
+            action TEXT DEFAULT '',
+            operator TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ai_recommend_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_type TEXT DEFAULT 'manual',
+            scope_ref TEXT DEFAULT '',
+            status TEXT DEFAULT 'queued',
+            result TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            attempts INTEGER DEFAULT 0,
+            created_by TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        -- 协作文档（报告正文与模板正文共用内核）
+        CREATE TABLE IF NOT EXISTS doc_documents (
+            doc_uid TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            kind TEXT DEFAULT 'report',
+            status TEXT DEFAULT '编辑中',
+            template_id INTEGER,
+            template_version INTEGER,
+            initial_md TEXT DEFAULT '',
+            initialized INTEGER DEFAULT 0,
+            default_permission TEXT DEFAULT 'read',
+            candidate_uid TEXT DEFAULT '',
+            report_task_id INTEGER,
+            source_snapshot TEXT DEFAULT '',
+            review_rev INTEGER,
+            review_decision TEXT DEFAULT '',
+            review_note TEXT DEFAULT '',
+            review_by TEXT DEFAULT '',
+            review_at TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS doc_acl (
+            doc_uid TEXT NOT NULL,
+            principal TEXT NOT NULL,
+            permission TEXT NOT NULL DEFAULT 'read',
+            created_at TEXT,
+            UNIQUE(doc_uid, principal)
+        );
+        -- CRDT 增量日志：协作正文的权威存储（房间重建按 seq 回放）
+        CREATE TABLE IF NOT EXISTS doc_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_uid TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            update_blob BLOB NOT NULL,
+            created_at TEXT,
+            UNIQUE(doc_uid, seq)
+        );
+        -- 业务修订（不可变快照，业务版本唯一事实）
+        CREATE TABLE IF NOT EXISTS doc_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_uid TEXT NOT NULL,
+            rev INTEGER NOT NULL,
+            title TEXT DEFAULT '',
+            body_md TEXT NOT NULL,
+            revision_kind TEXT DEFAULT 'save',
+            base_rev INTEGER,
+            content_hash TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TEXT,
+            UNIQUE(doc_uid, rev)
+        );
+        -- Agent/用户修改建议（锚点精确匹配，逐条接受/拒绝）
+        CREATE TABLE IF NOT EXISTS doc_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_uid TEXT NOT NULL,
+            suggestion_uid TEXT UNIQUE,
+            base_rev INTEGER NOT NULL,
+            agent TEXT NOT NULL,
+            target TEXT DEFAULT '',
+            rationale TEXT DEFAULT '',
+            sources TEXT DEFAULT '[]',
+            patch_kind TEXT DEFAULT 'replace',
+            anchor TEXT DEFAULT '',
+            old_text TEXT DEFAULT '',
+            new_text TEXT DEFAULT '',
+            client_id TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            reviewed_by TEXT DEFAULT '',
+            reviewed_at TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_dsug_doc ON doc_suggestions(doc_uid, status);
+        -- Word 导出任务（捕获修订→转换→产物）
+        CREATE TABLE IF NOT EXISTS doc_exports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_uid TEXT NOT NULL,
+            rev INTEGER NOT NULL,
+            content_hash TEXT DEFAULT '',
+            template_id INTEGER,
+            template_version INTEGER,
+            style_version TEXT DEFAULT '',
+            pandoc_version TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            error TEXT DEFAULT '',
+            missing_images TEXT DEFAULT '[]',
+            file_path TEXT DEFAULT '',
+            file_name TEXT DEFAULT '',
+            sha256 TEXT DEFAULT '',
+            size INTEGER DEFAULT 0,
+            created_by TEXT DEFAULT '',
+            created_at TEXT, finished_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ws_tickets (
+            ticket TEXT PRIMARY KEY,
+            doc_uid TEXT NOT NULL,
+            principal TEXT NOT NULL,
+            permission TEXT NOT NULL DEFAULT 'read',
+            used INTEGER DEFAULT 0,
+            expires_at REAL,
+            created_at TEXT
+        );
+        -- Agent 直接受控修改的幂等记录（client_id 唯一）
+        CREATE TABLE IF NOT EXISTS doc_agent_edits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_uid TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            rev INTEGER,
+            agent TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            created_at TEXT,
+            UNIQUE(doc_uid, client_id)
+        );
         """)
         os.makedirs(os.path.join(DATA_DIR, "report_tasks"), exist_ok=True)
+        os.makedirs(os.path.join(DATA_DIR, "doc_assets"), exist_ok=True)
+        os.makedirs(os.path.join(DATA_DIR, "word_exports"), exist_ok=True)
         # 来源身份：局部唯一索引（同来源内幂等）+ 存量回填（可重复；无法映射的记录留空=待处理）
         try:
             get_conn().execute(
@@ -520,6 +714,10 @@ def batch_tweet_op(ids, op):
            "delete": f"DELETE FROM tweets WHERE id IN ({ph}) AND starred=0"
                      f" AND id NOT IN (SELECT tweet_id FROM report_refs)"
                      f" AND id NOT IN (SELECT tweet_id FROM event_evidence)"
+                     f" AND id NOT IN (SELECT j.value FROM writing_candidates,"
+                     f"   json_each(CASE WHEN substr(writing_candidates.tweet_ids,1,1)='['"
+                     f"   THEN writing_candidates.tweet_ids ELSE '[]' END) j"
+                     f"   WHERE writing_candidates.status IN ('待处理','写作中','暂缓','已转报告'))"
                      f" AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
                      f"   JOIN delivery_msgs m ON m.id=di.msg_id"
                      f"   WHERE m.state IN ('待发送','发送中','等待重试'))"}.get(op)
@@ -540,6 +738,10 @@ def cleanup_old(keep_days):
             "DELETE FROM tweets WHERE starred=0"
             " AND id NOT IN (SELECT tweet_id FROM report_refs)"
             " AND id NOT IN (SELECT tweet_id FROM event_evidence)"
+            " AND id NOT IN (SELECT j.value FROM writing_candidates,"
+            "   json_each(CASE WHEN substr(writing_candidates.tweet_ids,1,1)='['"
+            "   THEN writing_candidates.tweet_ids ELSE '[]' END) j"
+            "   WHERE writing_candidates.status IN ('待处理','写作中','暂缓','已转报告'))"
             " AND id NOT IN (SELECT di.tweet_id FROM delivery_items di"
             "   JOIN delivery_msgs m ON m.id=di.msg_id"
             "   WHERE m.state IN ('待发送','发送中','等待重试'))"
@@ -1260,13 +1462,17 @@ def sync_pushed_compat(tweet_ids):
 
 
 def protected_tweet_ids():
-    """删除入口保护集：收藏 + 报告引用 + 事件引用 + 在途投递成员"""
+    """删除入口保护集：收藏 + 报告引用 + 事件引用 + 在途投递成员 + 活跃写作候选引用"""
     rows = get_conn().execute(
         "SELECT id FROM tweets WHERE starred=1"
         " UNION SELECT tweet_id FROM report_refs"
         " UNION SELECT tweet_id FROM event_evidence"
         " UNION SELECT di.tweet_id FROM delivery_items di"
         " JOIN delivery_msgs m ON m.id=di.msg_id WHERE m.state IN ('待发送','发送中','等待重试')"
+        " UNION SELECT j.value FROM writing_candidates,"
+        " json_each(CASE WHEN substr(writing_candidates.tweet_ids,1,1)='['"
+        " THEN writing_candidates.tweet_ids ELSE '[]' END) j"
+        " WHERE writing_candidates.status IN ('待处理','写作中','暂缓','已转报告')"
     ).fetchall()
     return {r["id"] for r in rows}
 

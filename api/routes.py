@@ -10,12 +10,14 @@ from fastapi.responses import FileResponse
 from fastapi.params import Query
 from pydantic import BaseModel
 
-from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth, eventexport
+from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth, eventexport, writing
 from app.config import load, save_runtime
 from app.notify import CHANNELS
 from app.scheduler import instance as scheduler_instance
+from api.writing_routes import router as writing_router
 
 router = APIRouter()
+router.include_router(writing_router)
 
 
 def _operator(request: Request) -> str:
@@ -327,6 +329,8 @@ def api_stats():
         "fetch_running": engine.is_running(),
         "fetch_interval_minutes": load()["fetch"]["interval_minutes"],
         "last_fetch": json.loads(lf) if lf else None,
+        # 报告编写工作台汇总（服务端全量聚合）
+        "writing": writing.summary(),
     }
 
 

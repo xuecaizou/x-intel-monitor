@@ -38,6 +38,9 @@ SUITES = [
     "tests/test_batch5.py",
     "tests/test_batch5_restore.py",
     "tests/test_batch6_events.py",
+    "tests/test_writing_workbench.py",
+    "tests/test_writing_collab.py",
+    "tests/test_writing_migration.py",
 ]
 
 

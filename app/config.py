@@ -49,6 +49,15 @@ DEFAULTS = {
         "wxpusher": {"enabled": False, "app_token": "", "uid": ""},
     },
     "push": {"digest_max_items": 8},
+    # 报告编写工作台（协作写作）
+    "word": {
+        "pandoc_path": "",            # pandoc 可执行文件绝对路径（空=禁用 Word 导出并提示）
+        "timeout_seconds": 120,       # 单次转换超时
+        "max_md_bytes": 2000000,      # 正文上限
+    },
+    "docs": {
+        "max_asset_bytes": 8000000,   # 受控本地图片上限
+    },
 }
 
 

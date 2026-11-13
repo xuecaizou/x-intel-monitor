@@ -1,6 +1,9 @@
-data/
-__pycache__/
 *.pyc
+.pytest_cache/
+__pycache__/
 backup/
 baseline/
-.pytest_cache/
+data/
+node_modules/
+package-lock.json
+x-intel-monitor-overnight-development-prompt.md

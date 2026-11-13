@@ -20,12 +20,10 @@ import urllib.request
 from urllib.parse import quote
 
 sys.stdout.reconfigure(encoding='utf-8')
-BASE = 'http://127.0.0.1:8083'
+import os as _os
+BASE = _os.environ.get('XINTEL_BASE', 'http://127.0.0.1:8083')
 NOLIVE = '--nolive' in sys.argv
 GROUP, PASS, FAIL = '', 0, []
-
-
-import os as _os
 
 
 def _hdr(extra=None):
@@ -79,10 +77,10 @@ import socket
 s = socket.socket()
 try:
     s.settimeout(3)
-    s.connect(('127.0.0.1', 8083))
-    check('8083 端口监听', True)
+    s.connect((_os.environ.get('XINTEL_HOST', '127.0.0.1'), int(_os.environ.get('XINTEL_PORT', '8083'))))
+    check('服务端口监听', True)
 except Exception as e:
-    check('8083 端口监听', False, str(e))
+    check('服务端口监听', False, str(e))
 finally:
     s.close()
 
@@ -113,6 +111,10 @@ print('  ' + tail)
 group('G3 数据完整性')
 sys.path.insert(0, '.')
 from app import db  # noqa: E402
+if _os.environ.get('XINTEL_DATA_DIR'):
+    from pathlib import Path as _Path
+    db.DATA_DIR = _Path(_os.environ['XINTEL_DATA_DIR'])
+    db._conn = None
 
 total = db.get_conn().execute('SELECT COUNT(*) AS n FROM tweets').fetchone()['n']
 check('推文总量 > 0', total > 0, f'{total}')

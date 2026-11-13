@@ -77,6 +77,15 @@ def init_auth_tables():
             last_used_at TEXT,
             revoked INTEGER DEFAULT 0
         );
+        """)
+
+        # agent token 范围列（幂等）
+        try:
+            c.execute("ALTER TABLE auth_tokens ADD COLUMN scope TEXT DEFAULT ''")
+        except Exception:
+            pass
+
+        c.executescript("""
         CREATE TABLE IF NOT EXISTS auth_sessions (
             sid TEXT PRIMARY KEY,
             username TEXT NOT NULL,
@@ -109,6 +118,46 @@ def authenticate(username: str, password: str) -> Optional[dict]:
     if not r or not verify_password(password, r["pw_hash"]):
         return None
     return {"username": r["username"], "role": r["role"]}
+
+
+def user_role(username: str) -> Optional[str]:
+    r = db.get_conn().execute("SELECT role FROM auth_users WHERE username=?",
+                              (username,)).fetchone()
+    return r["role"] if r else None
+
+
+def create_user(username: str, password: str, role: str = "read") -> dict:
+    """创建团队成员（admin 端点）。用户名唯一。"""
+    username = (username or "").strip()
+    if not username or len(username) > 64:
+        raise ValueError("用户名非法")
+    if role not in ("read", "write", "admin"):
+        raise ValueError("role 仅支持 read/write/admin")
+    if len(password or "") < 8:
+        raise ValueError("密码至少 8 位")
+    with db._lock:
+        c = db.get_conn()
+        if c.execute("SELECT 1 FROM auth_users WHERE username=?", (username,)).fetchone():
+            raise ValueError("用户名已存在")
+        c.execute("INSERT INTO auth_users (username, pw_hash, role, created_at) VALUES (?,?,?,?)",
+                  (username, hash_password(password), role, db.now()))
+        c.commit()
+    return {"username": username, "role": role}
+
+
+def list_users() -> list:
+    return [dict(r) for r in db.get_conn().execute(
+        "SELECT username, role, created_at FROM auth_users ORDER BY username").fetchall()]
+
+
+def set_user_role(username: str, role: str) -> bool:
+    if role not in ("read", "write", "admin"):
+        raise ValueError("role 仅支持 read/write/admin")
+    with db._lock:
+        cur = db.get_conn().execute("UPDATE auth_users SET role=? WHERE username=?",
+                                    (role, username))
+        db.get_conn().commit()
+        return cur.rowcount > 0
 
 
 # ---------- 会话 ----------
@@ -146,14 +195,14 @@ def drop_session(sid: str):
 
 # ---------- Token ----------
 
-def create_token(name: str, role: str = "read") -> str:
-    if role not in ("read", "write", "admin"):
-        raise ValueError("role 仅支持 read/write/admin")
-    raw = "xintel_" + secrets.token_urlsafe(32)
+def create_token(name: str, role: str = "read", scope: str = "") -> str:
+    if role not in ("read", "write", "admin", "agent"):
+        raise ValueError("role 仅支持 read/write/admin/agent")
+    raw = ("agent_" if role == "agent" else "xintel_") + secrets.token_urlsafe(32)
     with db._lock:
         db.get_conn().execute(
-            "INSERT INTO auth_tokens (name, digest, role, created_at) VALUES (?,?,?,?)",
-            (name, token_digest(raw), role, db.now()))
+            "INSERT INTO auth_tokens (name, digest, role, scope, created_at) VALUES (?,?,?,?,?)",
+            (name, token_digest(raw), role, scope or "", db.now()))
         db.get_conn().commit()
     return raw  # 仅此一次返回明文
 
@@ -169,7 +218,13 @@ def verify_token(raw: str) -> Optional[dict]:
         db.get_conn().execute("UPDATE auth_tokens SET last_used_at=? WHERE id=?",
                               (db.now(), r["id"]))
         db.get_conn().commit()
-    return {"name": r["name"], "role": r["role"], "kind": "token"}
+    p = {"name": r["name"], "role": r["role"], "kind": "token"}
+    if r["role"] == "agent":
+        p["agent_scope"] = r["scope"] or ""
+        p["agent_scope_all"] = (r["scope"] or "") == "all"
+        p["agent_docs"] = [] if p["agent_scope_all"] else [
+            x for x in (r["scope"] or "").split(",") if x]
+    return p
 
 
 def list_tokens():
@@ -301,11 +356,12 @@ def _extract_principal(request: Request) -> Optional[dict]:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return verify_token(auth[7:].strip())
-    # 2) 会话 Cookie
+    # 2) 会话 Cookie（角色以 auth_users 为准——修正历史缺陷：不再固定 admin）
     sid = request.cookies.get(COOKIE_NAME, "")
     s = get_session(sid)
     if s:
-        return {"username": s["username"], "role": "admin", "kind": "session",
+        role = user_role(s["username"]) or "read"
+        return {"username": s["username"], "role": role, "kind": "session",
                 "csrf": s["csrf"]}
     return None
 

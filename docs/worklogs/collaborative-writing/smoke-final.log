@@ -1,0 +1,85 @@
+
+———— G1 服务与页面 ————
+  PASS 服务端口监听
+  PASS 页面 /
+  PASS 页面 /help
+  PASS 页面 /arch
+  PASS 页面 /readme.md
+  PASS 页面 /docs
+  PASS no-cache 头
+
+———— G2 API 全端点（healthcheck 35 项） ————
+  FAIL healthcheck 全通过  失败项: ['GET /api/ai/models']
+  失败项: ['GET /api/ai/models']
+
+———— G3 数据完整性 ————
+  PASS 推文总量 > 0
+  PASS UNIQUE 无重复入库
+  FAIL published_at 格式统一（可字符串排序）  6 条非 YYYY-MM-DD HH:MM
+  PASS 首屏按时间降序
+  FAIL RSS 源独立筛选可见且降序  total=0
+  PASS 分页无重复
+  PASS 分页时序连续（无逆序）
+  PASS AI 研判无系统积压（配额类单列）
+  FAIL RSS 源表可读  0 源
+  PASS 报告任务表可读
+  PASS AI 日志表可读
+
+———— G4 采集链路 ————
+  PASS 触发抓取任务
+  PASS 新一轮抓取完成（≤150s）
+  PASS 抓取无错误
+  PASS AI 阶段执行
+  PASS 增量正常（无重复爆量）
+  （本轮：到期账号 1 · 新增 0 · AI 0）
+
+———— G5 AI 链路 ————
+  FAIL AI 连通测试  RuntimeError: AI 功能未启用（请在「AI 设置」面板配置并启用）
+  FAIL 模型列表拉取  {'ok': False, 'error': 'RuntimeError: 模型列表 HTTP 401: {"error":{"message":"Authen
+  FAIL AI 日志落库  {'calls': 0, 'ok': 0, 'error': 0, 'avg_ms': 0}
+  PASS AI漏判-强地理规则兜底
+  PASS AI已判-不覆盖且basis=ai
+
+———— G6 推送链路 ————
+  FAIL 企微实例真实推送  模拟模式（未配置凭据）
+  PASS 钉钉模拟推送
+  PASS 推送日志留档
+  PASS 推送过滤-六维全命中
+  PASS 推送过滤-分类不符拦截
+  PASS 推送过滤-标签不符拦截
+  PASS 推送过滤-国家不符拦截
+  PASS 推送过滤-标签JSON串兼容
+  PASS 推送过滤-OR任一命中放行
+  PASS 推送过滤-OR全不命中拦截
+  PASS 推送过滤-OR仅等级命中放行
+  PASS 推送过滤-缺mode键默认AND
+
+———— G7 报告任务闭环 ————
+  PASS 建任务
+  PASS 线索包生成
+  PASS 任务列表可见
+  PASS 原子领取防双领（200+409）
+  PASS 写作中删除被拒（409）
+  PASS abort 释放回待写
+  PASS 清理冒烟任务
+  PASS 删除后不可取
+
+———— G8 筛选联动回归 ————
+  PASS facets 四维度齐全
+  PASS 分类计数总和=推文总量（含在途/AI失败容差）
+  PASS Top 分类计数=实际条数
+  PASS Top 标签计数=实际条数
+  PASS severity×分类交叉计数一致（全部分类）
+  PASS severity×标签交叉计数一致（Top5）
+  PASS 组合筛选条目确实带标签
+
+================ 冒烟测试汇总：48 PASS / 8 FAIL ================
+失败项：
+  - [G2 API 全端点（healthcheck 35 项）] healthcheck 全通过
+  - [G3 数据完整性] published_at 格式统一（可字符串排序）
+  - [G3 数据完整性] RSS 源独立筛选可见且降序
+  - [G3 数据完整性] RSS 源表可读
+  - [G5 AI 链路] AI 连通测试
+  - [G5 AI 链路] 模型列表拉取
+  - [G5 AI 链路] AI 日志落库
+  - [G6 推送链路] 企微实例真实推送

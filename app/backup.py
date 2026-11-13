@@ -113,7 +113,11 @@ def verify_backup(backup_dir: Path):
             for t in ("tweets", "deliveries", "delivery_msgs", "delivery_attempts",
                       "ai_tasks", "report_refs", "report_tasks", "x_accounts", "rss_sources",
                       "events", "event_evidence", "event_revisions", "event_reviews",
-                      "ai_result_conflicts", "auth_users", "auth_tokens"):
+                      "ai_result_conflicts", "auth_users", "auth_tokens",
+                      "doc_templates", "template_versions", "writing_candidates",
+                      "candidate_revisions", "ai_recommend_tasks", "doc_documents",
+                      "doc_acl", "doc_updates", "doc_revisions", "doc_suggestions",
+                      "doc_exports", "doc_agent_edits", "ws_tickets"):
                 try:
                     checks[t] = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                 except Exception as e:

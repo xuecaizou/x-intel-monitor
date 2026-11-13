@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>X-Intel · 协作编辑器</title>
+<style>
+:root{--bg:#0b1220;--panel:#111a2e;--panel2:#0e1626;--line:#1e2a44;--text:#dbe4f3;--mut:#7f93b5;--acc:#22d3ee;--ok:#34d399;--warn:#fbbf24;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel2);border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
+#doc-title{background:transparent;border:1px solid transparent;color:var(--text);font-size:16px;font-weight:600;padding:4px 8px;border-radius:6px;min-width:280px;flex:1;max-width:520px}
+#doc-title:hover{border-color:var(--line)}
+#doc-title:focus{border-color:var(--acc);outline:none}
+.chip{font-size:12px;padding:2px 10px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
+.chip.saved{color:var(--ok);border-color:rgba(52,211,153,.4)}
+.chip.syncing{color:var(--warn);border-color:rgba(251,191,36,.4)}
+.chip.offline{color:var(--bad);border-color:rgba(248,113,113,.4)}
+.chip.ro{color:var(--mut)}
+.btn{background:rgba(34,211,238,.08);border:1px solid var(--line);color:var(--text);padding:5px 12px;border-radius:7px;cursor:pointer;font-size:12.5px}
+.btn:hover{border-color:var(--acc);color:var(--acc)}
+.btn.primary{background:rgba(34,211,238,.16);border-color:rgba(34,211,238,.5);color:#a5f3fc}
+.btn.ok{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.4);color:var(--ok)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+#main{flex:1;display:flex;min-height:0}
+#left{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+#toolbar{display:flex;gap:4px;padding:6px 10px;border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
+#toolbar button{background:none;border:1px solid var(--line);color:var(--mut);border-radius:5px;padding:2px 9px;cursor:pointer;font-size:12.5px}
+#toolbar button:hover{color:var(--text);border-color:var(--acc)}
+#cm-host{flex:1;overflow:auto}
+.CodeMirror{height:100%!important;background:var(--bg)!important;color:var(--text)!important}
+.cm-gutters{background:var(--bg)!important;border-right:1px solid var(--line)!important;color:var(--mut)!important}
+.cm-activeLine{background:rgba(34,211,238,.04)!important}
+#right{width:360px;flex:none;display:flex;flex-direction:column;background:var(--panel2)}
+#tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+#tabs button{flex:1;background:none;border:none;color:var(--mut);padding:8px 0;cursor:pointer;font-size:12.5px;border-bottom:2px solid transparent}
+#tabs button.on{color:var(--acc);border-bottom-color:var(--acc)}
+#tabbody{flex:1;overflow:auto;padding:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px}
+.card h4{margin:0 0 6px;font-size:13px;color:var(--acc)}
+.mut{color:var(--mut);font-size:12px}
+.src-item{border-left:2px solid var(--line);padding:4px 8px;margin-bottom:8px;font-size:12.5px}
+.src-item .who{color:var(--acc);font-weight:600}
+.sug-old{background:rgba(248,113,113,.1);text-decoration:line-through;color:#f0a5a5;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
+.sug-new{background:rgba(52,211,153,.1);color:#a7f3d0;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
+.rev-item{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px dashed var(--line);font-size:12.5px}
+.member{display:inline-flex;align-items:center;gap:5px;font-size:12px;margin:2px 6px 2px 0}
+.dot{width:9px;height:9px;border-radius:50%}
+#preview-wrap{position:absolute;inset:0;background:var(--bg);display:none;overflow:auto;padding:16px 28px}
+#preview-frame{width:100%;height:100%;border:none;background:#fff;border-radius:8px}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#132039;border:1px solid var(--acc);color:var(--text);padding:9px 18px;border-radius:8px;opacity:0;transition:.25s;pointer-events:none;z-index:99}
+.toast.show{opacity:1}
+.modal{position:fixed;inset:0;background:rgba(2,6,17,.7);display:none;align-items:center;justify-content:center;z-index:50}
+.modal.on{display:flex}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:min(560px,92vw);max-height:84vh;overflow:auto}
+.modal h3{margin:0 0 10px;font-size:15px;color:var(--acc)}
+textarea.in,input.in{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:7px 10px;font:13px/1.5 inherit}
+.status-line{font-size:12px;color:var(--mut);padding:0 14px 6px}
+.badge{font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mut);margin-left:6px}
+.badge.appr{color:var(--ok);border-color:rgba(52,211,153,.4)}
+.badge.pend{color:var(--warn);border-color:rgba(251,191,36,.4)}
+</style>
+</head>
+<body>
+<header>
+  <a href="/" style="color:var(--mut);text-decoration:none;font-size:12.5px">← 控制台</a>
+  <input id="doc-title" placeholder="标题" title="点击修改标题">
+  <span class="chip" id="st-doc"></span>
+  <span class="chip" id="st-conn">连接中…</span>
+  <span class="chip ro" id="st-me"></span>
+  <span id="members"></span>
+  <span style="flex:1"></span>
+  <button class="btn" id="btn-tog-preview">预览</button>
+  <button class="btn" id="btn-md">下载 MD</button>
+  <button class="btn primary" id="btn-word">下载 Word</button>
+  <button class="btn" id="btn-review-submit">提交审阅</button>
+  <button class="btn ok" id="btn-approve" style="display:none">通过</button>
+  <button class="btn" id="btn-reject" style="display:none">驳回</button>
+</header>
+<div class="status-line" id="subline"></div>
+<div id="main">
+  <div id="left">
+    <div id="toolbar">
+      <button data-md="h2">H2</button><button data-md="h3">H3</button><button data-md="h4">H4</button>
+      <button data-md="bold">B</button><button data-md="italic">I</button>
+      <button data-md="ul">• 列表</button><button data-md="ol">1. 列表</button>
+      <button data-md="quote">引用</button><button data-md="code">代码</button>
+      <button data-md="table">表格</button><button data-md="link">链接</button>
+      <button data-md="img">图片</button>
+    </div>
+    <div id="cm-host"></div>
+  </div>
+  <div id="right">
+    <div id="tabs">
+      <button data-tab="sources" class="on">来源</button>
+      <button data-tab="suggestions">建议<span id="sug-n"></span></button>
+      <button data-tab="revisions">历史</button>
+      <button data-tab="assets">素材</button>
+    </div>
+    <div id="tabbody"></div>
+  </div>
+</div>
+<div id="preview-wrap"><iframe id="preview-frame" sandbox=""></iframe></div>
+<div class="modal" id="modal"><div class="box" id="modal-box"></div></div>
+<div class="toast" id="toast"></div>
+<script src="/vendor/collab.bundle.js"></script>
+<script>
+(function(){
+'use strict';
+var QS=new URLSearchParams(location.search);
+var DOC=QS.get('doc')||'';
+var ME={username:'',role:''}, PERM='read', META=null, ED=null, TAB='sources';
+var SUGS=[], REVS=[];
+function $(id){return document.getElementById(id);}
+function toast(m){var t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},3200);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function api(url,opts){
+  opts=opts||{};var m=(opts.method||'GET').toUpperCase();
+  return fetch('/api/auth/me').then(function(r){
+    if(r.status===401){location.href='/login?next='+encodeURIComponent(location.href);throw new Error('401');}
+    return r.json();
+  }).then(function(me){
+    ME=me;opts.headers=Object.assign({},opts.headers||{});
+    if(m!=='GET')opts.headers['X-CSRF-Token']=me.csrf||'';
+    return fetch(url,opts);
+  }).then(function(r){
+    if(r.status===401){location.href='/login';throw new Error('401');}
+    return r;
+  });
+}
+function jget(u){return api(u).then(function(r){return r.json();});}
+function jsend(u,body,method){
+  return api(u,{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})})
+    .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});});
+}
+
+if(!DOC){document.body.innerHTML='<p style="padding:30px">缺少 doc 参数</p>';return;}
+
+function statusChip(){
+  var el=$('st-conn'),s=ED?ED.connState():'offline';
+  el.className='chip '+(s==='saved'?'saved':s==='syncing'?'syncing':'offline');
+  el.textContent=s==='saved'?'已同步':(s==='syncing'?'同步中…':'离线/重连中');
+}
+
+api('/api/writing/docs/'+DOC).then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+.then(function(res){
+  if(res.s!==200){document.body.innerHTML='<p style="padding:30px">'+esc(res.d&&res.d.detail||('加载失败 '+res.s))+'</p>';return;}
+  META=res.d;PERM=META.my_permission||'read';
+  $('doc-title').value=META.title||'';
+  var ds=$('st-doc');ds.textContent=META.status||'';
+  if(META.status==='已通过')ds.className='chip saved';
+  if(META.status==='待审阅')ds.className='chip pend';
+  $('st-me').textContent=(PERM==='write'?'可编辑':'只读')+' · '+ME.username;
+  if(PERM==='write'){$('doc-title').disabled=false;}
+  var isAdmin=ME.role==='admin';
+  if(META.kind==='template'){
+    $('btn-review-submit').style.display='none';
+  }
+  if(isAdmin&&META.kind!=='template'){$('btn-approve').style.display='';$('btn-reject').style.display='';}
+  if(META.status!=='待审阅'||META.kind==='template'){$('btn-approve').style.display='none';$('btn-reject').style.display='none';}
+  ED=window.XCollab.createEditor($('cm-host'),{docUid:DOC,username:ME.username,editable:PERM==='write'});
+  window.__ED=ED;   /* 调试/自动化钩子 */
+  ED.on('status',function(){statusChip();renderMembers();});
+  ED.on('saved',function(seq){$('subline').textContent='服务器已持久化更新序号 #'+seq+'（「已同步」= 服务端落库确认）';});
+  renderTab();loadSuggestions();loadRevisions();
+  setInterval(function(){if(TAB==='suggestions')loadSuggestions();},5000);
+  setInterval(renderMembers,4000);
+  $('subline').textContent='提示：Markdown 为协作编辑格式；「已同步」代表服务端已持久化，可直接下载。';
+})
+.catch(function(e){document.body.innerHTML='<p style="padding:30px">加载失败：'+esc(e.message)+'</p>';});
+
+function renderMembers(){
+  if(!ED)return;
+  var ms=ED.members();
+  $('members').innerHTML=ms.map(function(u){
+    return '<span class="member"><span class="dot" style="background:'+esc(u.color||'#666')+'"></span>'+esc(u.name||'?')+'</span>';
+  }).join('');
+}
+
+/* ---- 工具栏 ---- */
+var MD={h2:['## ',''],h3:['### ',''],h4:['#### ',''],bold:['**','**'],italic:['*','*'],
+  ul:['- ',''],ol:['1. ',''],quote:['> ',''],code:['\n```\n','\n```\n'],
+  table:['\n| 列1 | 列2 |\n| --- | --- |\n|  |  |\n',''],
+  link:['[标题](','）'],img:['![说明](attachment:','）']};
+document.getElementById('toolbar').addEventListener('click',function(e){
+  var b=e.target.closest('[data-md]');if(!b||PERM!=='write')return;
+  var p=MD[b.getAttribute('data-md')];if(!p)return;
+  ED.insertAround(p[0],p[1]);
+});
+
+/* ---- 标题 ---- */
+$('doc-title').addEventListener('blur',function(){
+  if(PERM!=='write')return;
+  var t=$('doc-title').value.trim();
+  if(t&&META&&t!==META.title){
+    jsend('/api/writing/docs/'+DOC+'/title',{title:t}).then(function(r){
+      if(r.s===200){META.title=t;toast('标题已更新');}
+      else{ $('doc-title').value=META.title; toast(r.d&&r.d.detail||'更新失败'); }
+    });
+  }
+});
+
+/* ---- 侧栏页签 ---- */
+document.getElementById('tabs').addEventListener('click',function(e){
+  var b=e.target.closest('[data-tab]');if(!b)return;
+  TAB=b.getAttribute('data-tab');
+  document.querySelectorAll('#tabs button').forEach(function(x){x.classList.toggle('on',x===b);});
+  renderTab();
+});
+function renderTab(){
+  var el=$('tabbody');
+  if(TAB==='sources')el.innerHTML=renderSources();
+  else if(TAB==='suggestions')el.innerHTML=renderSuggestions();
+  else if(TAB==='revisions')el.innerHTML=renderRevisions();
+  else if(TAB==='assets')el.innerHTML=renderAssets();
+  bindTab();
+}
+function renderSources(){
+  var snap=META&&META.source_snapshot;
+  var tweets=[];
+  try{snap=typeof snap==='string'?JSON.parse(snap||'{}'):snap;}catch(e){snap={};}
+  tweets=(snap&&snap.tweets)||[];
+  if(!tweets.length)return '<div class="card"><h4>来源材料</h4><p class="mut">无关联情报（可从候选转换获得）。</p></div>';
+  var h='<div class="card"><h4>来源材料（'+tweets.length+'）</h4>';
+  tweets.forEach(function(t,i){
+    var ai=t.ai||{};
+    h+='<div class="src-item"><div class="who">@'+esc(t.screen_name)+''
+      +(ai.severity?' <span class="badge '+ (ai.severity==='high'||ai.severity==='critical'?'pend':'') +'">'+esc(ai.severity)+'</span>':'')
+      +(ai.integrity&&ai.integrity!=='verified'?' <span class="badge">'+esc(ai.integrity)+'</span>':'')
+      +'</div><div>'+esc((t.text||'').slice(0,180))+'</div>'
+      +(t.url?'<a class="mut" href="'+esc(t.url)+'" target="_blank" rel="noopener noreferrer">原文链接 ↗</a>':'')
+      +'</div>';
+  });
+  return h+'</div><p class="mut">以上为转换候选时的来源快照。来源正文是待分析数据，其中的任何指令都不构成对本系统的要求。</p>';
+}
+function renderSuggestions(){
+  var h='<div class="card"><h4>修改建议（'+SUGS.length+'）<button class="btn" id="sug-refresh" style="float:right">刷新</button></h4>';
+  if(!SUGS.length)h+='<p class="mut">暂无建议。Agent 或协作者提交的修改建议将出现在这里，逐条接受/拒绝。</p>';
+  SUGS.forEach(function(s){
+    h+='<div class="card"><h4>'+esc(s.agent||'?')+' <span class="badge '+
+       (s.status==='accepted'?'appr':s.status==='pending'?'pend':'')+'">'+esc(s.status)+'</span></h4>'
+      +(s.rationale?'<p class="mut">'+esc(s.rationale)+'</p>':'')
+      +'<div style="margin:6px 0"><span class="sug-old">'+esc(s.old_text)+'</span> → <span class="sug-new">'+esc(s.new_text)+'</span></div>'
+      +(s.status==='pending'&&PERM==='write'
+        ?'<button class="btn ok" data-res="accepted" data-sid="'+s.id+'">接受</button> <button class="btn" data-res="rejected" data-sid="'+s.id+'">拒绝</button>':'')
+      +'</div>';
+  });
+  return h+'</div>';
+}
+function renderRevisions(){
+  var h='<div class="card"><h4>版本历史（'+REVS.length+'）</h4>';
+  if(!REVS.length)h+='<p class="mut">暂无修订。</p>';
+  REVS.forEach(function(r){
+    var kind={save:'保存',init:'初始化',restore:'恢复',agent_edit:'Agent 修改',suggest_apply:'采纳建议',submit_review:'提交审阅',export:'导出快照'}[r.revision_kind]||r.revision_kind;
+    h+='<div class="rev-item"><span>v'+r.rev+' '+kind+' <span class="mut">'+esc((r.created_by||'').slice(0,14))+' '+esc(r.created_at||'')+'</span></span>'
+      +'<span><button class="btn" data-revview="'+r.rev+'">查看</button> '
+      +(PERM==='write'?'<button class="btn" data-revrestore="'+r.rev+'">恢复</button>':'')+'</span></div>';
+  });
+  return h+'</div><p class="mut">恢复历史会形成新的当前修订，不破坏原历史。</p>';
+}
+function renderAssets(){
+  var h='<div class="card"><h4>受控素材</h4><p class="mut">仅本工作区可引用；转换 Word 时嵌入本地图片，远程地址不自动抓取。</p>'
+    +(PERM==='write'?'<input type="file" id="asset-file" style="font-size:12px">':'');
+  h+='<div id="asset-list"></div></div>';
+  return h;
+}
+function bindTab(){
+  var el=$('tabbody');
+  var b;
+  if((b=el.querySelector('#sug-refresh')))b.addEventListener('click',loadSuggestions);
+  el.querySelectorAll('[data-res]').forEach(function(x){
+    x.addEventListener('click',function(){
+      x.disabled=true;
+      jsend('/api/writing/docs/'+DOC+'/suggestions/'+x.getAttribute('data-sid')+'/resolve',{decision:x.getAttribute('data-res')})
+        .then(function(r){if(r.s===200){toast('已处理');loadSuggestions();}else{toast(r.d&&r.d.detail||'失败');x.disabled=false;}});
+    });
+  });
+  el.querySelectorAll('[data-revview]').forEach(function(x){
+    x.addEventListener('click',function(){
+      var rev=x.getAttribute('data-revview');
+      jget('/api/writing/docs/'+DOC+'/revisions/'+rev).then(function(r){
+        openModal('<h3>修订 v'+esc(rev)+'</h3><pre style="white-space:pre-wrap;font-size:12px;max-height:50vh;overflow:auto">'+esc(r.body_md)+'</pre><div style="text-align:right"><button class="btn" onclick="document.getElementById(\'modal\').classList.remove(\'on\')">关闭</button></div>');
+      });
+    });
+  });
+  el.querySelectorAll('[data-revrestore]').forEach(function(x){
+    x.addEventListener('click',function(){
+      uiConfirm('恢复到 v'+x.getAttribute('data-revrestore')+'？将形成新的当前修订，不破坏历史。').then(function(ok){
+        if(!ok)return;
+        jsend('/api/writing/docs/'+DOC+'/restore',{rev:+x.getAttribute('data-revrestore')})
+          .then(function(r){if(r.s===200){toast('已恢复（新修订 v'+r.d.rev+'）');loadRevisions();}else toast(r.d&&r.d.detail||'恢复失败');});
+      });
+    });
+  });
+  var af=el.querySelector('#asset-file');
+  if(af)af.addEventListener('change',function(){
+    var f=af.files[0];if(!f)return;
+    if(f.size>8*1024*1024){toast('超过 8MB 上限');return;}
+    var rd=new FileReader();
+    rd.onload=function(){
+      jsend('/api/writing/docs/'+DOC+'/assets',{name:f.name,data_b64:String(rd.result).split(',')[1]})
+        .then(function(r){
+          if(r.s===200){
+            toast('素材已上传：'+r.d.name);
+            if(PERM==='write')ED.insertAround('![说明]('+r.d.ref+')','');
+            loadAssets();
+          }else toast(r.d&&r.d.detail||'上传失败');
+        });
+    };
+    rd.readAsDataURL(f);
+  });
+  loadAssets();
+}
+function loadAssets(){
+  var el=document.getElementById('asset-list');if(!el)return;
+  jget('/api/writing/docs/'+DOC+'/assets').then(function(d){
+    el.innerHTML=(d.items||[]).map(function(a){
+      return '<div class="rev-item"><span>'+esc(a.name)+' <span class="mut">'+a.size+'B</span></span><span class="mut">'+esc(a.ref)+'</span></div>';
+    }).join('')||'<p class="mut">无素材</p>';
+  }).catch(function(){});
+}
+
+/* ---- 建议 / 历史 ---- */
+function loadSuggestions(){
+  jget('/api/writing/docs/'+DOC+'/suggestions').then(function(d){
+    SUGS=d.items||[];
+    var n=SUGS.filter(function(s){return s.status==='pending';}).length;
+    $('sug-n').textContent=n?' ('+n+')':'';
+    if(TAB==='suggestions')renderTab();
+  }).catch(function(){});
+}
+function loadRevisions(){
+  jget('/api/writing/docs/'+DOC+'/revisions').then(function(d){
+    REVS=d.items||[];
+    if(TAB==='revisions')renderTab();
+  }).catch(function(){});
+}
+
+/* ---- 顶栏动作 ---- */
+$('btn-tog-preview').addEventListener('click',function(){
+  var w=$('preview-wrap');
+  if(w.style.display==='block'){w.style.display='none';return;}
+  $('preview-frame').srcdoc=window.XCollab.renderPreview(ED.getText());
+  w.style.display='block';
+});
+$('btn-md').addEventListener('click',function(){
+  var go=function(){ location.href='/api/writing/docs/'+DOC+'/export.md'; };
+  if(ED&&ED.connState()==='syncing'){uiConfirm('仍有未同步修改，下载的是服务器当前已保存内容。继续？').then(function(ok){if(ok)go();});return;}
+  go();
+});
+$('btn-word').addEventListener('click',function(){
+  if(!ED){return;}
+  var proceed=function(){
+    $('btn-word').disabled=true;
+    jsend('/api/writing/docs/'+DOC+'/export/word',{}).then(function(r){
+      if(r.s!==200){toast(r.d&&r.d.detail||'导出失败');$('btn-word').disabled=false;return;}
+      var eid=r.d.export_id,poll=0;
+      var iv=setInterval(function(){
+        poll++;
+        jget('/api/writing/docs/'+DOC+'/exports').then(function(d){
+          var e=(d.items||[]).filter(function(x){return x.id===eid;})[0];
+          if(!e)return;
+          if(e.status==='done'){
+            clearInterval(iv);$('btn-word').disabled=false;
+            var a=document.createElement('a');
+            a.href='/api/writing/docs/'+DOC+'/export/word/'+eid+'/download';
+            a.download=e.file_name||'document.docx';
+            document.body.appendChild(a);a.click();a.remove();
+            toast('Word 已生成'+(e.pandoc_version?'（'+e.pandoc_version+'）':''));
+          }else if(e.status==='failed'){
+            clearInterval(iv);$('btn-word').disabled=false;
+            toast('导出失败：'+(e.error||'未知'));
+          }else if(poll>120){
+            clearInterval(iv);$('btn-word').disabled=false;toast('导出超时，请稍后在导出记录中查看');
+          }
+        }).catch(function(){});
+      },1000);
+    }).catch(function(){$('btn-word').disabled=false;});
+  };
+  if(!ED.provider.wsconnected){uiConfirm('当前离线，未同步的修改不会包含在导出中。继续？').then(function(ok){if(ok)proceed();});return;}
+  if(ED.connState()==='syncing'){uiConfirm('仍有未同步修改（正在同步），建议等待「已同步」后再导出。仍要继续？').then(function(ok){if(ok)proceed();});return;}
+  proceed();
+});
+$('btn-review-submit').addEventListener('click',function(){
+  if(PERM!=='write')return;
+  uiConfirm('提交审阅将固定当前版本，等待管理员审核。继续？').then(function(ok){
+    if(!ok)return;
+    jsend('/api/writing/docs/'+DOC+'/submit-review').then(function(r){
+      if(r.s===200){toast('已提交审阅（固定 v'+r.d.review_rev+'）');$('st-doc').textContent='待审阅';$('st-doc').className='chip pend';
+        if(ME.role==='admin'){$('btn-approve').style.display='';$('btn-reject').style.display='';}}
+      else toast(r.d&&r.d.detail||'提交失败');
+    });
+  });
+});
+$('btn-approve').addEventListener('click',function(){
+  jsend('/api/writing/docs/'+DOC+'/review',{decision:'approved',note:''}).then(function(r){
+    if(r.s===200){toast('已通过');$('st-doc').textContent='已通过';$('st-doc').className='chip saved';
+      $('btn-approve').style.display='none';$('btn-reject').style.display='none';}
+    else toast(r.d&&r.d.detail||'操作失败');
+  });
+});
+$('btn-reject').addEventListener('click',function(){
+  uiPrompt('驳回原因（将进入审核记录）','').then(function(note){
+    if(note===null)return;
+    jsend('/api/writing/docs/'+DOC+'/review',{decision:'rejected',note:note||''}).then(function(r){
+      if(r.s===200){toast('已驳回，回到编辑中');$('st-doc').textContent='编辑中';$('st-doc').className='chip';
+        $('btn-approve').style.display='none';$('btn-reject').style.display='none';}
+      else toast(r.d&&r.d.detail||'操作失败');
+    });
+  });
+});
+
+function openModal(html){
+  $('modal-box').innerHTML=html;
+  $('modal').classList.add('on');
+}
+$('modal').addEventListener('click',function(e){
+  if(e.target.id==='modal')$('modal').classList.remove('on');
+});
+/* 确认/输入内联模态（不依赖原生 confirm/prompt——嵌入式浏览器可能禁用） */
+function uiConfirm(msg){
+  return new Promise(function(resolve){
+    openModal('<h3>确认</h3><p>'+esc(msg)+'</p>'
+      +'<div style="text-align:right;margin-top:12px"><button class="btn" id="uc-no">取消</button> '
+      +'<button class="btn primary" id="uc-yes">确认</button></div>');
+    $('uc-no').addEventListener('click',function(){ $('modal').classList.remove('on'); resolve(false); });
+    $('uc-yes').addEventListener('click',function(){ $('modal').classList.remove('on'); resolve(true); });
+  });
+}
+function uiPrompt(title, def){
+  return new Promise(function(resolve){
+    openModal('<h3>'+esc(title)+'</h3><input class="in" id="up-v" style="width:100%" value="'+esc(def||'')+'">'
+      +'<div style="text-align:right;margin-top:12px"><button class="btn" id="up-no">取消</button> '
+      +'<button class="btn primary" id="up-ok">确定</button></div>');
+    $('up-no').addEventListener('click',function(){ $('modal').classList.remove('on'); resolve(null); });
+    $('up-ok').addEventListener('click',function(){ var v=$('up-v').value; $('modal').classList.remove('on'); resolve(v); });
+    $('up-v').focus();
+  });
+}
+})();
+</script>
+</body>
+</html>

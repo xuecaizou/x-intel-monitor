@@ -1,0 +1,41 @@
+PASS GET /api/tweets
+PASS 推文字段齐全
+PASS 分类筛选
+PASS 状态筛选
+PASS GET /api/facets
+PASS facets 含关键词标签统计
+PASS 分类联动计数=实际条数
+PASS GET /api/categories
+PASS GET /api/stats
+PASS GET /api/x/accounts
+PASS GET /api/x/settings
+PASS GET /api/ai/config
+FAIL GET /api/ai/models models=0
+PASS GET /api/ai/logs
+PASS GET /api/channels
+PASS GET /api/push/filters
+PASS 推送过滤六维字段齐全
+PASS GET /api/push/logs
+PASS GET /api/fetch/logs
+PASS GET /api/rss/sources
+PASS GET /api/channels(实例化)
+PASS 企微旧配置自动迁移
+PASS GET /api/reports/tasks
+PASS OpenAPI 端点数 ≥ 30
+PASS 报告端点进 Swagger
+PASS 模型端点进 Swagger
+PASS 页面 /
+PASS 页面 / 含报告任务面板
+PASS 页面 / 含日志审计二级菜单
+PASS 页面 / 含 AI 日志容器
+PASS 页面 / 含拉取模型
+PASS 页面 / 含生成报告任务
+PASS 页面 / 含标签筛选下拉
+PASS 页面 / 含关键词标签卡
+PASS 页面 /help
+PASS help 含 models 端点
+PASS 页面 /arch
+PASS 页面 /readme
+
+==== 回归结果：37 PASS / 1 FAIL ====
+失败项: ['GET /api/ai/models']

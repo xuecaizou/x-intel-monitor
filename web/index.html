@@ -355,6 +355,9 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     <button class="sb-item" data-view="ai-panel" title="AI 设置"><span>✦</span><em>AI 设置</em></button>
     <button class="sb-item" data-view="task-panel" title="报告任务"><span>▣</span><em>报告任务</em></button>
     <button class="sb-item" data-view="events-panel" title="事件聚合"><span>◇</span><em>事件聚合</em></button>
+    <button class="sb-item" data-view="cand-panel" title="写作候选"><span>✎</span><em>写作候选</em></button>
+    <button class="sb-item" data-view="docs-panel" title="协作文档"><span>❐</span><em>协作文档</em></button>
+    <button class="sb-item" data-view="tpl-panel" title="报告模板"><span>⊞</span><em>报告模板</em></button>
     <div class="sb-group" id="sb-ps-group">
       <button class="sb-item sb-parent" data-view="pf-panel" title="推送设置"><span>⚙</span><em>推送设置</em><i class="chev">›</i></button>
       <div class="sb-sub">
@@ -437,6 +440,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     <div class="vl" id="kpi-push" style="color:var(--ok)">--</div>
     <div class="dl" id="kpi-push-dl">今日已推送 0 次</div>
   </div>
+  <div class="kpi glass" style="cursor:pointer" data-goto="cand-panel" title="进入写作候选">
+    <div class="row1"><span class="kicon" style="background:rgba(34,211,238,.09);color:#22d3ee">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>
+      <span class="lb">编写工作台</span></div>
+    <div class="vl" id="kpi-wr" style="color:#22d3ee">0</div>
+    <div class="dl" id="kpi-wr-dl">候选 0 · 编辑中 0 · 待审阅 0</div>
+  </div>
 </section>
 
 <section class="home-grid" id="home-grid">
@@ -468,6 +478,11 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">REPORT TASKS</span>
       <a class="hmore" data-goto="task-panel">管理 →</a></div>
     <div id="hc-rt"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="homecard glass">
+    <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">WRITING · 编写工作台</span>
+      <a class="hmore" data-goto="cand-panel">管理 →</a></div>
+    <div id="hc-wr"><div class="empty">加载中…</div></div>
   </div>
   <div class="homecard glass">
     <div class="hhead"><span class="klabel" style="font-size:11px;letter-spacing:1.6px;color:var(--mut2);font-weight:600">SYSTEM</span></div>
@@ -526,6 +541,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       <button class="btn btn-xs" type="button" data-bop="ai_analyze">批量研判</button>
       <button class="btn btn-xs" type="button" data-bop="delete" style="border-color:rgba(225,29,72,.4);color:#be123c">批量删除</button>
       <button class="btn btn-xs" type="button" id="selreport" style="border-color:rgba(99,102,241,.5);color:#4f46e5">生成报告任务</button>
+      <button class="btn btn-xs" type="button" id="selcand" style="border-color:rgba(34,211,238,.5);color:#22d3ee">加入待编写</button>
       <button class="btn btn-xs" type="button" id="selclear">取消选择</button>
       <span class="hint">批量 AI 每次最多 20 条，逐条串行执行；报告任务最多勾 50 条生成线索包</span>
     </div>
@@ -589,6 +605,47 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         <button class="btn btn-xs" id="rt-new" type="button" style="margin-left:auto">+ 新建任务</button>
       </div>
       <div id="rtlist"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="cand-panel" aria-label="写作候选" style="background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r)">
+      <div class="phead" style="display:flex;align-items:center">
+        <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">WRITING CANDIDATES</div>
+        <div style="font-size:14.5px;font-weight:600">写作候选 <span class="cnt" id="cand-count"></span></div></div>
+        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--mut)">
+          状态 <select id="cand-status" style="width:auto">
+            <option value="">全部</option><option>待处理</option><option>写作中</option>
+            <option>已转报告</option><option>暂缓</option><option>不采用</option></select>
+          <input id="cand-q" placeholder="搜索标题/角度/负责人" style="width:170px">
+          <button class="btn btn-xs" id="cand-ai" type="button" title="用当前 AI 配置从积压高严重度情报推荐选题">AI 推荐</button>
+          <button class="btn btn-xs" id="cand-new" type="button">+ 手工新建</button>
+        </span>
+      </div>
+      <div id="cand-list" style="margin-top:10px"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="docs-panel" aria-label="协作文档" style="background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r)">
+      <div class="phead" style="display:flex;align-items:center">
+        <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">COLLAB DOCS</div>
+        <div style="font-size:14.5px;font-weight:600">协作文档 <span class="cnt" id="docs-count"></span></div></div>
+        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center">
+          状态 <select id="docs-status" style="width:auto">
+            <option value="">全部</option><option>编辑中</option><option>待审阅</option><option>已通过</option></select>
+          <button class="btn btn-xs" id="docs-new" type="button">+ 新建文档</button>
+        </span>
+      </div>
+      <div id="docs-list" style="margin-top:10px"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel glass view" id="tpl-panel" aria-label="报告模板" style="background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r)">
+      <div class="phead" style="display:flex;align-items:center">
+        <div><div class="klabel" style="font-size:12px;letter-spacing:1.8px;color:var(--mut2);font-weight:600">TEMPLATES</div>
+        <div style="font-size:14.5px;font-weight:600">报告模板 <span class="cnt" id="tpl-count"></span></div></div>
+        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center">
+          <button class="btn btn-xs" id="tpl-new" type="button">+ 新建模板</button>
+        </span>
+      </div>
+      <p class="hint" style="margin:8px 0 0">模板正文支持多人实时协作；「发布」形成不可变版本，新报告固定发布版本，模板后续修改不影响既有报告。业务模板与 Word 排版样式分离。</p>
+      <div id="tpl-list" style="margin-top:10px"><div class="empty">加载中…</div></div>
     </section>
 
     <section class="panel glass view" id="pf-panel" aria-label="推送过滤">
@@ -718,6 +775,9 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     }).then(function(){location.href='/login';});
   };
   function jget(url){return apiFetch(url).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});}
+  /* 供后挂脚本块复用（写作工作台面板） */
+  window.apiFetch=apiFetch;
+  window.__getSelected=function(){return selected;};
   function shortTime(s){
     if(!s)return '';
     /* 库存的是 GMT 裸值（如 '2026-10-30 15:18'），转本地时区再显示 */
@@ -770,6 +830,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'analyze\',this)">AI 研判</button>'+
       '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'translate\',this)">翻译</button>'+
       (t.url?'<a class="btn btn-xs" href="'+esc(t.url)+'" target="_blank" rel="noopener">原文</a>':'')+
+      '<button class="btn btn-xs" type="button" style="border-color:rgba(34,211,238,.4);color:#22d3ee" title="加入待编写线索候选" onclick="window.__toCand('+t.id+',this)">+待编写</button>'+
       '<span class="flagbtns">'+
       '<button class="iconbtn star'+(t.starred?' on':'')+'" type="button" title="收藏" onclick="window.__flag('+t.id+',{starred:'+(t.starred?'false':'true')+'},this)">'+(t.starred?'★':'☆')+'</button>'+
       '<button class="iconbtn" type="button" title="已读/未读" onclick="window.__flag('+t.id+',{read:'+(t.read?'false':'true')+'},this)">'+(t.read?'📖':'🔵')+'</button>'+
@@ -934,6 +995,19 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       document.getElementById('kpi-push').textContent=rate;
       document.getElementById('kpi-push-dl').textContent='今日推送 '+s.push_total+' 次 · 真实成功 '+
         (s.push_real_ok!=null?s.push_real_ok:'—')+(s.push_sim?(' · 模拟 '+s.push_sim+'（单列）'):'');
+      /* 编写工作台汇总（服务端全量聚合） */
+      if(s.writing){
+        var wr=s.writing;
+        document.getElementById('kpi-wr').textContent=wr.candidates_active;
+        document.getElementById('kpi-wr-dl').textContent='候选 '+wr.candidates_pending+' · 编辑中 '+wr.docs_editing+' · 待审阅 '+wr.docs_review;
+        var hcwr=document.getElementById('hc-wr');
+        if(hcwr)hcwr.innerHTML=
+          '<div class="hrow"><span>活跃候选</span><b>'+wr.candidates_active+'</b><span>待处理</span><b>'+wr.candidates_pending+'</b>'+
+          (wr.candidates_has_update?'<span class="bad">线索有更新</span>':'<span class="ok">无更新</span>')+'</div>'+
+          '<div class="hrow"><span>编辑中</span><b>'+wr.docs_editing+'</b><span>待审阅</span><b>'+wr.docs_review+'</b>'+
+          '<span>模板</span><b>'+wr.templates_active+'</b></div>'+
+          (wr.recommend_running?'<div class="hrow"><span class="bad">AI 推荐任务进行中</span></div>':'');
+      }
       intervalSec=Math.max(60,(s.fetch_interval_minutes||15)*60);
       if(s.next_run_in!=null&&!busy)nextIn=s.next_run_in;
       document.getElementById('aiquick').checked=!!s.ai_auto_on;
@@ -1586,6 +1660,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           '<label style="font-size:12px"><input type="checkbox" id="ev-repost"> 转载</label>'+
           '<button class="btn btn-xs" id="ev-add" type="button">+ 关联证据</button>'+
           '<button class="btn btn-xs" id="ev-cand" type="button">查候选关联</button>'+
+          '<button class="btn btn-xs" data-evact="tocand" type="button" style="border-color:rgba(34,211,238,.4);color:#22d3ee">创建写作候选</button>'+
           '<button class="btn btn-xs" data-evact="approve" type="button">✓ 通过审核（v'+e.version+'）</button>'+
           '<button class="btn btn-xs" data-evact="reject" type="button" style="border-color:rgba(225,29,72,.4);color:#be123c">✗ 驳回</button>'+
           '<a class="btn btn-xs" href="/api/events/'+e.event_uid+'/export.json" target="_blank">事件 JSON</a>'+
@@ -1675,6 +1750,14 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       document.querySelectorAll('#evdetail [data-evact]').forEach(function(b){
         var act=b.getAttribute('data-evact');
         b.addEventListener('click',function(){
+          if(act==='tocand'){
+            apiFetch('/api/writing/candidates/from-event',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({event_uid:uid})}).then(function(r){return r.json();}).then(function(d){
+                snack(d.cand_uid ? ('写作候选已创建'+(d.merged?'（去重合并）':'')+'：'+d.cand_uid) : ('创建失败：'+(d.detail||'')));
+                if(d.cand_uid)loadCands();
+              }).catch(function(){snack('请求失败');});
+            return;
+          }
           var note=act==='approve'?'':'驳回';
           apiFetch('/api/events/'+uid+'/review',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({event_version:e.version,decision:act==='approve'?'approved':'rejected',note:note})})
@@ -2182,6 +2265,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       if (g.querySelector('.sb-subitem.active')) g.querySelector('.sb-parent').classList.add('active');
     });
     localStorage.setItem('xintel_view_cur', id);
+    document.dispatchEvent(new CustomEvent('xintel-view', { detail: id }));
   }
   document.querySelectorAll('.sb-item:not(.sb-subitem)').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -2190,6 +2274,342 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     });
   });
   showView(localStorage.getItem('xintel_view_cur') || 'home-panel');
+})();
+</script>
+<div class="mwrap" id="wmodal" style="display:none">
+  <div class="mbox" id="wmodal-box"></div>
+</div>
+<script>
+/* ================= 报告编写工作台（候选/文档/模板） ================= */
+(function(){
+'use strict';
+var apiFetch=window.apiFetch;
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function snack(m){var el=document.getElementById('snackbar');el.textContent=m;el.classList.add('show');clearTimeout(window.__snT);window.__snT=setTimeout(function(){el.classList.remove('show');},3800);}
+var ROLE='';
+fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){ROLE=d.role||'';refreshAll();}).catch(function(){});
+function isAdmin(){return ROLE==='admin';}
+
+/* ---------- 候选 ---------- */
+var candCache={};
+function loadCands(){
+  if(!document.getElementById('cand-panel').classList.contains('on'))return;
+  var st=$('cand-status').value,q=$('cand-q').value.trim();
+  apiFetch('/api/writing/candidates?status='+encodeURIComponent(st)+'&q='+encodeURIComponent(q)+'&limit=100')
+    .then(function(r){return r.json();}).then(function(d){
+      $('cand-count').textContent='共 '+d.total;
+      var box=$('cand-list');
+      if(!(d.items||[]).length){box.innerHTML='<div class="empty">暂无候选——情报卡片「+待编写」、批量「加入待编写」、事件详情「创建写作候选」或点右上「AI 推荐」。</div>';return;}
+      box.innerHTML=d.items.map(function(c){
+        candCache[c.cand_uid]=c;
+        var badge={'待处理':'','写作中':'pend','已转报告':'appr','暂缓':'','不采用':''}[c.status]||'';
+        var ai=c.ai_suggestion&&typeof c.ai_suggestion==='object'?c.ai_suggestion:{};
+        return '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(c.title)+'</span>'
+          +'<span class="hchip '+badge+'" style="margin-left:8px">'+esc(c.status)+'</span>'
+          +(c.has_update?'<span class="hchip" style="border-color:rgba(251,191,36,.5);color:#fbbf24;margin-left:4px">线索有更新</span>':'')
+          +(c.source_type==='ai'?'<span class="hchip" style="margin-left:4px">AI</span>':'')
+          +(c.source_type==='event'?'<span class="hchip" style="margin-left:4px">事件</span>':'')
+          +'</div>'
+          +(c.angle?'<div class="rtmeta">角度：'+esc(c.angle)+'</div>':'')
+          +(ai.reason?'<div class="rtmeta">AI 理由：'+esc(ai.reason)+'</div>':'')
+          +'<div class="rtmeta">优先级 P'+c.priority+' · 负责人 '+esc(c.owner||'—')+' · 情报 '+((c.tweet_ids||[]).length)+' 条 · '+esc(c.updated_at||'')+'</div>'
+          +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+          +(c.status!=='已转报告'?'<button class="btn btn-xs" data-cact="convert" data-uid="'+c.cand_uid+'">转为报告</button>':'')
+          +(c.doc_uid?'<a class="btn btn-xs" href="/editor?doc='+c.doc_uid+'">打开编辑器</a>':'')
+          +(c.status==='待处理'?'<button class="btn btn-xs" data-cact="adopt" data-uid="'+c.cand_uid+'">采纳</button>':'')
+          +(c.status==='待处理'?'<button class="btn btn-xs" data-cact="hold" data-uid="'+c.cand_uid+'">暂缓</button>':'')
+          +(c.status!=='不采用'?'<button class="btn btn-xs" data-cact="reject" data-uid="'+c.cand_uid+'">不采用</button>':'')
+          +(c.status==='暂缓'||c.status==='不采用'?'<button class="btn btn-xs" data-cact="restore" data-uid="'+c.cand_uid+'">恢复待处理</button>':'')
+          +((c.status==='待处理'||c.status==='暂缓'||c.status==='不采用')&&!c.doc_uid?'<button class="btn btn-xs" data-cact="del" data-uid="'+c.cand_uid+'" style="border-color:rgba(225,29,72,.4);color:#be123c">删除</button>':'')
+          +'</div></div>';
+      }).join('');
+    }).catch(function(){});
+}
+$('cand-list').addEventListener('click',function(e){
+  var b=e.target.closest('[data-cact]');if(!b)return;
+  var uid=b.getAttribute('data-uid'),act=b.getAttribute('data-cact'),c=candCache[uid];
+  if(!c)return;
+  if(act==='convert'){openConvert(uid);return;}
+  if(act==='del'){formConfirm('删除候选','确认删除「'+esc(c.title)+'」？此操作不可撤销。').then(function(ok){
+      if(!ok)return;
+      apiFetch('/api/writing/candidates/'+uid,{method:'DELETE'}).then(function(){snack('已删除');loadCands();});});return;}
+  var map={adopt:['采纳','采纳','待处理'],hold:['暂缓','暂缓','暂缓'],reject:['不采用','不采用','不采用'],restore:['采纳','','待处理']};
+  var m=map[act];
+  apiFetch('/api/writing/candidates/'+uid+'/decision',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({decision:m[1],note:''})}).then(function(r){return r.json();})
+    .then(function(d){snack(d.ok?'已'+m[0]:('操作失败：'+(d.detail||'')));loadCands();});
+});
+$('cand-status').addEventListener('change',loadCands);
+$('cand-q').addEventListener('input',function(){clearTimeout(this._t);var s=this;s._t=setTimeout(loadCands,350);});
+$('cand-ai').addEventListener('click',function(){
+  apiFetch('/api/writing/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope_type:'backlog'})})
+    .then(function(r){return r.json();}).then(function(d){
+      snack(d.task_id?('AI 推荐任务已排队 #'+d.task_id):('排队失败：'+(d.detail||'')));
+    });
+});
+$('cand-new').addEventListener('click',function(){
+  formModal('手工新建写作候选',[
+    {id:'cn-title',label:'候选标题',type:'input',required:true},
+    {id:'cn-angle',label:'写作角度（可空）',type:'input'},
+    {id:'cn-owner',label:'负责人（可空）',type:'input'}
+  ]).then(function(v){
+    if(!v)return;
+    apiFetch('/api/writing/candidates',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:v['cn-title'],angle:v['cn-angle']||'',owner:v['cn-owner']||''})})
+      .then(function(r){return r.json();})
+      .then(function(d){snack(d.cand_uid?(d.merged?'已合并到现有候选':'候选已创建'):'创建失败');loadCands();});
+  });
+});
+function openConvert(uid){
+  apiFetch('/api/writing/templates').then(function(r){return r.json();}).then(function(d){
+    var tpls=(d.items||[]);
+    var c=candCache[uid];
+    var h='<div style="font-size:15px;font-weight:700;margin-bottom:10px">转为报告</div>'
+      +'<p class="hint">候选「'+esc(c.title)+'」→ 创建报告任务 + 协作文档（重复点击不会重复创建）。</p>'
+      +'<label>选择模板</label><select id="cv-tpl" style="width:100%;margin:6px 0 10px">'
+      +'<option value="">（空白文档）</option>'
+      +tpls.map(function(t){return '<option value="'+t.id+'">'+esc(t.name)+(t.current_version?(' v'+t.current_version):'（未发布）')+'</option>';}).join('')
+      +'</select><div style="text-align:right"><button class="btn btn-xs" id="cv-cancel">取消</button> '
+      +'<button class="btn btn-xs" id="cv-go" style="border-color:rgba(34,211,238,.5);color:#22d3ee">创建并打开</button></div>';
+    openModal(h);
+    $('cv-cancel').addEventListener('click',closeModal);
+    $('cv-go').addEventListener('click',function(){
+      var tpl=+$('cv-tpl').value||null;
+      apiFetch('/api/writing/candidates/'+uid+'/convert',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({template_id:tpl})}).then(function(r){return r.json();}).then(function(d){
+          if(d.doc_uid){closeModal();snack('报告已创建（任务 #'+d.report_task_id+'）');loadCands();
+            location.href='/editor?doc='+d.doc_uid;}
+          else snack('转换失败：'+(d.detail||''));
+        });
+    });
+  });
+}
+window.__toCand=function(tid,btn){
+  apiFetch('/api/writing/candidates',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({title:'情报候选 #'+tid,tweet_ids:[tid],source_type:'tweet'})})
+    .then(function(r){return r.json();}).then(function(d){
+      if(btn){btn.textContent=d.merged?'已合并':'已加入';btn.disabled=true;}
+      snack(d.cand_uid?(d.merged?'该情报已并入现有候选（'+d.cand_uid+'）':'已加入待编写'):'操作失败');
+      loadCands();
+    });
+};
+$('selcand').addEventListener('click',function(){
+  var sel=window.__getSelected();
+  if(!sel||!sel.size){snack('请先勾选推文');return;}
+  if(sel.size>50){snack('最多 50 条');return;}
+  formModal('合并为写作候选',[
+    {id:'sc-title',label:'候选标题',type:'input',value:'多源合并线索',required:true},
+    {id:'sc-angle',label:'写作角度（可空）',type:'input'}
+  ]).then(function(v){
+    if(!v)return;
+    apiFetch('/api/writing/candidates/from-tweets',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tweet_ids:Array.from(sel),title:v['sc-title'],angle:v['sc-angle']||''})})
+      .then(function(r){return r.json();})
+      .then(function(d){snack(d.items&&d.items.length?('已创建/合并 '+(d.items[0].merged?'（去重合并）':'')):'失败');loadCands();});
+  });
+});
+
+/* ---------- 文档 ---------- */
+function loadDocs(){
+  if(!document.getElementById('docs-panel').classList.contains('on'))return;
+  var st=$('docs-status').value;
+  apiFetch('/api/writing/docs?status='+encodeURIComponent(st)+'&kind=report&limit=100')
+    .then(function(r){return r.json();}).then(function(d){
+      $('docs-count').textContent='共 '+d.total;
+      var box=$('docs-list');
+      if(!(d.items||[]).length){box.innerHTML='<div class="empty">暂无文档——从写作候选「转为报告」或点右上「+ 新建文档」。</div>';return;}
+      box.innerHTML=d.items.map(function(x){
+        var badge={'编辑中':'','待审阅':'pend','已通过':'appr'}[x.status]||'';
+        return '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(x.title)+'</span>'
+          +'<span class="hchip '+badge+'" style="margin-left:8px">'+esc(x.status)+'</span>'
+          +(x.template_name?'<span class="hchip" style="margin-left:4px">'+esc(x.template_name)+' v'+x.template_version+'</span>':'')
+          +'</div><div class="rtmeta">'+esc(x.doc_uid)+' · 更新 '+esc(x.updated_at||'')+'</div>'
+          +'<div style="display:flex;gap:6px;margin-top:8px">'
+          +'<a class="btn btn-xs" href="/editor?doc='+x.doc_uid+'">打开编辑器</a>'
+          +'<button class="btn btn-xs" data-docmd="'+x.doc_uid+'">下载 MD</button>'
+          +'</div></div>';
+      }).join('');
+    }).catch(function(){});
+}
+$('docs-list').addEventListener('click',function(e){
+  var b=e.target.closest('[data-docmd]');if(!b)return;
+  location.href='/api/writing/docs/'+b.getAttribute('data-docmd')+'/export.md';
+});
+$('docs-status').addEventListener('change',loadDocs);
+$('docs-new').addEventListener('click',function(){
+  apiFetch('/api/writing/templates').then(function(r){return r.json();}).then(function(d){
+    var tpls=(d.items||[]);
+    var h='<div style="font-size:15px;font-weight:700;margin-bottom:10px">新建协作文档</div>'
+      +'<label>标题</label><input id="nd-title" class="in" style="margin:6px 0 10px">'
+      +'<label>模板（可选，固定发布版本）</label><select id="nd-tpl" style="width:100%;margin:6px 0 10px">'
+      +'<option value="">（空白）</option>'
+      +tpls.map(function(t){return '<option value="'+t.id+'">'+esc(t.name)+(t.current_version?(' v'+t.current_version):'（未发布）')+'</option>';}).join('')
+      +'</select><div style="text-align:right"><button class="btn btn-xs" id="nd-cancel">取消</button> '
+      +'<button class="btn btn-xs" id="nd-go" style="border-color:rgba(34,211,238,.5);color:#22d3ee">创建</button></div>';
+    openModal(h);
+    $('nd-cancel').addEventListener('click',closeModal);
+    $('nd-go').addEventListener('click',function(){
+      var title=$('nd-title').value.trim();if(!title){snack('标题必填');return;}
+      apiFetch('/api/writing/docs',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title:title,template_id:+$('nd-tpl').value||null})}).then(function(r){return r.json();})
+        .then(function(d2){if(d2.doc_uid){closeModal();location.href='/editor?doc='+d2.doc_uid;}else snack(d2.detail||'失败');});
+    });
+  });
+});
+
+/* ---------- 模板 ---------- */
+var tplCache={};
+function loadTpls(){
+  if(!document.getElementById('tpl-panel').classList.contains('on'))return;
+  apiFetch('/api/writing/templates?include_disabled=true').then(function(r){return r.json();}).then(function(d){
+    $('tpl-count').textContent='共 '+(d.items||[]).length;
+    var box=$('tpl-list');
+    if(!(d.items||[]).length){box.innerHTML='<div class="empty">暂无模板——点右上「+ 新建模板」。新建后进入编辑器协作维护正文，完成后「发布」形成版本。</div>';return;}
+    box.innerHTML=d.items.map(function(t){
+      tplCache[t.id]=t;
+      var vs=t.versions||[];
+      return '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(t.name)+'</span>'
+        +'<span class="hchip '+(t.status==='启用'?'appr':'')+'" style="margin-left:8px">'+esc(t.status)+'</span>'
+        +'<span class="hchip" style="margin-left:4px">'+(t.current_version?('已发布 v'+t.current_version):'未发布')+'</span>'
+        +(vs.length?'<span class="hchip" style="margin-left:4px">'+vs.length+' 个版本</span>':'')
+        +'</div>'
+        +(t.description?'<div class="rtmeta">'+esc(t.description)+'</div>':'')
+        +'<div class="rtmeta">变量 '+((t.variables||[]).map(function(v){return v.name;}).join(', ')||'无')+'</div>'
+        +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+        +'<a class="btn btn-xs" href="/editor?doc='+t.body_doc_uid+'">协作编辑正文</a>'
+        +(isAdmin()?'<button class="btn btn-xs" data-tact="publish" data-tid="'+t.id+'">发布版本</button>':'')
+        +'<button class="btn btn-xs" data-tact="versions" data-tid="'+t.id+'">版本历史</button>'
+        +'<button class="btn btn-xs" data-tact="preview" data-tid="'+t.id+'">预览</button>'
+        +(isAdmin()?'<button class="btn btn-xs" data-tact="dup" data-tid="'+t.id+'">复制</button>':'')
+        +(isAdmin()?'<button class="btn btn-xs" data-tact="toggle" data-tid="'+t.id+'">'+(t.status==='启用'?'停用':'启用')+'</button>':'')
+        +'</div></div>';
+    }).join('');
+  }).catch(function(){});
+}
+$('tpl-list').addEventListener('click',function(e){
+  var b=e.target.closest('[data-tact]');if(!b)return;
+  var tid=+b.getAttribute('data-tid'),act=b.getAttribute('data-tact'),t=tplCache[tid];
+  if(!t)return;
+  if(act==='publish'){
+    formModal('发布模板版本「'+esc(t.name)+'」',[
+      {id:'pb-note',label:'发布说明（changelog）',type:'textarea'}
+    ],'发布 v'+((t.current_version||0)+1)+'（发布版本不可变）').then(function(v){
+      if(!v)return;
+      apiFetch('/api/writing/templates/'+tid+'/publish',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({changelog:v['pb-note']||''})}).then(function(r){return r.json();})
+        .then(function(d){snack(d.version?('已发布 v'+d.version):('发布失败：'+(d.detail||'')));loadTpls();});
+    });
+  }else if(act==='versions'){
+    apiFetch('/api/writing/templates/'+tid+'/versions').then(function(r){return r.json();}).then(function(d){
+      openModal('<div style="font-size:15px;font-weight:700;margin-bottom:10px">'+esc(t.name)+' 版本历史</div>'
+        +(d.items||[]).map(function(v){
+          return '<div class="rtitem"><div class="rttop"><span class="rttitle">v'+v.version+'</span><span class="rtmeta">'+esc(v.published_by||'')+' '+esc(v.published_at||'')+'</span></div>'
+            +(v.changelog?'<div class="rtmeta">'+esc(v.changelog)+'</div>':'')+'</div>';
+        }).join('')||'<div class="empty">无版本</div>'
+        +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="vm-close">关闭</button></div>');
+      $('vm-close').addEventListener('click',closeModal);
+    });
+  }else if(act==='preview'){
+    apiFetch('/api/writing/templates/'+tid+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values:{}})})
+      .then(function(r){return r.json();}).then(function(d){
+        openModal('<div style="font-size:15px;font-weight:700;margin-bottom:10px">模板预览</div>'
+          +(d.missing&&d.missing.length?'<p class="hint">缺失变量：'+esc(d.missing.join(', '))+'</p>':'')
+          +(d.unknown&&d.unknown.length?'<p class="hint">未定义占位：'+esc(d.unknown.join(', '))+'</p>':'')
+          +'<pre style="white-space:pre-wrap;font-size:12px;max-height:50vh;overflow:auto">'+esc(d.filled)+'</pre>'
+          +'<div style="text-align:right"><button class="btn btn-xs" id="pv-close">关闭</button></div>');
+        $('pv-close').addEventListener('click',closeModal);
+      });
+  }else if(act==='dup'){
+    formModal('复制模板',[
+      {id:'dp-name',label:'副本名称',type:'input',value:t.name+' 副本',required:true}
+    ]).then(function(v){
+      if(!v)return;
+      apiFetch('/api/writing/templates/'+tid+'/duplicate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({new_name:v['dp-name']})}).then(function(r){return r.json();})
+        .then(function(d){snack(d.id?'已复制':'失败：'+(d.detail||''));loadTpls();});
+    });
+  }else if(act==='toggle'){
+    apiFetch('/api/writing/templates/'+tid+'/status',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({status:t.status==='启用'?'停用':'启用'})}).then(function(){loadTpls();});
+  }
+});
+$('tpl-new').addEventListener('click',function(){
+  if(!isAdmin()){snack('模板维护需要管理员权限');return;}
+  formModal('新建报告模板',[
+    {id:'tp-name',label:'模板名称',type:'input',required:true},
+    {id:'tp-desc',label:'描述（可空）',type:'input'},
+    {id:'tp-vars',label:'变量（逗号分隔，如 title,angle；可空）',type:'input',value:'title,angle'},
+    {id:'tp-body',label:'初始正文 Markdown（可空，之后协作编辑）',type:'textarea',value:'# {{title}}\n\n'}
+  ]).then(function(v){
+    if(!v)return;
+    var varList=(v['tp-vars']||'').split(',').map(function(s){return s.trim();}).filter(Boolean)
+      .map(function(x){return {name:x,label:x,required:false};});
+    apiFetch('/api/writing/templates',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:v['tp-name'],description:v['tp-desc']||'',variables:varList,body_md:v['tp-body']||''})})
+      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+      .then(function(res){
+        if(res.s===200){snack('模板已创建，可在编辑器协作维护');loadTpls();}
+        else snack('创建失败：'+(res.d.detail||''));
+      });
+  });
+});
+
+/* ---------- 模态 ---------- */
+function openModal(html){var m=$('wmodal');$('wmodal-box').innerHTML=html;m.style.display='flex';}
+function closeModal(){$('wmodal').style.display='none';}
+var modalEl=$('wmodal');
+if(modalEl)modalEl.addEventListener('click',function(e){if(e.target.id==='wmodal')closeModal();});
+/* 通用表单模态：fields=[{id,label,type:'input'|'textarea',value,required}] → resolve(values|null) */
+function formModal(title,fields,note){
+  return new Promise(function(resolve){
+    var h='<div style="font-size:15px;font-weight:700;margin-bottom:10px">'+title+'</div>'
+      +(note?'<p class="hint">'+note+'</p>':'');
+    fields.forEach(function(f){
+      h+='<label>'+esc(f.label)+(f.required?' *':'')+'</label>';
+      var val=f.value!=null?esc(f.value):'';
+      if(f.type==='textarea')h+='<textarea id="fm-'+f.id+'" rows="5" class="in" style="width:100%">'+val+'</textarea>';
+      else h+='<input id="fm-'+f.id+'" class="in" style="width:100%" value="'+val+'">';
+    });
+    h+='<div style="text-align:right;margin-top:12px"><button class="btn btn-xs" id="fm-cancel">取消</button> '
+      +'<button class="btn btn-xs" id="fm-ok" style="border-color:rgba(34,211,238,.5);color:#22d3ee">确定</button></div>';
+    openModal(h);
+    $('fm-cancel').addEventListener('click',function(){closeModal();resolve(null);});
+    $('fm-ok').addEventListener('click',function(){
+      var out={};
+      for(var i=0;i<fields.length;i++){
+        var v=$('fm-'+fields[i].id).value;
+        if(fields[i].required&&!v.trim()){snack('必填：'+fields[i].label);return;}
+        out[fields[i].id]=v;
+      }
+      closeModal();resolve(out);
+    });
+  });
+}
+function formConfirm(title,text){
+  return new Promise(function(resolve){
+    openModal('<div style="font-size:15px;font-weight:700;margin-bottom:10px">'+title+'</div>'
+      +'<p style="margin:8px 0 14px">'+text+'</p>'
+      +'<div style="text-align:right"><button class="btn btn-xs" id="fc-no">取消</button> '
+      +'<button class="btn btn-xs" id="fc-yes" style="border-color:rgba(225,29,72,.5);color:#be123c">确认</button></div>');
+    $('fc-no').addEventListener('click',function(){closeModal();resolve(false);});
+    $('fc-yes').addEventListener('click',function(){closeModal();resolve(true);});
+  });
+}
+
+/* ---------- 视图切换联动 + 轮询 ---------- */
+document.addEventListener('xintel-view',function(e){
+  if(e.detail==='cand-panel')loadCands();
+  else if(e.detail==='docs-panel')loadDocs();
+  else if(e.detail==='tpl-panel')loadTpls();
+});
+function refreshAll(){loadCands();loadDocs();loadTpls();}
+setInterval(function(){
+  var cur=localStorage.getItem('xintel_view_cur');
+  if(cur==='cand-panel')loadCands();
+  else if(cur==='docs-panel')loadDocs();
+},4000);
+window.loadCands=loadCands;
 })();
 </script>
 </body>

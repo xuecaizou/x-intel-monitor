@@ -137,3 +137,9 @@
 | R76 | 事件引用进入删除保护 | protected_tweet_ids/cleanup_old/batch_tweet_op | E7 |
 | R77 | 事件全流程 UI（列表→详情→证据→纠错→审核→导出） | web/index.html events-panel | 浏览器实测 |
 | R78 | AI 配额/限流与系统错误区分（不无限重试） | ai.AIQuotaError + engine 中止 | 生产日志 + 代码 |
+| R79 | 协作写作：候选（人工/事件/批量/AI推荐/去重/状态/转报告幂等） | ✅ 2026-11-14 app/writing.py + tests/test_writing_workbench W1-W3 |
+| R80 | 协作写作：多模板（协作正文/发布不可变版本/白名单变量/预览缺变量） | ✅ app/writing.py + W2/N09 |
+| R81 | 协作写作：Markdown 实时协作（CRDT 权威=doc_updates、saved_seq 持久化确认、断线重连、只读服务端强制） | ✅ app/doccollab.py + test_writing_collab 21 断言 |
+| R82 | 协作写作：Agent 协作（agent_ 令牌范围/建议锚点唯一/受控修改 base_rev+client_id 幂等/迟到不覆盖人工） | ✅ api/writing_routes + W6/N03/N04 |
+| R83 | 协作写作：一键 Word（pandoc 本地转换/固定修订捕获/内容哈希缓存/缺依赖与缺图明确提示/不改审核状态） | ✅ app/wordexport.py + W7/N12-N15 |
+| R84 | 协作写作：成员与权限（会话角色修正/文档 ACL/审核=admin/首页全量聚合汇总） | ✅ app/auth.py + W4-W5/W10 |

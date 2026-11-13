@@ -1,0 +1,19 @@
+{
+  "name": "x-intel-monitor",
+  "private": true,
+  "description": "Frontend collaboration bundle build (esbuild). Output: web/vendor/collab.bundle.js",
+  "scripts": {
+    "build": "esbuild editor/src/main.js --bundle --minify --format=iife --outfile=web/vendor/collab.bundle.js --log-level=warning"
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "6.3.2",
+    "codemirror": "6.0.2",
+    "marked": "12.0.2",
+    "y-codemirror.next": "0.3.6",
+    "y-websocket": "2.1.0",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

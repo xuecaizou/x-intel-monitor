@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import FileResponse, RedirectResponse
 
-from . import db, engine, auth
+from . import db, engine, auth, doccollab
 from .config import load
 from .scheduler import start as start_scheduler
 from api.routes import router
@@ -30,11 +30,20 @@ async def lifespan(app):
         start_scheduler(engine.run_fetch, cfg0["fetch"]["interval_minutes"])
     else:
         print("[scheduler] 已按配置暂停（scheduler.enabled=false）——恢复/演练场景不应自动抓取与外发")
+    # 协作写作内核（CRDT 房间 + WS）
+    try:
+        await doccollab.startup()
+        print("[doccollab] 协作服务已启动（/ws/docs）")
+    except Exception as e:
+        print(f"[doccollab] 启动失败：{type(e).__name__}: {e}——REST 功能不受影响，实时协作不可用")
     yield
+    await doccollab.shutdown()
 
 
 app = FastAPI(title="X-Intel", version="1.0.0", lifespan=lifespan)
 app.include_router(router)
+# 协作 WebSocket（pycrdt-websocket 协议，房间名 = doc_uid；鉴权在 on_connect）
+app.mount("/ws/docs", doccollab.asgi_app())
 
 
 def _no_cache(resp):
@@ -92,6 +101,27 @@ def _page_authed(request: Request) -> bool:
 @app.get("/login")
 def login_page():
     return _no_cache(FileResponse(WEB_DIR / "login.html", media_type="text/html"))
+
+
+@app.get("/editor")
+def editor_page(request: Request):
+    if not _page_authed(request):
+        return _no_cache(RedirectResponse("/login", status_code=302))
+    return _no_cache(FileResponse(WEB_DIR / "editor.html", media_type="text/html"))
+
+
+@app.get("/vendor/{fname}")
+def vendor_assets(fname: str):
+    """前端协作构建产物（collab.bundle.js 等，静态无敏感内容）"""
+    p = (WEB_DIR / "vendor" / fname).resolve()
+    try:
+        p.relative_to((WEB_DIR / "vendor").resolve())
+    except Exception:
+        return RedirectResponse("/login", status_code=302)
+    if not p.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404)
+    return FileResponse(p)
 
 
 @app.get("/api/healthz")

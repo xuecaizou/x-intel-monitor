@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """X-Intel 全端点回归检查：36 个 API + 6 个页面路由，一次性体检"""
 import io
+import os as _os
 import json
 import sys
 import urllib.request
 
 sys.stdout.reconfigure(encoding='utf-8')
-BASE = 'http://127.0.0.1:8083'
+BASE = _os.environ.get('XINTEL_BASE', 'http://127.0.0.1:8083')
 PASS, FAIL = 0, []
 
 
