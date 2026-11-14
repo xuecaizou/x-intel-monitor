@@ -122,7 +122,17 @@ def _chat_call(cfg, messages, json_mode=False):
             if r.status_code == 429 or _is_quota_error(r.text):
                 raise AIQuotaError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
             raise RuntimeError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
-        d = r.json()
+        try:
+            d = r.json()
+        except ValueError:
+            # 网关兼容（2026-11-14 实测 192.168.1.53 网关）：非流式响应末尾被追加
+            # SSE 风格尾巴（如 "data: [DONE]"）→ r.json() 报 "Extra data"。
+            # 容错：取第一个完整 JSON 对象，忽略尾部残片。
+            txt = (r.text or "").strip()
+            try:
+                d, _end = json.JSONDecoder().raw_decode(txt)
+            except ValueError:
+                raise RuntimeError(f"AI 响应不是合法 JSON：{txt[:120]}")
         choice = (d.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         content = (msg.get("content") or "").strip()
