@@ -562,6 +562,8 @@ def test_ai(cfg=None):
     """连通性测试：让模型回一个固定短语"""
     cfg = cfg or _cfg()
     _require_key(cfg)
+    if not (cfg.get("model") or "").strip():
+        raise RuntimeError("模型未配置：请选择模型并点「保存」后再测试")
     reply = _chat(cfg, [{"role": "user", "content": "请只回复四个字：链路正常"}], action="测试")
     return {"ok": True, "model": cfg.get("model"), "reply": reply[:80]}
 
