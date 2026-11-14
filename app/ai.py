@@ -99,13 +99,20 @@ def _chat(cfg, messages, json_mode=False, action="", tweet_id=None, ref=""):
 
 
 def _resp_json(r, what="AI"):
-    """解析网关响应为 JSON，三层容错（2026-11-14 实测 192.168.1.53 网关）：
-    1) 恒按 UTF-8 解码——RFC 8259 规定 JSON 为 UTF-8；部分网关声明
-       text/event-stream 且无 charset，requests 对 text/* 回退 latin-1 解码会把中文变乱码，
-       因此不信任响应头声明，直接解码字节流；
+    """解析网关响应为 JSON，多层容错（2026-11-14 实测 192.168.1.53 网关）：
+    1) 真实响应（有 .content）：恒按 UTF-8 解码字节流——RFC 8259 规定 JSON 为 UTF-8；
+       部分网关声明 text/event-stream 且无 charset，requests 对 text/* 回退 latin-1
+       解码会把中文变乱码，因此不信任响应头声明。测试替身（无 .content）退回
+       json()/text，不改变其既有行为；
     2) 剥离 SSE 'data:' 前缀载荷与 'data: [DONE]' 尾巴（网关用 SSE 通道载运单个 JSON）；
     3) 取首个完整 JSON 对象（容忍尾部残片）。"""
-    txt = (r.content or b"").decode("utf-8", errors="replace")
+    raw = getattr(r, "content", None)
+    if raw is None:
+        try:
+            return r.json()
+        except Exception:
+            raw = (getattr(r, "text", "") or "").encode("utf-8", errors="replace")
+    txt = (raw or b"").decode("utf-8", errors="replace")
     try:
         return json.loads(txt)
     except ValueError:
