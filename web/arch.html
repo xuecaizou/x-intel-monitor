@@ -329,7 +329,10 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <tr><td><code>app/notify/</code></td><td>推送实现</td><td>三件套 Markdown 模板（截图/原文/译文/研判/地理）；四通道 send；模拟模式判定</td></tr>
     <tr><td><code>app/integrity.py</code></td><td>完整性分级与审核语义</td><td>structural_grade（原始分级不被抹掉）· review_state 三态 valid/stale/none · may_auto_downstream 门控</td></tr>
     <tr><td><code>app/eventexport.py</code></td><td>事件标准化导出</td><td>独立只读事务快照 · 五桶 IOC 分离 · schema_version · CSV 公式注入防护</td></tr>
-    <tr><td><code>app/auth.py</code></td><td>认证与授权</td><td>会话 Cookie(SameSite=Lax)+CSRF · Bearer Token（read/write/admin）· 未初始化 503 · 无匿名兜底</td></tr>
+    <tr><td><code>app/auth.py</code></td><td>认证与授权</td><td>会话 Cookie(SameSite=Lax)+CSRF · Bearer Token（read/write/admin/<b>agent</b>，agent 含文档范围 scope）· 成员管理 · 未初始化 503 · 无匿名兜底；<b>会话角色以 auth_users.role 为准</b></td></tr>
+    <tr><td><code>app/writing.py</code></td><td>写作候选与模板业务</td><td>候选去重合并/状态机/AI 推荐任务链/转报告单事务幂等（报告任务+文档+模板版本+来源快照+report_refs 同一 SQL 事务）；模板发布不可变版本；变量白名单替换（禁 eval）</td></tr>
+    <tr><td><code>app/doccollab.py</code></td><td>协作内核（CRDT）</td><td>pycrdt + ASGI WebSocket；SQLite YStore 逐更新落库（saved_seq 持久化确认）；修订快照循环；只读服务端强制（丢弃其更新）；受控修改字节边界精确</td></tr>
+    <tr><td><code>app/wordexport.py</code></td><td>一键 Word</td><td>固定修订捕获 → pandoc 子进程（list 传参/timeout/受控临时目录）→ OOXML 校验 → 内容哈希缓存；远程图片不抓取（明确提示）</td></tr>
     <tr><td><code>app/safefetch.py</code></td><td>出站与文件安全</td><td>safe_join/safe_report_path 受控目录 · validate_url 按用途白名单 · fetch_limited 逐跳校验/≤8MB/限超时</td></tr>
     <tr><td><code>app/backup.py</code></td><td>一致性备份与恢复</td><td>SQLite backup API（含 WAL）· restore 默认强制暂停调度与外发 · 旧 Token/会话清除</td></tr>
     <tr><td><code>app/wecom_media.py</code></td><td>企微附件</td><td>upload_media→file 两步法 · 20MB 上限 · webhook 出站校验</td></tr>
@@ -353,6 +356,10 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <tr><td><code>event_revisions</code> / <code>event_reviews</code></td><td>版本留痕（create/update/split/unlink/merge/evidence_changed/review）· 审核绑定 (event_version, evidence_fingerprint)，三态 valid/stale/none</td></tr>
     <tr><td><code>auth_users</code> / <code>auth_tokens</code> / <code>auth_sessions</code></td><td>管理员（PBKDF2 哈希）· API Token（read/write/admin，吊销即失效）· 会话（12h，CSRF 绑定）</td></tr>
     <tr><td><code>deliveries</code> / <code>delivery_msgs</code> / <code>delivery_attempts</code></td><td>逐实例可靠投递（替代全局 pushed 调度职责）· 尝试记录 · 租约与 owner token 防双领</td></tr>
+    <tr><td><code>writing_candidates</code> / <code>candidate_revisions</code> / <code>ai_recommend_tasks</code></td><td>写作候选：cand_ 稳定 ID · dedup_key（标题+角度规范化去重合并）· 状态机（待处理/写作中/已转报告/暂缓/不采用）· version 乐观锁 · AI 建议与人工决定分列（重评不覆盖人工）· 推荐任务链（queued/running/done/failed + retry）</td></tr>
+    <tr><td><code>doc_templates</code> / <code>template_versions</code></td><td>模板元信息（variables 白名单/agent_notes/check_rules）与<b>不可变发布版本</b>（version 单调，body_md 快照）分离；正文是 kind=template 的协作文档；报告固定发布版本，模板后续变化不回写</td></tr>
+    <tr><td><code>doc_documents</code> / <code>doc_acl</code> / <code>doc_updates</code></td><td>协作文档（doc_ 稳定 ID，kind=report/template，status 编辑中/待审阅/已通过）· ACL（每用户 read/write + default_permission，只读由 WS 层强制）· <b>CRDT 增量日志 = 协作正文权威存储</b>（update_blob 按 seq 回放重建，单文件备份即完整）</td></tr>
+    <tr><td><code>doc_revisions</code> / <code>doc_suggestions</code> / <code>doc_exports</code> / <code>doc_agent_edits</code> / <code>ws_tickets</code></td><td>业务修订不可变快照（save/restore/agent_edit/suggest_apply/submit_review/export，content_hash 去重）· Agent/用户修改建议（锚点唯一匹配 + client_id 幂等 + base_rev 乐观锁）· Word 导出记录（rev/内容哈希/样式与转换器版本/产物 sha256）· Agent 受控修改幂等表 · WS 一次性票据</td></tr>
   </table>
 
   <h3>关键机制</h3>
@@ -404,6 +411,23 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <li><b>AI 写入</b>：模型计算与提交职责分离；成功经 <code>apply_ai_result</code> 原子提交（版本+人工保护），
       失败/配额状态经 <code>update_ai_guarded</code> 写回（不覆盖期间人工修改，冲突留审计）；
       <b>429/额度耗尽立即停止本轮</b>后续调用。</li>
+  </ul>
+
+  <h3>报告编写工作台（协作写作 · 一键 Word）</h3>
+  <ul>
+    <li><b>协作内核</b>：<code>app/doccollab.py</code> 基于 pycrdt（Yjs CRDT）——ASGI WebSocket（<code>/ws/docs/{doc_uid}</code>）
+      挂载于 FastAPI；<code>on_connect</code> 统一鉴权（会话 Cookie / 一次性 ticket / Bearer + Origin 校验 + 文档 ACL）。
+      自研 SQLite YStore 把<b>每个 CRDT 更新</b>落主库 <code>doc_updates</code>（房间重建=按 seq 回放；初稿仅在日志为空时从模板发布版初始化一次），
+      落库成功后推进房间 awareness 的 <code>saved_seq</code> → 前端「已同步」为服务端持久化确认。</li>
+    <li><b>房间生命周期</b>：按需构建、空房自动清理（同步清理本模块映射）；修订循环每 3s 对比文本哈希写 <code>doc_revisions(kind=save)</code>；
+      房间移除后做最终快照。单进程约束：房间操作仅在事件循环线程，REST 线程经 <code>run_coroutine_threadsafe</code> 桥接。</li>
+    <li><b>只读强制（服务端）</b>：无写权限连接的 SYNC_STEP2/SYNC_UPDATE 在 Channel 包装层被丢弃——服务端永不应用其更新，前端禁用仅为体验。</li>
+    <li><b>受控修改</b>：pycrdt Text 索引为 <b>UTF-8 字节偏移</b>——所有替换自算字节边界（锚点唯一匹配，零/多匹配明确失败），
+      中文/emoji/组合字符精确；base_rev 乐观锁 + client_id 幂等；建议接受/拒绝逐条留痕。</li>
+    <li><b>Word 导出</b>：<code>app/wordexport.py</code>——原子捕获不可变修订（kind=export）→ pandoc 子进程
+      （list 传参、timeout、受控临时目录、--resource-path 限本目录；远程图片不抓取、明确缺图提示）→
+      ZIP/OOXML 部件与正文探针校验 → 内容哈希缓存复用；<code>app/assets/reference.docx</code>（宋体/黑体）由
+      <code>scripts/make_reference_docx.py</code> 生成。导出不改审核/交付/推送状态，与报告任务门禁独立。</li>
   </ul>
 
   <h3>出站与恢复安全</h3>
