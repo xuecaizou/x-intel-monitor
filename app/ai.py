@@ -98,6 +98,42 @@ def _chat(cfg, messages, json_mode=False, action="", tweet_id=None, ref=""):
         raise
 
 
+def _resp_json(r, what="AI"):
+    """解析网关响应为 JSON，三层容错（2026-11-14 实测 192.168.1.53 网关）：
+    1) 恒按 UTF-8 解码——RFC 8259 规定 JSON 为 UTF-8；部分网关声明
+       text/event-stream 且无 charset，requests 对 text/* 回退 latin-1 解码会把中文变乱码，
+       因此不信任响应头声明，直接解码字节流；
+    2) 剥离 SSE 'data:' 前缀载荷与 'data: [DONE]' 尾巴（网关用 SSE 通道载运单个 JSON）；
+    3) 取首个完整 JSON 对象（容忍尾部残片）。"""
+    txt = (r.content or b"").decode("utf-8", errors="replace")
+    try:
+        return json.loads(txt)
+    except ValueError:
+        pass
+    payloads = []
+    for ln in txt.splitlines():
+        ln = ln.strip()
+        if ln.startswith("data:"):
+            p = ln[5:].strip()
+            if p and p != "[DONE]":
+                payloads.append(p)
+    if payloads:
+        merged = "\n".join(payloads)
+        try:
+            return json.loads(merged)
+        except ValueError:
+            try:
+                d, _end = json.JSONDecoder().raw_decode(merged)
+                return d
+            except ValueError:
+                pass
+    try:
+        d, _end = json.JSONDecoder().raw_decode(txt)
+        return d
+    except ValueError:
+        raise RuntimeError(f"{what}响应不是合法 JSON：{txt[:120]}")
+
+
 def _chat_call(cfg, messages, json_mode=False):
     base = (cfg.get("base_url") or "").rstrip("/")
     if not base:
@@ -122,17 +158,7 @@ def _chat_call(cfg, messages, json_mode=False):
             if r.status_code == 429 or _is_quota_error(r.text):
                 raise AIQuotaError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
             raise RuntimeError(f"AI 接口 HTTP {r.status_code}: {r.text[:160]}")
-        try:
-            d = r.json()
-        except ValueError:
-            # 网关兼容（2026-11-14 实测 192.168.1.53 网关）：非流式响应末尾被追加
-            # SSE 风格尾巴（如 "data: [DONE]"）→ r.json() 报 "Extra data"。
-            # 容错：取第一个完整 JSON 对象，忽略尾部残片。
-            txt = (r.text or "").strip()
-            try:
-                d, _end = json.JSONDecoder().raw_decode(txt)
-            except ValueError:
-                raise RuntimeError(f"AI 响应不是合法 JSON：{txt[:120]}")
+        d = _resp_json(r, "AI")
         choice = (d.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         content = (msg.get("content") or "").strip()
@@ -550,7 +576,7 @@ def list_models(cfg=None):
                      timeout=20, proxies=proxies)
     if r.status_code != 200:
         raise RuntimeError(f"模型列表 HTTP {r.status_code}: {r.text[:160]}")
-    d = r.json()
+    d = _resp_json(r, "模型列表")
     ids = [m.get("id") for m in (d.get("data") or []) if m.get("id")]
     return sorted(set(ids))
 
