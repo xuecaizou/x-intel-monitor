@@ -236,7 +236,7 @@ def classify_error(e):
     low = text.lower()
     if isinstance(e, _rq.exceptions.ConnectTimeout) or "timed out" in low or "timeout" in low:
         return "timeout"
-    if "name or service not known" in low or "getaddrinfo failed" in low or "name resolution" in low             or "nodename nor servname" in low:
+    if "name or service not known" in low or "getaddrinfo failed" in low             or "name resolution" in low or "nodename nor servname" in low             or "failed to resolve" in low or "no such host" in low:
         return "dns"
     if "ssl" in low or "certificate" in low or "handshake" in low:
         return "tls"

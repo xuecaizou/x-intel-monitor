@@ -70,24 +70,34 @@ def _free_port():
     return p
 
 
-PORT = _free_port()
-BASE = f"http://127.0.0.1:{PORT}"
-WSBASE = f"ws://127.0.0.1:{PORT}"
-_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
-                                        log_level="warning", lifespan="on"))
-_th = threading.Thread(target=_server.run, daemon=True)
-_th.start()
-for _ in range(60):
-    try:
-        with urllib.request.urlopen(BASE + "/api/healthz", timeout=1) as r:
-            if r.status == 200:
-                break
-    except Exception:
-        time.sleep(0.4)
+# 2026-11-16：端口/启动重试（离线连跑时偶发绑定竞态导致整组静默失败的加固）
+_server = _th = None
+for attempt in range(3):
+    PORT = _free_port()
+    BASE = f"http://127.0.0.1:{PORT}"
+    WSBASE = f"ws://127.0.0.1:{PORT}"
+    _server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
+                                            log_level="warning", lifespan="on"))
+    _th = threading.Thread(target=_server.run, daemon=True)
+    _th.start()
+    ready = False
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(BASE + "/api/healthz", timeout=1) as r:
+                if r.status == 200:
+                    ready = True
+                    break
+        except Exception:
+            time.sleep(0.4)
+    if ready:
+        print(f"服务就绪：{BASE}", flush=True)
+        break
+    _server.should_exit = True
+    _th.join(timeout=5)
+    print(f"[retry] 端口 {PORT} 启动失败，换端口重试（第 {attempt+1} 次）", flush=True)
 else:
-    print("服务未就绪")
+    print("服务未就绪（3 次重试失败）", flush=True)
     sys.exit(1)
-print(f"服务就绪：{BASE}")
 
 
 def http(method, path, body=None, headers=None, cookies=""):

@@ -9,6 +9,7 @@ import requests
 from . import db, twitter, ai as aimod
 from . import rssfetch
 from .config import load
+from contextlib import suppress
 from .notify import CHANNELS, build_digest, build_single, build_test
 from .notify.base import prepare_image
 
@@ -127,19 +128,21 @@ def _push_sort_key(t):
     return SEV_RANK.get(_effective_severity(t), 9)
 
 
-def run_ai_stage(new_tweets, cfg):
+def run_ai_stage(new_tweets, cfg, ai_cfg=None):
     """AI 阶段：本轮新推文**全部**研判+翻译（推送门控依赖它们完成）；
     历史遗留未研判的按 auto_limit 限额补处理。失败推文 ai_retries+1 供下轮重试。
 
+    通道语义（2026-11-16 round2）：ai_cfg 显式提供时优先（任务快照/测试替身）；
+    否则经 ai_channels.resolve_cfg(task="analyze") 取默认通道。
     提交语义（2026-11-09 缺陷 B 修复）：process_tweet 只计算不写库，成功结果经
     db.apply_ai_result 原子提交（版本+人工保护）；失败/配额状态经
     db.update_ai_guarded 写回（不覆盖人工修改）。出现 429/额度耗尽 → 停止本轮
     后续模型调用与翻译，剩余不计成功。"""
-    # 2026-11-16 round2：接入多通道解析（研判=默认通道；legacy 自动迁移见 ai_channels）
     from . import ai_channels as aich
     aich.migrate_legacy()
-    acfg = aich.resolve_cfg(task="analyze")
-    if not (acfg.get("enabled") and acfg.get("auto_analyze")):
+    legacy_flags = dict((cfg or {}).get("ai") or {})
+    acfg = dict(ai_cfg) if ai_cfg is not None else aich.resolve_cfg(task="analyze")
+    if not (acfg.get("enabled") and legacy_flags.get("auto_analyze", acfg.get("auto_analyze", True))):
         return 0
     done = 0
     quota_hit = [False]
@@ -202,7 +205,7 @@ def run_ai_stage(new_tweets, cfg):
     return done
 
 
-def process_ai_tasks(cfg, batch=5):
+def process_ai_tasks(cfg, batch=5, ai_cfg=None):
     """后台 AI 任务（第三批）：每轮领取一个到期任务，批量 ≤batch 条处理。
     模型调用失败与落库失败分开计数；租约防并发；重启后处理中任务按陈旧回收。"""
     rows = db.get_conn().execute(
@@ -218,7 +221,7 @@ def process_ai_tasks(cfg, batch=5):
     params = json.loads(t.get("params") or "{}")
     limit = max(1, int(params.get("limit") or 20))
     from . import ai_channels as aich
-    acfg = dict(aich.resolve_cfg(task="analyze"))
+    acfg = dict(ai_cfg) if ai_cfg is not None else aich.resolve_cfg(task="analyze")
     if not (acfg.get("enabled") and acfg.get("api_key")):
         db.finish_ai_task(t["id"], "失败", note="AI 未启用")
         return "后台AI任务：AI 未启用"
@@ -447,12 +450,27 @@ def dispatch_round(cfg):
     if not insts:
         return st
     touched = set()
+    # 2026-11-16 round2 需求 D：等待分类 ≠ 不符合规则——
+    # 规则启用类别过滤且情报分类为空、AI 未完成时，本轮跳过创建投递
+    # （情报留在候选队列，分类补齐后下轮正常评估），不写永久"已过滤"。
+    def _awaiting_classification(t, rule_flt):
+        if not (rule_flt.get("categories") or []):
+            return False
+        if (t.get("category") or "").strip():
+            return False
+        if (t.get("ai_status") or "") == "ok":
+            return False   # AI 已完成且仍无分类=确定性无分类，按未命中处理
+        return True
+
     # 1) 创建逻辑投递（含未命中 → 已过滤，供"为什么未推送"可见）
     for ch, cc, sim, iid in insts:
         rule_flt, rule_id, rule_snap = _effective_rule(cfg, cc)
         rule_name = json.loads(rule_snap).get("name", "默认") if rule_snap else "默认"
         boundary = cc.get("enabled_since") or "1970-01-01 00:00:00"
         for t in db.delivery_candidates(iid, boundary, cap=CREATION_CAP):
+            if _awaiting_classification(t, rule_flt):
+                st["awaiting"] = st.get("awaiting", 0) + 1
+                continue   # 等待分类：不建投递、不写已过滤（分类补齐后自然进入）
             hit = pass_filter(t, rule_flt)
             db.create_delivery(t["id"], iid, ch.key, rule_id, rule_snap,
                                "待发送" if hit else "已过滤",
@@ -561,6 +579,34 @@ def run_fetch(manual=False, cfg=None):
                 new_tweets = new_tweets + [t for t in fresh if t["id"] not in before_ids]
         ai_done = run_ai_stage(new_tweets, cfg)
         ai_realtime = _ai_realtime(cfg)
+        # 2026-11-16 round2 需求 D：**确定性分类兜底提前到投递之前**——
+        # 历史缺陷：AI 未完成/未启用/失败且使用类别过滤时，空类别先被写成
+        # 永久"已过滤"，后来分类正确也不再评估（THN 场景复现）。现在先分类
+        # 再投递；并对本轮"分类由空变非空"的情报定向重评估已过滤投递。
+        classified_now = []
+        for t in new_tweets:
+            row = db.get_tweet(t["id"])
+            if row and not row.get("category"):
+                cat = aimod.rule_classify(row.get("text"))
+                if cat:
+                    applied, _reason = db.update_ai_guarded(
+                        t["id"], {"category": cat},
+                        int(row.get("analysis_version") or 0))
+                    if applied:
+                        classified_now.append(t["id"])
+        # 存量未分类有界兜底（每轮 ≤50，零成本规则命中）：覆盖"上一轮已被
+        # 等待分类跳过/历史遗留"的情报——分类补齐后下轮正常进入投递评估。
+        for t in db.tweets_pending_classify(limit_n=50):
+            cat = aimod.rule_classify(t.get("text"))
+            if cat:
+                applied, _reason = db.update_ai_guarded(
+                    t["id"], {"category": cat},
+                    int(t.get("analysis_version") or 0))
+                if applied:
+                    classified_now.append(t["id"])
+        if classified_now:
+            with suppress(Exception):
+                db.reevaluate_filtered(classified_now)
         # 逐实例可靠投递（第二批）：候选创建+过滤记录+发送+重试全部收口 dispatch_round；
         # tweets.pushed 仅作兼容回写，不再决定实例资格
         dst = dispatch_round(cfg)
@@ -573,14 +619,7 @@ def run_fetch(manual=False, cfg=None):
             trace.append(ai_task_note)
         db.add_fetch_log(trigger, due_acc, ok_acc, len(new_tweets), ai_done,
                          "；".join(errors[-3:]), "｜".join(trace))
-        # 新推文分类兜底：AI 研判失败导致无分类的，用脚本规则补（零成本）
-        for t in new_tweets:
-            row = db.get_tweet(t["id"])
-            if row and not row.get("category"):
-                cat = aimod.rule_classify(row.get("text"))
-                if cat:
-                    db.update_ai_guarded(t["id"], {"category": cat},
-                                         int(row.get("analysis_version") or 0))
+        # （分类兜底已提前到 dispatch 之前——2026-11-16 需求 D 修复，此处不再重复）
         db.set_kv("last_fetch", json.dumps(
             {"at": db.now(), "new": len(new_tweets), "ai": ai_done,
              "pushed": pushed, "manual": bool(manual)}, ensure_ascii=False))
@@ -627,7 +666,8 @@ def backfill_tags(limit_n=10, cfg=None):
     """为已研判但缺地区标签的旧推文补跑 AI 打标（不重做翻译）。
     配额停止：429/额度耗尽立即停止本轮，剩余不计失败。"""
     rows = db.tweets_missing_geo(limit_n)
-    acfg = cfg or load().get("ai", {})
+    from . import ai_channels as aich
+    acfg = cfg or aich.resolve_cfg(task="analyze")
     done, errors = 0, 0
     quota_stopped = False
     for t in rows:
@@ -677,8 +717,11 @@ def test_channel(key, cfg):
 
 def classify_recent(limit=200, cfg=None):
     """对近期未分类的推文做情报分类：脚本规则优先，AI 批量兜底（可后台执行）"""
-    cfg = cfg or load()
-    acfg = dict(cfg.get("ai", {}))
+    from . import ai_channels as aich
+    if cfg is not None and cfg.get("ai"):
+        acfg = dict(cfg.get("ai", {}))
+    else:
+        acfg = aich.resolve_cfg(task="classify")
     pending = db.tweets_missing_category(limit)
     if not pending:
         return {"rule": 0, "ai": 0, "fail": 0, "total": 0}

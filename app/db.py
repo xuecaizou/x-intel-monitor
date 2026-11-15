@@ -929,6 +929,14 @@ def mark_pushed(ids):
         get_conn().commit()
 
 
+def tweets_pending_classify(limit_n=50):
+    """存量未分类（非人工忽略、AI 未完成）——确定性规则兜底的有界扫描集。"""
+    return [_row_tweet(r) for r in get_conn().execute(
+        "SELECT * FROM tweets WHERE (category='' OR category IS NULL) AND ignored=0"
+        " AND (ai_status='' OR ai_status='error')"
+        " ORDER BY id DESC LIMIT ?", (int(limit_n),)).fetchall()]
+
+
 def tweets_pending_ai(limit_n):
     """未研判 + 首败待重试的推文（error 且 retries<2 闭合重试环；≥2 次由推送门控附说明放行）"""
     return [_row_tweet(r) for r in get_conn().execute(
@@ -1541,12 +1549,24 @@ def ai_task_items(task_id, kind, limit):
     return [r["id"] for r in rows]
 
 
-def reevaluate_filtered():
-    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）"""
+def reevaluate_filtered(tweet_ids=None):
+    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）。
+
+    2026-11-16 round2 需求 D：支持 tweet_ids 定向——分类兜底填充后仅重评估
+    **本轮刚分类**的情报（不做无差别全量重置，避免历史已过滤记录被补发）。"""
     with _lock:
-        cur = get_conn().execute(
-            "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
-            " WHERE state='已过滤'", (now(),))
+        if tweet_ids:
+            ids = [int(x) for x in tweet_ids if str(x).strip().lstrip("-").isdigit()][:500]
+            if not ids:
+                return 0
+            marks = ",".join("?" for _ in ids)
+            cur = get_conn().execute(
+                f"UPDATE deliveries SET state='待发送', reason='分类补充后重新评估', updated_at=?"
+                f" WHERE state='已过滤' AND tweet_id IN ({marks})", (now(), *ids))
+        else:
+            cur = get_conn().execute(
+                "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
+                " WHERE state='已过滤'", (now(),))
         get_conn().commit()
         return cur.rowcount
 

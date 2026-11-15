@@ -829,6 +829,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var aiBtns='<div class="tops">'+
       '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'analyze\',this)">AI 研判</button>'+
       '<button class="btn btn-xs" type="button" onclick="window.__ai('+t.id+',\'translate\',this)">翻译</button>'+
+      '<button class="btn btn-xs" type="button" title="为什么没推送/没展示" onclick="window.__diagnose('+t.id+')">诊断</button>'+
       (t.url?'<a class="btn btn-xs" href="'+esc(t.url)+'" target="_blank" rel="noopener">原文</a>':'')+
       '<button class="btn btn-xs" type="button" style="border-color:rgba(34,211,238,.4);color:#22d3ee" title="加入待编写线索候选" onclick="window.__toCand('+t.id+',this)">+待编写</button>'+
       '<span class="flagbtns">'+
@@ -946,6 +947,21 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       bindSelection();updateBatchBar();loadFacets();
     }).catch(function(){document.getElementById('list').innerHTML='<div class="empty">加载失败</div>';});
   }
+  window.__diagnose=function(tid){
+    jget('/api/tweets/'+tid+'/diagnose').then(function(d){
+      var lines=(d.blockers||[]);
+      var dels=(d.deliveries||[]).map(function(x){
+        return '· 实例 '+x.instance_id+'：'+x.state+(x.reason?('（'+x.reason+'）'):'');});
+      var parts=['【诊断】'+(d.screen_name||'')+' #'+tid,
+        '等级:'+(d.severity||'—')+'｜分类:'+(d.category||'空'),
+        'AI:'+(d.ai_status||'—')+'/'+(d.ai_integrity||'—')];
+      if(lines.length)parts.push('未投递原因：').push.apply(parts, lines.map(function(x){return '· '+x;}));
+      else parts.push('无阻断项');
+      if(dels.length)parts.push('投递明细：').push.apply(parts, dels);
+      else parts.push('（尚无投递记录）');
+      alert(parts.join('\n'));
+    }).catch(function(){snack('诊断请求失败');});
+  };
   window.__ai=function(tid,action,btn){
     var old=btn.textContent;btn.disabled=true;btn.textContent='…';
     apiFetch('/api/tweets/'+tid+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1118,15 +1134,36 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       var box=document.getElementById('rssources');
       if(!items.length){box.innerHTML='<div class="empty">暂无 RSS 源——点「测试」验证地址后添加（如 TheHackersNews）</div>';return;}
       box.innerHTML=items.map(function(s){
+        /* 2026-11-16 round2 需求 D3：逐源诊断可见 + 立即抓取 */
+        var st=(s.error?'<i style="color:#be123c;font-style:normal">✗ '+esc(s.error.slice(0,50))+'</i>'
+               :(s.ok_at?'<i style="color:#047857;font-style:normal">✓ 成功 '+esc(String(s.ok_at).slice(5,16))+'</i>'
+               :'<i style="color:#94a3b8;font-style:normal">未运行</i>'));
+        var stat='解析'+(s.parsed||0)+' · 扫描'+(s.scanned||0)+' · 新增'+(s.new||0)+' · 去重'+(s.dup||0)
+          +(s.http_status?' · HTTP '+s.http_status:'')+(s.via_proxy?' · 代理':' · 直连');
         return '<div class="xacc"><div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-          +'<b>'+esc(s.name)+'</b> <span class="ttag">'+esc(s.url.replace(/^https?:\/\//,'').slice(0,42))+'</span></div>'
+          +'<b>'+esc(s.name)+'</b> <span class="ttag">'+esc(s.url.replace(/^https?:\/\//,'').slice(0,42))+'</span><br>'
+          +'<span class="ttag">'+st+' ｜ '+esc(stat)+' ｜ 尝试 '+esc(String(s.attempt_at||'—').slice(5,16))+'</span></div>'
           +'<span class="ops"><select class="freqsel" data-rss="'+s.id+'" aria-label="抓取频率">'
           +'<option value="0"'+(!s.fetch_minutes?' selected':'')+'>跟随全局</option>'
           +[5,10,15,30,60,120].map(function(m){return '<option value="'+m+'"'+(s.fetch_minutes===m?' selected':'')+'>'+m+' 分钟</option>';}).join('')
           +'</select>'
+          +'<button class="iconbtn rssnow" type="button" data-id="'+s.id+'" title="立即抓取此源">↻</button>'
           +'<label class="switch"><input type="checkbox" class="rssw" data-id="'+s.id+'"'+(s.enabled?' checked':'')+'><span class="slider"></span></label>'
           +'<button class="iconbtn rssdel" type="button" data-id="'+s.id+'">✕</button></span></div>';
       }).join('');
+      document.querySelectorAll('#rssources .rssnow').forEach(function(b){
+        b.addEventListener('click',function(){
+          var id=b.getAttribute('data-id');b.disabled=true;b.textContent='…';
+          apiFetch('/api/rss/sources/'+id+'/fetch-now',{method:'POST'})
+            .then(function(r){return r.json();})
+            .then(function(d){
+              b.disabled=false;b.textContent='↻';
+              if(d.ok)snack('已抓取：新增 '+(d.diag?d.diag.new:d.new)+' 条（去重 '+(d.diag?d.diag.dup:0)+'）');
+              else snack('抓取失败：'+(d.error||'')+'（原因见来源行诊断）');
+              loadRss();loadStats();
+            }).catch(function(){b.disabled=false;b.textContent='↻';snack('请求失败');});
+        });
+      });
     }).catch(function(){});
   }
   document.getElementById('rtestbtn').addEventListener('click',function(){

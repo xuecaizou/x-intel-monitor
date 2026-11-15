@@ -416,7 +416,56 @@ class RssBody(BaseModel):
 
 @router.get("/api/rss/sources", dependencies=[Depends(auth.require("read"))])
 def api_rss_list():
-    return {"items": db.list_rss_sources()}
+    """来源列表 + **逐源诊断**（round2 需求 D3）：尝试/成功时间、HTTP 状态、
+    解析/扫描/新增/去重计数、错误与分类、是否走代理——"没收到"的每层原因可见。"""
+    return {"items": rssfetch.source_diagnostics()}
+
+
+@router.post("/api/rss/sources/{sid}/fetch-now", dependencies=[Depends(auth.require("write"))])
+def api_rss_fetch_now(sid: int):
+    """页面"立即抓取此源"：跳过到期节流（保留互斥），返回本次诊断明细。
+    （round2 需求 D2：失败后手动重试必须有效——旧实现失败前写位点导致 due=0）"""
+    r = rssfetch.fetch_now(sid, trigger="manual")
+    return r
+
+
+@router.get("/api/tweets/{tid}/diagnose", dependencies=[Depends(auth.require("read"))])
+def api_tweet_diagnose(tid: int):
+    """单条情报"为什么没展示/没推送"诊断（需求 D3）：规则各维度、AI 状态与
+    完整性、忽略/收藏、逐实例投递状态与原因、模拟模式、重试时间。不含凭据。"""
+    t = db.get_tweet(tid)
+    if not t:
+        raise HTTPException(404, "推文不存在")
+    from app.config import load as _load
+    cfg = _load()
+    pf = dict(cfg.get("push_filters") or cfg.get("push") or {})
+    dels = []
+    with suppress(Exception):
+        rows = db.get_conn().execute(
+            "SELECT instance_id, channel_key, state, reason, updated_at FROM deliveries"
+            " WHERE tweet_id=? ORDER BY id DESC LIMIT 50", (tid,)).fetchall()
+        dels = [dict(r) for r in rows]
+    reasons = []
+    if int(t.get("ignored") or 0) == 1:
+        reasons.append("已被人工忽略")
+    if not (t.get("category") or "").strip():
+        reasons.append("分类为空（等待 AI 研判或规则兜底；类别过滤下不会投递）")
+    if (t.get("ai_status") or "") == "error":
+        reasons.append(f"AI 研判失败：{str(t.get('ai_error'))[:80]}")
+    if (t.get("ai_status") or "") == "":
+        reasons.append("尚未研判（AI 关闭或排队中）")
+    gate = {
+        "tweet_id": int(t["id"]), "screen_name": t.get("screen_name", ""),
+        "severity": t.get("ai_severity", ""), "category": t.get("category", ""),
+        "geo_country": t.get("geo_country", ""), "tags": t.get("tags"),
+        "ai_status": t.get("ai_status", ""), "ai_integrity": t.get("ai_integrity", ""),
+        "ignored": bool(int(t.get("ignored") or 0)), "starred": bool(int(t.get("starred") or 0)),
+        "analysis_version": int(t.get("analysis_version") or 0),
+        "created_at": t.get("created_at", ""),
+        "deliveries": dels, "blockers": reasons,
+        "note": "blocked 非空 = 当前不会进入投递；投递明细按实例列出实际状态与原因",
+    }
+    return gate
 
 
 @router.post("/api/rss/sources", dependencies=[Depends(auth.require("write"))])

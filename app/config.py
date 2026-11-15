@@ -49,6 +49,10 @@ DEFAULTS = {
         "wxpusher": {"enabled": False, "app_token": "", "uid": ""},
     },
     "push": {"digest_max_items": 8},
+    # 2026-11-16 round2 需求 D：RSS 独立网络选择——默认直连（不继承 X 的 socks5 代理；
+    # THN 未收到根因即默认代理+trusted_proxy=false 在出站校验阶段拒绝全部请求）。
+    # 需要代理的用户显式配置 rss.proxy（受 trusted_proxy 约束）。
+    "rss": {"proxy": "", "max_items": 30, "timeout_seconds": 25},
     # 报告编写工作台（协作写作）
     "word": {
         "pandoc_path": "",            # pandoc 可执行文件绝对路径（空=禁用 Word 导出并提示）
