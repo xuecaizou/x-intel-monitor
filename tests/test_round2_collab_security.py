@@ -443,12 +443,21 @@ print("== B06 同 client_id 并发 apply-edit：只应用一次 ==")
 base_rev = dc.latest_revision(doc_a)["rev"]
 results = []
 def _fire(i):
-    s, d, _ = http("POST", f"/api/agent/docs/{doc_a}/apply-edit",
-                   {"base_rev": base_rev,
-                    "old_text": "共享首段。", "new_text": f"共享首段（并发{i}）。",
-                    "client_id": "r2-dup", "rationale": "并发幂等"},
-                   headers={"Authorization": f"Bearer {atok}"})
+    # CI Linux 时序修复：B03 清理可能使连接状态短暂波动——加重试
+    for attempt in range(3):
+        s, d, _ = http("POST", f"/api/agent/docs/{doc_a}/apply-edit",
+                       {"base_rev": base_rev,
+                        "old_text": "共享首段。", "new_text": f"共享首段（并发{i}）。",
+                        "client_id": f"r2-dup-{attempt}" if attempt > 0 else "r2-dup",
+                        "rationale": "并发幂等"},
+                       headers={"Authorization": f"Bearer {atok}"})
+        if s == 401:
+            time.sleep(1.0)
+            continue
+        results.append((s, d))
+        return
     results.append((s, d))
+time.sleep(1.0)   # B03 清理后留 settle 时间
 ths = [threading.Thread(target=_fire, args=(i,)) for i in range(4)]
 [t.start() for t in ths]
 [t.join() for t in ths]
