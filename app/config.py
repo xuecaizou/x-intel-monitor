@@ -112,6 +112,43 @@ def ensure_instance_ids(cfg):
     return changed
 
 
+def save_runtime_exact(overrides):
+    """顶层键**整体替换**式持久化（不与现有 runtime.json 深合并）。
+
+    2026-11-16 round2：ai_channels 的列表/覆盖需要"删除键"语义——深合并
+    永远无法移除已有键（delete_channel/set_task_override 依赖此函数）。"""
+    DATA_DIR.mkdir(exist_ok=True)
+    p = DATA_DIR / "runtime.json"
+    with _rt_lock:
+        data = {}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data.update(overrides)   # 顶层键替换
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp = p.with_suffix(f".json.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        if json.loads(tmp.read_text(encoding="utf-8")) != data:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("runtime.json 写后校验失败")
+        try:
+            if p.exists():
+                bak = p.with_suffix(".json.bak")
+                for i in range(3):
+                    try:
+                        bak.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+                        break
+                    except PermissionError:
+                        if i == 2:
+                            raise
+                        time.sleep(0.02 * (i + 1))
+            _replace_with_retry(tmp, p)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
 def _replace_with_retry(src, dst, attempts=6, delay=0.02):
     """os.replace 带 Windows 瞬时占用重试。
 

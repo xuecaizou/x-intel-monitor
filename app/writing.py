@@ -366,9 +366,10 @@ def _scope_tweets(scope_type, scope_ref):
 
 def _run_recommend(task):
     """执行一次 AI 推荐任务，返回新建/合并的候选数。"""
-    from .ai import _chat, _cfg, _parse_json_loose
+    from .ai import _chat, _parse_json_loose
     from . import reports
-    cfg = _cfg()
+    from . import ai_channels as aich
+    cfg = aich.resolve_cfg(task="writing_recommend")
     tweets = _scope_tweets(task["scope_type"], task["scope_ref"])
     ctx = json.dumps(tweets, ensure_ascii=False)[:12000]
     tpl_names = [r["name"] for r in db.get_conn().execute(

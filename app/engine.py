@@ -135,8 +135,11 @@ def run_ai_stage(new_tweets, cfg):
     db.apply_ai_result 原子提交（版本+人工保护）；失败/配额状态经
     db.update_ai_guarded 写回（不覆盖人工修改）。出现 429/额度耗尽 → 停止本轮
     后续模型调用与翻译，剩余不计成功。"""
-    acfg = dict(cfg.get("ai", {}))
-    if not (acfg.get("enabled") and acfg.get("auto_analyze") and acfg.get("api_key")):
+    # 2026-11-16 round2：接入多通道解析（研判=默认通道；legacy 自动迁移见 ai_channels）
+    from . import ai_channels as aich
+    aich.migrate_legacy()
+    acfg = aich.resolve_cfg(task="analyze")
+    if not (acfg.get("enabled") and acfg.get("auto_analyze")):
         return 0
     done = 0
     quota_hit = [False]
@@ -214,7 +217,8 @@ def process_ai_tasks(cfg, batch=5):
     kind = t["kind"]
     params = json.loads(t.get("params") or "{}")
     limit = max(1, int(params.get("limit") or 20))
-    acfg = dict(((cfg or {}).get("ai") or load().get("ai") or {}))
+    from . import ai_channels as aich
+    acfg = dict(aich.resolve_cfg(task="analyze"))
     if not (acfg.get("enabled") and acfg.get("api_key")):
         db.finish_ai_task(t["id"], "失败", note="AI 未启用")
         return "后台AI任务：AI 未启用"

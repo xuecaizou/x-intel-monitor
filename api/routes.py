@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+from contextlib import suppress
 
 from fastapi.responses import JSONResponse
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, Request, Depends
@@ -10,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.params import Query
 from pydantic import BaseModel
 
-from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth, eventexport, writing
+from app import db, engine, ai as aimod, twitter, reports, rssfetch, auth, eventexport, writing, ai_channels as aich
 from app.config import load, save_runtime
 from app.notify import CHANNELS
 from app.scheduler import instance as scheduler_instance
@@ -518,21 +519,154 @@ def api_ai_config_put(body: ValuesBody):
 
 
 @router.post("/api/ai/test", dependencies=[Depends(auth.require("write"))])
-def api_ai_test():
+def api_ai_test(body: dict | None = None):
+    """连通测试——round2 需求 B：支持**草稿配置**，服务端一次请求内使用，不写
+    runtime（测试成功/失败都不改变已保存配置）。凭据语义：api_key 空/含**** 且提供
+    channel_id → 引用通道已存密钥；新密钥仅本次使用。返回实际 endpoint/model/耗时/
+    错误分类/草稿指纹（U07：测试通过绑定草稿）。"""
+    body = body or {}
+    t0 = time.time()
     try:
-        return aimod.test_ai()
+        aich.migrate_legacy()
+        draft = body.get("draft") or {}
+        cid = (body.get("channel_id") or "").strip() or None
+        cfg = aich.draft_cfg(draft, cid) if draft else aich.resolve_cfg(cid)
+        r = aimod.test_ai(cfg)
+        fp = aich.fingerprint({**draft, "channel_id": cid or ""}) if (draft or cid) else ""
+        if cid and fp:
+            aich.record_test_result(cid, {"ok": True, "model": r.get("model"),
+                                          "fingerprint": fp, "at": db.now()})
+        return {**r, "latency_ms": int((time.time() - t0) * 1000),
+                "endpoint_host": _host_only(cfg.get("base_url")), "fingerprint": fp,
+                "channel_id": cfg.get("channel_id", "")}
     except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}"}
+        fp = ""
+        if body.get("draft") or body.get("channel_id"):
+            fp = aich.fingerprint({**(body.get("draft") or {}),
+                                   "channel_id": (body.get("channel_id") or "")})
+        try:
+            if body.get("channel_id"):
+                aich.record_test_result(body["channel_id"],
+                                        {"ok": False, "fingerprint": fp, "at": db.now(),
+                                         "error": f"{type(e).__name__}: {str(e)[:120]}"})
+        except Exception:
+            pass
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}",
+                "error_class": aimod.classify_error(e),
+                "latency_ms": int((time.time() - t0) * 1000), "fingerprint": fp}
+
+
+def _host_only(url):
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url or "").netloc or "")
+    except Exception:
+        return ""
+
+
+@router.post("/api/ai/models", dependencies=[Depends(auth.require("write"))])
+def api_ai_models_draft(body: dict | None = None):
+    """拉取模型列表（OpenAI 兼容 /models）——支持草稿配置，**不隐式保存**
+    （需求 B1 根因：旧前端先 PUT 保存再拉取）。厂商无 /models 时返回明确错误，
+    前端允许手填模型并直接测试。"""
+    body = body or {}
+    t0 = time.time()
+    try:
+        aich.migrate_legacy()
+        draft = body.get("draft") or {}
+        cid = (body.get("channel_id") or "").strip() or None
+        cfg = aich.draft_cfg(draft, cid) if draft else aich.resolve_cfg(cid)
+        ids = aimod.list_models(cfg)
+        return {"ok": True, "models": ids,
+                "latency_ms": int((time.time() - t0) * 1000),
+                "endpoint_host": _host_only(cfg.get("base_url"))}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}",
+                "error_class": aimod.classify_error(e),
+                "latency_ms": int((time.time() - t0) * 1000), "models": []}
 
 
 @router.get("/api/ai/models", dependencies=[Depends(auth.require("read"))])
 def api_ai_models():
-    """拉取 AI 厂商 /models 模型列表（OpenAI 兼容端点，按当前已保存配置）"""
+    """兼容旧调用：按当前默认通道拉取模型列表"""
     try:
-        ids = aimod.list_models()
+        aich.migrate_legacy()
+        ids = aimod.list_models(aich.resolve_cfg())
         return {"ok": True, "models": ids}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}", "models": []}
+
+
+# ---------- 多 LLM 通道管理（需求 C） ----------
+
+@router.get("/api/ai/channels", dependencies=[Depends(auth.require("read"))])
+def api_ai_channels_list():
+    aich.migrate_legacy()
+    return {"items": aich.masked_list(), "default": aich.default_channel_id(),
+            "task_overrides": (load().get("ai_channels") or {}).get("task_overrides") or {}}
+
+
+@router.post("/api/ai/channels", dependencies=[Depends(auth.require("admin"))])
+def api_ai_channels_save(body: dict):
+    """保存通道：{channel:{...}} 单通道 upsert；或全量 {channels:[],default,task_overrides}"""
+    try:
+        if body.get("channel"):
+            ch = aich.upsert_channel(body["channel"])
+            return {"ok": True, "channel": {**ch, "api_key": "***"}}
+        r = aich.save_channels(body.get("channels"), body.get("default"),
+                               body.get("task_overrides"))
+        return {"ok": True, "default": r["default"]}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:180])
+
+
+@router.post("/api/ai/channels/{cid}/default", dependencies=[Depends(auth.require("admin"))])
+def api_ai_channel_default(cid: str):
+    try:
+        aich.set_default(cid)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:120])
+
+
+@router.post("/api/ai/channels/{cid}/test", dependencies=[Depends(auth.require("write"))])
+def api_ai_channel_test(cid: str):
+    """按已存通道配置测试（不改配置）"""
+    t0 = time.time()
+    try:
+        cfg = aich.resolve_cfg(cid)
+        if not cfg.get("channel_id"):
+            raise ValueError("通道不存在")
+        r = aimod.test_ai(cfg)
+        return {**r, "latency_ms": int((time.time() - t0) * 1000),
+                "endpoint_host": _host_only(cfg.get("base_url"))}
+    except Exception as e:
+        with suppress(Exception):
+            aich.record_test_result(cid, {"ok": False, "at": db.now(),
+                                          "error": f"{type(e).__name__}: {str(e)[:120]}"})
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:180]}",
+                "error_class": aimod.classify_error(e),
+                "latency_ms": int((time.time() - t0) * 1000)}
+
+
+@router.post("/api/ai/channels/{cid}/task-override", dependencies=[Depends(auth.require("admin"))])
+def api_ai_channel_override(cid: str, body: dict):
+    """设置/清除任务级通道覆盖：{"task":"doc_ai","channel_id":"" 或 "<id>"}"""
+    try:
+        aich.set_task_override(body.get("task", ""), body.get("channel_id") or "")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:120])
+
+
+@router.delete("/api/ai/channels/{cid}", dependencies=[Depends(auth.require("admin"))])
+def api_ai_channel_delete(cid: str):
+    """删除通道——被默认/任务覆盖引用时 400（要求先替换，不留悬空引用）"""
+    try:
+        aich.delete_channel(cid)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:180])
 
 
 @router.get("/api/ai/logs", dependencies=[Depends(auth.require("read"))])

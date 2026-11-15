@@ -25,6 +25,8 @@ async def lifespan(app):
     if msg:
         print("[auth]", msg)
     auth.seed_initial_admin_if_needed()
+    from . import ai_channels as _aich
+    _aich.migrate_legacy()   # 旧单份 ai 配置 → 默认 LLM 通道（幂等）
     cfg0 = load()
     if (cfg0.get("scheduler") or {}).get("enabled", True):
         start_scheduler(engine.run_fetch, cfg0["fetch"]["interval_minutes"])

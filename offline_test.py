@@ -42,6 +42,7 @@ SUITES = [
     "tests/test_writing_collab.py",
     "tests/test_writing_migration.py",
     "tests/test_round2_collab_security.py",
+    "tests/test_round2_ai_channels.py",
 ]
 
 
