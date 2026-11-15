@@ -38,8 +38,14 @@ def _reference_docx() -> Path:
 
 
 def pandoc_path(cfg=None):
+    """pandoc 可执行路径：优先显式配置；未配置时 PATH 探测（2026-11-16 §11.1——
+    环境已装 pandoc 但配置缺失导致整组跳过的根因修复）。仍找不到返回空串。"""
     cfg = cfg or load()
-    return (cfg.get("word") or {}).get("pandoc_path") or ""
+    p = (cfg.get("word") or {}).get("pandoc_path") or ""
+    if p:
+        return p
+    import shutil as _shutil
+    return _shutil.which("pandoc") or ""
 
 
 def pandoc_version(path: str) -> str:
@@ -164,6 +170,10 @@ def _run_export(eid: int, doc_uid: str, rev):
             return _fail(eid, f"修订 v{rev} 不存在")
         text, fixed_rev = r["body_md"], int(r["rev"])
     else:
+        # 2026-11-16 B07：默认导出版本——文档"已通过"时导出**批准版本**（review_rev），
+        # 不再静默导出未审核的当前草稿；需要当前草稿由调用方显式传 rev=latest。
+        if doc.get("status") == "已通过" and doc.get("review_rev"):
+            rev = int(doc["review_rev"])
         text = doccollab.current_text(doc_uid)
         chash0 = doccollab._hash_md(text)
         latest = doccollab.latest_revision(doc_uid)

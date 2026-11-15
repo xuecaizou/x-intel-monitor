@@ -218,7 +218,7 @@ def verify_token(raw: str) -> Optional[dict]:
         db.get_conn().execute("UPDATE auth_tokens SET last_used_at=? WHERE id=?",
                               (db.now(), r["id"]))
         db.get_conn().commit()
-    p = {"name": r["name"], "role": r["role"], "kind": "token"}
+    p = {"name": r["name"], "role": r["role"], "kind": "token", "token_id": r["id"]}
     if r["role"] == "agent":
         p["agent_scope"] = r["scope"] or ""
         p["agent_scope_all"] = (r["scope"] or "") == "all"

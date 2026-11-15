@@ -451,7 +451,18 @@ def init_db():
             created_at TEXT,
             UNIQUE(doc_uid, client_id)
         );
+        -- 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
         """)
+        # 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
+        try:
+            get_conn().execute("ALTER TABLE doc_updates ADD COLUMN update_sha TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dsug_client"
+                               " ON doc_suggestions(doc_uid, client_id) WHERE client_id != ''")
+        except Exception:
+            pass
         os.makedirs(os.path.join(DATA_DIR, "report_tasks"), exist_ok=True)
         os.makedirs(os.path.join(DATA_DIR, "doc_assets"), exist_ok=True)
         os.makedirs(os.path.join(DATA_DIR, "word_exports"), exist_ok=True)

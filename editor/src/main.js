@@ -56,6 +56,15 @@ function createEditor(container, opts) {
   }
 
   // ---- 真实保存状态（服务端持久化确认） ----
+  // 2026-11-16 B05：按"本客户端广播的每个更新字节的 sha"与服务端 saved_shas 精确对账——
+  // 其他成员的 ACK/全局 seq 推进不再代替本客户端确认；只有本客户端的全部待确认更新
+  // 都出现在服务端已保存集合中，才清除 dirty。
+  const pendingShas = [];           // FIFO：本客户端待确认更新 sha（hex）
+  const textEncoder = new TextEncoder();
+  async function sha256Hex(bytes) {
+    const buf = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
   let dirty = false;
   let lastSavedSeq = -1;
   const listeners = { status: [], saved: [] };
@@ -64,8 +73,12 @@ function createEditor(container, opts) {
     if (!provider.wsconnected) return 'offline';
     return dirty ? 'syncing' : 'saved';
   }
-  ydoc.on('afterTransaction', (tr) => {
-    if (tr.local) { dirty = true; emit('status', connState()); }
+  ydoc.on('update', (update, origin, doc, tr) => {
+    if (tr && tr.local) {
+      pendingShas.push(sha256Hex(textEncoder.encode(update)));
+      dirty = true;
+      emit('status', connState());
+    }
   });
   provider.on('status', () => emit('status', connState()));
   provider.on('sync', (s) => { if (s) emit('status', connState()); });
@@ -76,14 +89,36 @@ function createEditor(container, opts) {
     }
     return null;
   }
-  provider.awareness.on('change', () => {
-    const seq = readServerSeq();
-    if (seq != null) {
-      if (seq !== lastSavedSeq) {
+  let reconciling = false;
+  provider.awareness.on('change', async () => {
+    if (reconciling) return;   // 防并发对账重复弹出；本次未处理完的由下一次事件继续
+    reconciling = true;
+    try {
+      const seq = readServerSeq();
+      // 对账：服务端已保存 sha 集合（滚动窗口）——按序弹出本客户端已确认更新
+      const states = provider.awareness.getStates();
+      let savedSet = null;
+      for (const [, st] of states) {
+        if (st && st.role === 'server' && Array.isArray(st.saved_shas)) {
+          savedSet = new Set(st.saved_shas);
+          break;
+        }
+      }
+      if (savedSet && pendingShas.length) {
+        while (pendingShas.length) {
+          const hex = await pendingShas[0];
+          if (!savedSet.has(hex)) break;
+          pendingShas.shift();
+        }
+        dirty = pendingShas.length > 0;
+        emit('status', connState());
+      }
+      if (seq != null && seq !== lastSavedSeq) {
         lastSavedSeq = seq;
-        if (provider.wsconnected && dirty) { dirty = false; emit('status', 'saved'); }
         emit('saved', seq);
       }
+    } finally {
+      reconciling = false;
     }
   });
 

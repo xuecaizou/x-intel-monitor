@@ -13,6 +13,7 @@
   - 单进程约束：所有房间操作必须在事件循环线程；REST 线程经 run_coroutine_threadsafe 桥接。
 """
 import asyncio
+import collections
 import contextvars
 import hashlib
 import json
@@ -40,6 +41,7 @@ _rev_tasks: dict = {}           # doc_uid -> asyncio.Task（修订快照循环�
 _conn_registry: dict = {}       # doc_uid -> {id(inner_channel): info}
 _saved_seq_cache: dict = {}     # doc_uid -> 已落库最大 seq
 _stopping = False
+_CLEANUP_MIN_AGE = 30   # 连接注册最小复核间隔（测试可置 0）
 
 _ws_perm: contextvars.ContextVar = contextvars.ContextVar("xintel_ws_perm", default=None)
 
@@ -191,12 +193,18 @@ def set_acl(doc_uid, principal, permission, operator):
 
 def doc_permission(doc, principal):
     """计算用户对文档的权限：None=不可访问；read/write。
-    规则：admin 恒 write；模板正文仅 admin 可写；显式 ACL 优先；其余取 default_permission。"""
+    规则：admin 恒 write；模板正文仅 admin 可写；显式 ACL 优先；其余取 default_permission。
+    Agent/Agent Token（role=agent）按 scope 精确判定（2026-11-16 B02：WS 路径保留完整
+    agent 身份，跨文档/越界一律 None——与 REST _principal_from_scope 同一判定语义）。"""
     if doc is None or principal is None:
         return None
-    if principal.get("kind") == "agent":
-        return "write" if principal.get("agent_scope_all") or doc["doc_uid"] in (principal.get("agent_docs") or []) else None
-    if principal.get("role") == "admin":
+    kind = principal.get("kind")
+    role = principal.get("role")
+    if kind == "agent" or (kind == "token" and role == "agent"):
+        if principal.get("agent_scope_all"):
+            return "write"
+        return "write" if doc["doc_uid"] in (principal.get("agent_docs") or []) else None
+    if role == "admin" and kind in ("session", "token"):
         return "write"
     if doc.get("kind") == "template":
         return "read"
@@ -216,32 +224,83 @@ def _next_seq(doc_uid):
         "SELECT COALESCE(MAX(seq),0)+1 s FROM doc_updates WHERE doc_uid=?", (doc_uid,)).fetchone()["s"]
 
 
-def _store_update_sync(doc_uid, data: bytes) -> int:
+def _store_update_sync(doc_uid, data: bytes):
+    """落一条 CRDT 增量。返回 (seq, sha256hex)；sha 供前端按更新精确确认（2026-11-16 B05）。"""
+    sha = hashlib.sha256(data).hexdigest()
     with db._lock:
         seq = _next_seq(doc_uid)
-        db.get_conn().execute("INSERT INTO doc_updates (doc_uid, seq, update_blob, created_at)"
-                              " VALUES (?,?,?,?)", (doc_uid, seq, data, db.now()))
+        db.get_conn().execute("INSERT INTO doc_updates (doc_uid, seq, update_blob, update_sha, created_at)"
+                              " VALUES (?,?,?,?,?)", (doc_uid, seq, data, sha, db.now()))
         db.get_conn().commit()
-    return seq
+    return seq, sha
 
 
 class _DocYStore(BaseYStore):
-    """逐更新落主库 doc_updates；落库成功后推进房间 awareness.saved_seq。"""
+    """逐更新落主库 doc_updates；落库成功后推进房间 awareness.saved_seq。
+
+    2026-11-16 B04：写失败不再被吞——更新进入**有序待刷队列**，由后台 flusher
+    按 FIFO + 指数退避重试；saved_seq / saved_shas 仅在实际落库成功后推进。
+    恢复一致性前前端不会收到"已保存"确认。"""
 
     def __init__(self, doc_uid, log=None):
         super().__init__(path=doc_uid, log=log)
         self.doc_uid = doc_uid
+        self._pending = collections.deque()
+        self._flush_ev = None      # asyncio.Event（loop 侧懒建）
+        self._flush_task = None
+        self._saved_shas = collections.deque(maxlen=64)
+
+    def _ensure_flusher(self):
+        if self._flush_task is None or self._flush_task.done():
+            self._flush_ev = asyncio.Event()
+            self._flush_task = asyncio.create_task(self._flush_loop())
 
     async def write(self, data: bytes) -> None:
-        try:
-            seq = await asyncio.to_thread(_store_update_sync, self.doc_uid, data)
-        except Exception:
-            return
-        _saved_seq_cache[self.doc_uid] = max(seq, _saved_seq_cache.get(self.doc_uid, 0))
-        room = _room_by_uid.get(self.doc_uid)
-        if room is not None and _loop is not None:
-            with suppress(Exception):
-                room.awareness.set_local_state_field("saved_seq", seq)
+        self._pending.append(bytes(data))
+        self._ensure_flusher()
+        self._flush_ev.set()
+
+    async def _flush_loop(self):
+        delay = 0.2
+        while True:
+            if not self._pending:
+                try:
+                    await asyncio.wait_for(self._flush_ev.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    continue
+                finally:
+                    self._flush_ev.clear()
+                continue
+            data = self._pending[0]
+            try:
+                seq, sha = await asyncio.to_thread(_store_update_sync, self.doc_uid, data)
+            except Exception:
+                delay = min(delay * 2, 5.0)   # 指数退避，上限 5s；更新保留在队首
+                await asyncio.sleep(delay)
+                continue
+            delay = 0.2
+            self._pending.popleft()
+            self._saved_shas.append(sha)
+            _saved_seq_cache[self.doc_uid] = max(seq, _saved_seq_cache.get(self.doc_uid, 0))
+            room = _room_by_uid.get(self.doc_uid)
+            if room is not None and _loop is not None:
+                with suppress(Exception):
+                    room.awareness.set_local_state_field("saved_seq", seq)
+                    room.awareness.set_local_state_field("saved_shas", list(self._saved_shas))
+
+    async def flush_pending(self, timeout=10):
+        """房间销毁前尽力把待刷更新落库（失败则放弃——不阻塞销毁，不虚报成功）。"""
+        deadline = time.time() + timeout
+        while self._pending and time.time() < deadline:
+            try:
+                seq, sha = await asyncio.to_thread(_store_update_sync, self.doc_uid,
+                                                   self._pending[0])
+            except Exception:
+                await asyncio.sleep(0.3)
+                continue
+            self._pending.popleft()
+            self._saved_shas.append(sha)
+            _saved_seq_cache[self.doc_uid] = max(seq, _saved_seq_cache.get(self.doc_uid, 0))
 
     async def read(self):
         rows = await asyncio.to_thread(
@@ -262,10 +321,7 @@ def _replay_doc(doc_uid, initial_md=""):
     if not rows and initial_md:
         t += initial_md
         upd = d.get_update()
-        with db._lock:
-            db.get_conn().execute("INSERT INTO doc_updates (doc_uid, seq, update_blob, created_at)"
-                                  " VALUES (?,1,?,?)", (doc_uid, upd, db.now()))
-            db.get_conn().commit()
+        _store_update_sync(doc_uid, upd)   # 含 update_sha（B05：每行都有对账依据）
     return d
 
 
@@ -286,6 +342,7 @@ class _ReadOnlyChannel:
 
     def __init__(self, inner):
         self._inner = inner
+        self._closed = False
 
     @property
     def path(self):
@@ -296,6 +353,8 @@ class _ReadOnlyChannel:
 
     async def __anext__(self):
         while True:
+            if self._closed:
+                raise StopAsyncIteration()
             msg = await self._inner.recv()
             if msg and len(msg) >= 2 and msg[0] == int(YMessageType.SYNC) \
                     and msg[1] in (int(YSyncMessageType.SYNC_STEP2), int(YSyncMessageType.SYNC_UPDATE)):
@@ -309,11 +368,27 @@ class _ReadOnlyChannel:
         return await self.__anext__()
 
     async def close(self):
+        self._closed = True
         inner = self._inner
         send = getattr(inner, "_send", None)
         if send:
             with suppress(Exception):
                 await send({"type": "websocket.close", "code": 4403, "reason": "permission revoked"})
+
+
+async def _force_close_channel(ch):
+    """对任意 Channel 形态（裸 ASGIWebsocket / 只读包装）发送服务端关闭帧。
+    pycrdt Channel 协议没有 close()——裸通道只能经 ASGI _send 发 websocket.close；
+    发送后 uvicorn 结束该连接，接收侧随即收到 disconnect（2026-11-16 B03 修复）。"""
+    target = getattr(ch, "_inner", ch)
+    send = getattr(target, "_send", None)
+    if send is not None:
+        with suppress(Exception):
+            await send({"type": "websocket.close", "code": 4403, "reason": "permission revoked"})
+    rc = getattr(ch, "close", None)
+    if rc is not None:
+        with suppress(Exception):
+            await rc()
 
 
 class _XServer(WebsocketServer):
@@ -324,7 +399,10 @@ class _XServer(WebsocketServer):
         perm = _ws_perm.get() or "read"
         info = _ws_info.get()
         if info:
-            reg = _conn_registry.setdefault(websocket.path, {})
+            # 2026-11-16 B03 修复：注册表键统一用 doc_uid（原先误用完整 path，
+            # 周期复核 get_doc(完整路径) 恒 None——MIN_AGE=0 时会误关所有连接）
+            uid = (websocket.path or "").rstrip("/").rsplit("/", 1)[-1]
+            reg = _conn_registry.setdefault(uid, {})
             reg[id(websocket)] = {**info, "perm": perm, "channel": websocket, "at": time.time()}
         wrapped = websocket if perm == "write" else _ReadOnlyChannel(websocket)
         await super().serve(wrapped)
@@ -369,8 +447,9 @@ def _origin_ok(scope, hdrs):
     return (not oh) or oh == host
 
 
-def _principal_from_ws(scope, hdrs):
-    """WS 鉴权：会话 Cookie > 一次性 ticket > Bearer Token。返回 (principal, info, perm_override)。"""
+def _principal_from_ws(scope, hdrs, doc_uid=None):
+    """WS 鉴权：会话 Cookie > 一次性 ticket > Bearer Token。返回 (principal, info, perm_override)。
+    2026-11-16 B01：ticket 消费绑定目标文档（跨文档票据直接失效）。"""
     from . import auth
     # 1) 会话
     cookies = {}
@@ -392,17 +471,31 @@ def _principal_from_ws(scope, hdrs):
     except Exception:
         ticket = ""
     if ticket:
-        t = consume_ticket(ticket)
+        # B01：消费时绑定目标文档——A 文档的票据连 B 文档直接失效
+        t = consume_ticket(ticket, doc_uid)
         if t:
-            return (t["principal"], {"via": "ticket", "username": t.get("principal_name", "")},
-                    t["permission"])
-    # 3) Bearer（便于测试与内部工具）
+            p = t.get("principal") or {}
+            principal = {"username": p.get("username", ""), "role": p.get("role", ""),
+                         "kind": p.get("kind", "session")}
+            return (principal,
+                    {"via": "ticket", "username": principal.get("username", "")},
+                    None)
+    # 3) Bearer（便于测试与内部工具）——2026-11-16 B02：保留完整 agent 身份与 token id，
+    #    权限仍由 doc_permission 在连接时按当前 ACL/scope 计算（不再透传快照权限）。
     a = hdrs.get("authorization", "")
     if a.lower().startswith("bearer "):
         p = auth.verify_token(a[7:].strip())
         if p:
-            return ({"username": p["name"], "role": p["role"], "kind": "token"},
-                    {"via": "token", "username": p["name"]}, None)
+            principal = {"username": p["name"], "role": p["role"], "kind": "token"}
+            for k in ("agent_scope", "agent_scope_all", "agent_docs"):
+                if k in p:
+                    principal[k] = p[k]
+            info = {"via": "token", "username": p["name"], "token_name": p["name"],
+                    "token_id": p.get("token_id")}
+            if "agent_docs" in p:
+                info["agent_docs"] = list(p["agent_docs"])
+                info["agent_scope_all"] = bool(p.get("agent_scope_all"))
+            return principal, info, None
     return None, None, None
 
 
@@ -427,16 +520,20 @@ async def _on_connect(msg, scope) -> bool:
     if doc is None:
         print("[ws] reject: no doc", doc_uid, flush=True)
         return True
-    principal, info, perm_override = _principal_from_ws(scope, hdrs)
+    principal, info, perm_override = _principal_from_ws(scope, hdrs, doc_uid)
     if principal is None:
         print("[ws] reject: no principal（无会话/ticket/token）", flush=True)
         return True
-    perm = perm_override or doc_permission(doc, principal)
+    # 2026-11-16 B01/B03：权限一律在连接时按当前身份与 ACL 现算——
+    # ticket 只作身份凭证（一次性、绑定目标文档），不再透传签发时的权限快照。
+    perm = doc_permission(doc, principal)
     if not perm:
         print("[ws] reject: no perm", principal.get("username"), flush=True)
         return True
     info = dict(info or {})
     info["doc_uid"] = doc_uid
+    info["principal"] = principal
+    info["connected_perm"] = perm
     try:
         await _ensure_room(doc_uid, doc, scope_path=scope.get("path"))
     except Exception:
@@ -507,6 +604,11 @@ def _save_revision_sync(doc_uid, body, kind="save", created_by="system", base_re
                       " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                       (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), body, kind,
                        base_rev, h, created_by, db.now()))
+            # 2026-11-16 B07：内容变化使既有"已通过"失效——回落编辑中（可重新提交审阅）；
+            # review_* 字段保留为历史决定。submit_review/export 等非内容类修订不触发。
+            if kind in ("save", "agent_edit", "suggest_apply"):
+                c.execute("UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
+                          (doc_uid,))
         c.execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?", (db.now(), doc_uid))
         c.commit()
     if kind == "save":
@@ -740,9 +842,10 @@ def resolve_suggestion(doc_uid, sid, decision, operator):
 # ============================================================
 
 def create_ticket(doc_uid, principal, permission, ttl=60):
-    """principal 为认证主体 dict；返回一次性明文 ticket（60s）。"""
+    """principal 为认证主体 dict；返回一次性明文 ticket（60s）。
+    ticket 绑定目标 doc_uid——消费时校验匹配，禁止跨文档复用（2026-11-16 B01）。"""
     info = {"principal": principal, "principal_name": principal.get("username", ""),
-            "permission": permission}
+            "permission": permission, "doc_uid": doc_uid}
     tk = secrets.token_urlsafe(24)
     with db._lock:
         db.get_conn().execute(
@@ -754,13 +857,17 @@ def create_ticket(doc_uid, principal, permission, ttl=60):
     return tk
 
 
-def consume_ticket(ticket):
+def consume_ticket(ticket, doc_uid=None):
+    """消费一次性 ticket。doc_uid 提供时校验票据绑定文档——跨文档复用返回 None（B01）。
+    返回的 info 不再携带可透传的权限（连接时由 doc_permission 现算，B03）。"""
     with db._lock:
         r = db.get_conn().execute("SELECT * FROM ws_tickets WHERE ticket=?", (ticket,)).fetchone()
         if not r or r["used"] or float(r["expires_at"] or 0) < time.time():
             return None
         db.get_conn().execute("UPDATE ws_tickets SET used=1 WHERE ticket=?", (ticket,))
         db.get_conn().commit()
+    if doc_uid is not None and r["doc_uid"] and r["doc_uid"] != doc_uid:
+        return None   # 票据签发给另一文档：拒绝（B01）
     try:
         info = json.loads(r["principal"])
     except Exception:
@@ -803,6 +910,15 @@ async def _cleanup_loop():
     while not _stopping:
         await asyncio.sleep(15)
         try:
+            await _cleanup_once()
+        except Exception:
+            pass
+
+
+async def _cleanup_once():
+    """单轮清理（可测试直接调用）：过期 ticket 清理 + 连接权限复核。"""
+    if True:
+        try:
             await asyncio.to_thread(
                 lambda: db.get_conn().execute("DELETE FROM ws_tickets WHERE expires_at<?",
                                               (time.time() - 3600,)) and db.get_conn().commit())
@@ -810,25 +926,63 @@ async def _cleanup_loop():
             pass
         for doc_uid, reg in list(_conn_registry.items()):
             for cid, info in list(reg.items()):
-                if time.time() - info.get("at", 0) < 30:
+                if time.time() - info.get("at", 0) < _CLEANUP_MIN_AGE:
                     continue
                 info = {**info, "at": time.time()}
                 reg[cid] = info
                 from . import auth
                 p = info.get("principal") or {}
-                ok = False
-                if info.get("via") == "session" and p.get("username"):
-                    role = auth.user_role(p["username"])
-                    ok = bool(role)
-                    doc = get_doc(doc_uid)
-                    ok = ok and bool(doc) and bool(doc_permission(doc, {"username": p["username"], "role": role, "kind": "session"}))
-                elif info.get("via") == "token":
-                    ok = True  # token 已在连接时验证；吊销由重启/重连生效（记录在文档限制）
+                doc = get_doc(doc_uid)
+                perm_now = None
+                # 2026-11-16 B03：按连接方式重新验证身份与权限——
+                #   session：sid 必须仍有效（登出/踢出即断）；token：按 id 复核 revoked；
+                #   ticket：按用户名+当前 ACL 复核。权限复核统一走 doc_permission 现算。
+                if doc is None:
+                    ok = False
+                elif info.get("via") == "session" and p.get("username"):
+                    sid = info.get("sid") or ""
+                    ok = bool(auth.get_session(sid))
+                    if ok:
+                        role = auth.user_role(p["username"]) or ""
+                        perm_now = doc_permission(doc, {"username": p["username"], "role": role,
+                                                        "kind": "session"})
+                        ok = bool(perm_now)
+                elif info.get("via") == "token" and p.get("username"):
+                    tid = info.get("token_id")
+                    if tid is not None:
+                        # 不重放原始密钥——按 id 复核未吊销，再用存储的 scope 重算权限
+                        row = db.get_conn().execute(
+                            "SELECT name, role, scope FROM auth_tokens WHERE id=? AND revoked=0",
+                            (int(tid),)).fetchone()
+                        if not row:
+                            ok = False
+                        else:
+                            principal = {"username": row["name"], "role": row["role"], "kind": "token"}
+                            if row["role"] == "agent":
+                                scope_all = (row["scope"] or "") == "all"
+                                principal["agent_scope_all"] = scope_all
+                                principal["agent_docs"] = [] if scope_all else [
+                                    x for x in (row["scope"] or "").split(",") if x]
+                            perm_now = doc_permission(doc, principal)
+                            ok = bool(perm_now)
+                    else:
+                        ok = False
+                else:
+                    # ticket 身份：按用户名与当前 ACL 复核
+                    ok = bool(auth.user_role(p.get("username", "")))
+                    if ok:
+                        role = auth.user_role(p.get("username", "")) or ""
+                        perm_now = doc_permission(doc, {"username": p.get("username", ""), "role": role,
+                                                        "kind": "session"})
+                        ok = bool(perm_now)
+                # 写连接降级/失效 → 真实关闭（读连接降读不中断阅读）
+                if ok and info.get("connected_perm") == "write" and perm_now != "write":
+                    ok = False
                 if not ok:
                     ch = info.get("channel")
                     if ch is not None:
                         with suppress(Exception):
-                            await ch.close()
+                            await _force_close_channel(ch)
                     reg.pop(cid, None)
 
 
