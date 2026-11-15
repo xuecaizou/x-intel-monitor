@@ -709,8 +709,8 @@ def restore_text(doc_uid, new_text, kind="restore", operator="system"):
                 d = _replay_doc(doc_uid, (get_doc(doc_uid) or {}).get("initial_md") or "")
                 t = d.get(TEXT_FIELD, type=Text)
                 with d.transaction():
-                    t.delete(0, len(str(t).encode("utf-8")))
-                    t.insert(0, new_text.encode("utf-8") if False else new_text)
+                    del t[0:len(str(t).encode("utf-8"))]
+                    t.insert(0, new_text)
                 upd = d.get_update()
                 _store_update_sync(doc_uid, upd)
                 full = str(t)
@@ -721,7 +721,7 @@ def restore_text(doc_uid, new_text, kind="restore", operator="system"):
 async def _restore_live(room, doc_uid, new_text):
     t = room.ydoc.get(TEXT_FIELD, type=Text)
     with room.ydoc.transaction():
-        t.delete(0, len(str(t).encode("utf-8")))
+        del t[0:len(str(t).encode("utf-8"))]
         t.insert(0, new_text)
     return str(t)
 

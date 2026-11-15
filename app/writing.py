@@ -308,11 +308,12 @@ def trigger_recommend(scope_type="backlog", scope_ref="", operator="system",
     aich.migrate_legacy()
     if scope_type not in ("manual", "tweet", "event", "backlog"):
         raise ValueError("scope_type 非法")
-    if not (prompt or "").strip():
-        raise ValueError("提示词不能为空（需求 E：用户主动输入提示词驱动推荐）")
     filters = dict(filters or {})
-    filters.setdefault("auto_create", False)   # 需求 E：提示词流程默认"结果明细+用户采纳"，
-    # 不后台静默建候选；原自动推荐（旧按钮/未来定时）显式传 auto_create=True
+    if not (prompt or "").strip():
+        # 旧调用兼容：无提示词 = 旧自动推荐（固定提示词+自动建候选）
+        prompt = ("从积压的高严重度安全情报中，推荐 5 篇值得写成专题报告的选题，"
+                  "列出写作角度、依据和缺少的材料。")
+        filters.setdefault("auto_create", True)
     eff = aich.resolve_cfg(channel_id=channel_id or None, task="writing_recommend")
     with db._lock:
         cur = db.get_conn().execute(

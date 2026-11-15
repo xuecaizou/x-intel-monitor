@@ -155,7 +155,7 @@ print("== U12 提示词进入模型 + 结果明细持久化 ==")
 s, d = api("POST", "/api/writing/recommend", {
     "scope_type": "manual", "scope_ref": "",
     "prompt": "从最近情报中推荐 2 篇文章，优先供应链攻击",
-    "filters": {"days": 7}})
+    "filters": {"days": 7, "auto_create": True}})   # 旧自动推荐路径（建候选+关联）
 check("U12-0 任务受理", s == 200 and d.get("task_id"), f"{s} {str(d)[:80]}")
 tid1 = d["task_id"]
 row = wait_task(tid1)
@@ -220,7 +220,9 @@ detail2 = json.loads(row2["result_json"] or "[]")
 check("U13-2 引用白名单：仅保留存在的 tweets.id，越界进 rejected_refs",
       detail2 and detail2[0]["tweet_ids"] == [t1]
       and 999999 in detail2[0].get("rejected_refs", []), str(detail2)[:140])
-cand2 = writing.get_candidate(detail2[0]["cand_uid"])
+# U13-3: 采纳后验证候选关联的是内部主键（非平台 tweet_id）
+adopt_r = writing.adopt_recommend_item(tid2, 0, "admin")
+cand2 = writing.get_candidate(adopt_r["cand_uid"])
 check("U13-3 候选关联的是内部主键（非平台 tweet_id）",
       cand2["tweet_ids"] == [t1] and "plat-" not in json.dumps(cand2["tweet_ids"]),
       str(cand2["tweet_ids"]))
