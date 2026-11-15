@@ -889,7 +889,8 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       '<span class="ls" style="'+(t.read?'':'font-weight:600')+'" title="'+esc(summary)+'">'+esc(summary)+'</span>'+
       (geo?'<span class="lgeo">🌍 '+esc(geo)+'</span>':'')+
       (kws?'<span class="ltags" title="'+esc((t.tags||[]).join('、'))+'">🏷 '+esc(kws)+'</span>':'')+
-      (t.url?'<a href="'+esc(t.url)+'" target="_blank" rel="noopener">↗</a>':'')+'</div>';
+      (t.url?'<a href="'+esc(t.url)+'" target="_blank" rel="noopener">↗</a>':'')+
+      '<button class="btn btn-xs" type="button" title="加入待编写线索候选" onclick="window.__toCand('+t.id+',this)">+待编写</button></div>';
   }
   function updateBatchBar(){
     document.getElementById('selcount').textContent=selected.size;
@@ -2422,13 +2423,30 @@ function openConvert(uid){
     });
   });
 }
+/* round2 需求 F：推文流加入写作候选——单条/紧凑列表/详情统一入口。
+   状态严格与后端一致：仅 HTTP 200 且返回有效 cand_uid 才显示已加入/已合并；
+   失败展示原因并恢复按钮（可重试），无权限明确显示，不伪装成功。 */
 window.__toCand=function(tid,btn){
-  apiFetch('/api/writing/candidates',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({title:'情报候选 #'+tid,tweet_ids:[tid],source_type:'tweet'})})
-    .then(function(r){return r.json();}).then(function(d){
-      if(btn){btn.textContent=d.merged?'已合并':'已加入';btn.disabled=true;}
-      snack(d.cand_uid?(d.merged?'该情报已并入现有候选（'+d.cand_uid+'）':'已加入待编写'):'操作失败');
-      loadCands();
+  var old=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='…';}
+  apiFetch('/api/writing/candidates/from-tweets',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tweet_ids:[parseInt(tid,10)]})})
+    .then(function(r){return r.json().then(function(d){return {st:r.status,d:d};});})
+    .then(function(x){
+      var d=x.d||{};
+      if(x.st===200&&d.items&&d.items[0]&&d.items[0].cand_uid){
+        if(btn){btn.textContent=d.items[0].merged?'已合并':'已加入';btn.disabled=true;}
+        snack(d.items[0].merged?('该情报已并入现有候选（'+d.items[0].cand_uid+'）'):'已加入待编写');
+        if(typeof loadCands==='function')loadCands();
+      }else{
+        if(btn){btn.disabled=false;btn.textContent=old;}
+        var why=(x.st===401||x.st===403)?'无权限':((d.detail||('HTTP '+x.st)));
+        snack('加入候选失败：'+why);
+      }
+    })
+    .catch(function(e){
+      if(btn){btn.disabled=false;btn.textContent=old;}
+      snack('加入候选失败：网络错误，可重试');
     });
 };
 $('selcand').addEventListener('click',function(){

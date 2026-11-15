@@ -124,6 +124,10 @@ class ConvertBody(BaseModel):
 
 class RecommendBody(BaseModel):
     scope_type: str = "backlog"
+    prompt: str = ""
+    channel_id: str = ""
+    model: str = ""
+    filters: dict = {}
     scope_ref: str = ""
 
 
@@ -153,8 +157,10 @@ def api_cand_create(body: CandidateBody, request: Request):
 @router.post("/api/writing/candidates/from-tweets", dependencies=[Depends(auth.require("write"))])
 def api_cand_from_tweets(body: FromTweetsBody, request: Request):
     try:
-        return {"items": writing.candidates_from_tweets(body.tweet_ids, _operator(request),
-                                                        body.title, body.angle)}
+        return {"items": writing.candidates_from_tweets(
+            body.tweet_ids, _operator(request), body.title, body.angle,
+            dedup_scope=",".join(str(x) for x in sorted({int(i) for i in body.tweet_ids
+                                                         if str(i).isdigit()})))}
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -190,7 +196,11 @@ def api_cand_update(uid: str, body: CandUpdateBody, request: Request):
 
 @router.post("/api/writing/candidates/{uid}/decision", dependencies=[Depends(auth.require("write"))])
 def api_cand_decision(uid: str, body: DecisionBody, request: Request):
-    _cand_or_404(uid)
+    c0 = _cand_or_404(uid)
+    # 2026-11-16 round2 B18：状态迁移守卫——已转报告是终态，旧页面"采纳"
+    # 不得把状态改回待处理（另建新稿是显式 convert 动作）
+    if c0.get("status") == "已转报告":
+        raise HTTPException(409, "候选已转报告（终态）；如需新稿请显式再次转换/新建")
     if body.decision not in ("采纳", "暂缓", "不采用"):
         raise HTTPException(400, "decision 须为 采纳/暂缓/不采用")
     fields = {"human_decision": body.decision, "decision_note": body.note}
@@ -230,10 +240,40 @@ def api_writing_summary():
 
 # ---- AI 推荐 ----
 
+@router.get("/api/writing/recommend/tasks", dependencies=[Depends(auth.require("read"))])
+def api_recommend_tasks(limit: int = 20):
+    """推荐任务列表（含 result_json 完整候选明细——刷新后可恢复，需求 E3/U12）"""
+    items = []
+    for t in writing.list_recommend_tasks(limit):
+        t = dict(t)
+        try:
+            t["result_detail"] = json.loads(t.pop("result_json") or "null")
+        except Exception:
+            t["result_detail"] = None
+        t.pop("result_json", None)
+        try:
+            t["filters"] = json.loads(t.get("filters") or "{}")
+        except Exception:
+            t["filters"] = {}
+        items.append(t)
+    return {"items": items}
+
+
+@router.post("/api/writing/recommend/{tid}/retry", dependencies=[Depends(auth.require("write"))])
+def api_recommend_retry(tid: int, request: Request):
+    """失败重试：复用原始提示词/范围/通道（需求 E：重试复用原始要求）"""
+    ok = writing.retry_recommend_task(tid)
+    return {"ok": bool(ok)}
+
+
 @router.post("/api/writing/recommend", dependencies=[Depends(auth.require("write"))])
 def api_recommend(body: RecommendBody, request: Request):
     try:
-        tid = writing.trigger_recommend(body.scope_type, body.scope_ref, _operator(request))
+        tid = writing.trigger_recommend(body.scope_type, body.scope_ref, _operator(request),
+                                        prompt=getattr(body, "prompt", "") or "",
+                                        channel_id=getattr(body, "channel_id", "") or "",
+                                        model=getattr(body, "model", "") or "",
+                                        filters=getattr(body, "filters", None))
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"task_id": tid, "status": "queued"}

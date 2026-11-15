@@ -60,3 +60,22 @@
 - test_writing_workbench W7 硬编码开发者 D 盘 pandoc 路径 → we.pandoc_path()（配置→PATH），
   本机 pandoc 3.12.1 实测 Word 8 断言全过、SKIP 清零；
 - test_round2_collab_security 启动加 3 次换端口重试（离线连跑偶发绑定竞态）。
+
+## F-08 需求 E/F 实现要点
+
+- trigger_recommend 持久化 prompt/channel_id/model/filters；_run_recommend 将
+  用户提示词作为独立 user 消息段【用户要求】进入模型请求（U12 实证）；
+- 资料范围：scope + filters{days/sources/keywords}（服务端过滤）；
+  空 范围→failed"资料范围为空"（与模型失败/零候选区分）；
+- B14 白名单：模型引用限本次素材 tweets.id；越界剔除→rejected_refs 标注；
+  候选关联内部主键（非平台 tweet_id、非 source_id）；
+- 结果明细 result_json（title/angle/reason/priority/materials/basis/source_links/
+  tweet_ids/rejected_refs/cand_uid/merged）→ GET /api/writing/recommend/tasks
+  返回 result_detail（刷新恢复）；
+- B22 recover_recommend_tasks（租约 10min，lifespan 调用）；
+- B15 dedup 命中"不采用"→ 抑制不重建（revision 留痕 recommend_suppressed）；
+- B16 dedup_scope：批次入口 from-tweets 传情报集合身份——不同批次同默认标题不串并；
+- B18 decision 状态守卫：已转报告 409；
+- B19 convert_to_report 包装回滚 + 线索包原子写（tmp→replace）；
+- F __toCand 重写：from-tweets 入口、状态与后端一致、失败恢复按钮可重试；
+  紧凑列表补 +待编写 按钮；单条/批量/RSS 全通。

@@ -453,6 +453,35 @@ def init_db():
         );
         -- 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
         """)
+        # 2026-11-16 round2 需求 E：推荐任务持久化用户提示词/通道/结果明细
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN prompt TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN channel_id TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN model TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN result_json TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN filters TEXT DEFAULT '{}'")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE writing_candidates ADD COLUMN rec_task_id INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE writing_candidates ADD COLUMN source_key TEXT DEFAULT ''")
+        except Exception:
+            pass
         # 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
         try:
             get_conn().execute("ALTER TABLE doc_updates ADD COLUMN update_sha TEXT DEFAULT ''")
