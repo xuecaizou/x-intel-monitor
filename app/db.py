@@ -451,7 +451,47 @@ def init_db():
             created_at TEXT,
             UNIQUE(doc_uid, client_id)
         );
+        -- 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
         """)
+        # 2026-11-16 round2 需求 E：推荐任务持久化用户提示词/通道/结果明细
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN prompt TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN channel_id TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN model TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN result_json TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE ai_recommend_tasks ADD COLUMN filters TEXT DEFAULT '{}'")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE writing_candidates ADD COLUMN rec_task_id INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("ALTER TABLE writing_candidates ADD COLUMN source_key TEXT DEFAULT ''")
+        except Exception:
+            pass
+        # 2026-11-16 round2 迁移（幂等）：更新 sha（前端精确确认）+ 建议幂等键唯一
+        try:
+            get_conn().execute("ALTER TABLE doc_updates ADD COLUMN update_sha TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            get_conn().execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dsug_client"
+                               " ON doc_suggestions(doc_uid, client_id) WHERE client_id != ''")
+        except Exception:
+            pass
         os.makedirs(os.path.join(DATA_DIR, "report_tasks"), exist_ok=True)
         os.makedirs(os.path.join(DATA_DIR, "doc_assets"), exist_ok=True)
         os.makedirs(os.path.join(DATA_DIR, "word_exports"), exist_ok=True)
@@ -916,6 +956,14 @@ def mark_pushed(ids):
     with _lock:
         get_conn().execute(f"UPDATE tweets SET pushed=1 WHERE id IN ({ph})", ids)
         get_conn().commit()
+
+
+def tweets_pending_classify(limit_n=50):
+    """存量未分类（非人工忽略、AI 未完成）——确定性规则兜底的有界扫描集。"""
+    return [_row_tweet(r) for r in get_conn().execute(
+        "SELECT * FROM tweets WHERE (category='' OR category IS NULL) AND ignored=0"
+        " AND (ai_status='' OR ai_status='error')"
+        " ORDER BY id DESC LIMIT ?", (int(limit_n),)).fetchall()]
 
 
 def tweets_pending_ai(limit_n):
@@ -1530,12 +1578,24 @@ def ai_task_items(task_id, kind, limit):
     return [r["id"] for r in rows]
 
 
-def reevaluate_filtered():
-    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）"""
+def reevaluate_filtered(tweet_ids=None):
+    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）。
+
+    2026-11-16 round2 需求 D：支持 tweet_ids 定向——分类兜底填充后仅重评估
+    **本轮刚分类**的情报（不做无差别全量重置，避免历史已过滤记录被补发）。"""
     with _lock:
-        cur = get_conn().execute(
-            "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
-            " WHERE state='已过滤'", (now(),))
+        if tweet_ids:
+            ids = [int(x) for x in tweet_ids if str(x).strip().lstrip("-").isdigit()][:500]
+            if not ids:
+                return 0
+            marks = ",".join("?" for _ in ids)
+            cur = get_conn().execute(
+                f"UPDATE deliveries SET state='待发送', reason='分类补充后重新评估', updated_at=?"
+                f" WHERE state='已过滤' AND tweet_id IN ({marks})", (now(), *ids))
+        else:
+            cur = get_conn().execute(
+                "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
+                " WHERE state='已过滤'", (now(),))
         get_conn().commit()
         return cur.rowcount
 

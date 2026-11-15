@@ -96,7 +96,7 @@ def add_source(name):
 
 
 def mark_due(sid):
-    db.set_kv(f"rss_last_{sid}", "0")
+    db.set_kv(f"rss_ok_{sid}", "0")
 
 
 try:

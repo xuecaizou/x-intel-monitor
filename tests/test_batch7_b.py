@@ -167,7 +167,7 @@ tids4 = [mk(f"b4-429-{i}", ai_status="") for i in range(3)]
 stub4, orig4 = install_http([_Resp(status=429, text="rate limit exceeded")])
 try:
     news = [db.get_tweet(x) for x in tids4]
-    done4 = engine.run_ai_stage(news, {"ai": dict(ACFG)})
+    done4 = engine.run_ai_stage(news, {"ai": dict(ACFG)}, ai_cfg=dict(ACFG))
 finally:
     ai.requests.post = orig4
 row4a = db.get_tweet(tids4[0])
@@ -192,7 +192,7 @@ t5 = db.get_tweet(tid5)
 db.bump_analysis_version(tid5, bump_modified=True)
 stub5, orig5 = install_http([_Resp(text=GOOD_JSON)])
 try:
-    done5 = engine.run_ai_stage([t5], {"ai": dict(ACFG)})
+    done5 = engine.run_ai_stage([t5], {"ai": dict(ACFG)}, ai_cfg=dict(ACFG))
 finally:
     ai.requests.post = orig5
 row5 = db.get_tweet(tid5)
@@ -213,7 +213,7 @@ tids6 = [mk(f"b6-task-{i}", ai_status="") for i in range(3)]
 task6 = db.create_ai_task("analyze_backlog", {"limit": 3}, total=0)
 stub6, orig6 = install_http([_Resp(status=429, text="quota exhausted")])
 try:
-    note6 = engine.process_ai_tasks({"ai": dict(ACFG)})
+    note6 = engine.process_ai_tasks({"ai": dict(ACFG)}, ai_cfg=dict(ACFG))
 finally:
     ai.requests.post = orig6
 row_task = db.get_conn().execute("SELECT * FROM ai_tasks WHERE id=?", (task6,)).fetchone()
@@ -284,7 +284,7 @@ def _flaky_apply(tid_, fields, base, source="ai"):
 
 db.apply_ai_result = _flaky_apply
 try:
-    engine.process_ai_tasks({"ai": dict(ACFG)})
+    engine.process_ai_tasks({"ai": dict(ACFG)}, ai_cfg=dict(ACFG))
 finally:
     db.apply_ai_result = orig_apply
     ai.requests.post = orig9

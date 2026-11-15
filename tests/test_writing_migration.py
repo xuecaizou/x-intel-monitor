@@ -53,6 +53,8 @@ NEW_TABLES = ["doc_templates", "template_versions", "writing_candidates",
 print("== M1 旧库迁移（模拟升级前库）+ 可重复 ==")
 db.insert_tweet({"screen_name": "M", "tweet_id": "m1", "text": "旧数据", "url": "u",
                  "published_at": db.now()})
+db.update_ai(1, {"ai_status": "ok", "ai_severity": "high",
+                 "ai_assessment": "旧数据", "ai_integrity": "verified"})
 n_tweets_before = db.get_conn().execute("SELECT COUNT(*) n FROM tweets").fetchone()["n"]
 with db._lock:
     c = db.get_conn()

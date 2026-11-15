@@ -218,10 +218,49 @@ def _is_quota_error(text) -> bool:
 
 
 def _require_key(cfg):
+    """草稿/通道测试校验。2026-11-16：本地无鉴权网关允许空 Key（base_url 为
+    私网/回环时），不要求用户伪造可用 API Key（需求 C3）。"""
     if not cfg.get("enabled"):
         raise RuntimeError("AI 功能未启用（请在「AI 设置」面板配置并启用）")
     if not cfg.get("api_key"):
+        base = (cfg.get("base_url") or "").lower()
+        if "://127.0.0.1" in base or "://localhost" in base or "://[::1]" in base                 or "://192.168." in base or "://10." in base or "://172." in base:
+            return   # 本地/内网无鉴权网关：允许空 Key
         raise RuntimeError("未配置 AI API Key")
+
+
+def classify_error(e):
+    """测试失败分类（需求 B3：区分 DNS/连接/TLS/超时/401/403/429/5xx/模型/空响应/解析）。"""
+    import requests as _rq
+    text = f"{type(e).__name__}: {e}"
+    low = text.lower()
+    if isinstance(e, _rq.exceptions.ConnectTimeout) or "timed out" in low or "timeout" in low:
+        return "timeout"
+    if "name or service not known" in low or "getaddrinfo failed" in low             or "name resolution" in low or "nodename nor servname" in low             or "failed to resolve" in low or "no such host" in low:
+        return "dns"
+    if "ssl" in low or "certificate" in low or "handshake" in low:
+        return "tls"
+    if "connection refused" in low or "connectionreset" in low or "connection reset" in low             or "failed to establish" in low or "proxy" in low and "connect" in low:
+        return "connect"
+    m = re.search(r"http (\d{3})", low)
+    if m:
+        code = int(m.group(1))
+        if code in (401, 403):
+            return "auth"
+        if code == 429:
+            return "quota"
+        if code >= 500:
+            return "server"
+        if code == 404:
+            return "endpoint"
+        return "http"
+    if "model" in low and ("not" in low or "missing" in low or "不存在" in low or "未" in low):
+        return "model"
+    if "空" in text or "empty" in low:
+        return "empty"
+    if "json" in low:
+        return "parse"
+    return "unknown"
 
 
 # ---------- 情报分类定义（16 类 + 其他） ----------

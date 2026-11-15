@@ -3,6 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from contextlib import suppress
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import FileResponse, RedirectResponse
@@ -25,6 +26,13 @@ async def lifespan(app):
     if msg:
         print("[auth]", msg)
     auth.seed_initial_admin_if_needed()
+    from . import ai_channels as _aich
+    _aich.migrate_legacy()   # 旧单份 ai 配置 → 默认 LLM 通道（幂等）
+    from . import writing as _writing
+    with suppress(Exception):
+        _n = _writing.recover_recommend_tasks()   # B22：worker 重启恢复
+        if _n:
+            print(f"[writing] 推荐 worker 恢复：{_n} 个 running 任务回收为 queued")
     cfg0 = load()
     if (cfg0.get("scheduler") or {}).get("enabled", True):
         start_scheduler(engine.run_fetch, cfg0["fetch"]["interval_minutes"])

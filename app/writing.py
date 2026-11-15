@@ -62,15 +62,25 @@ def create_candidate(title, angle="", origin="", tweet_ids=None, event_uid="",
                      source_type="manual", recommend_reason="", ai_suggestion="",
                      suggested_priority=None, suggested_template_id=None,
                      materials=None, operator="system", priority=3, owner="",
-                     human_decision="", decision_note="", dedup=True, ai_run=""):
-    """新建候选。dedup 命中活跃候选时合并并返回 (uid, merged=True)。"""
+                     human_decision="", decision_note="", dedup=True, ai_run="",
+                     dedup_scope="", rec_task_id=0):
+    """新建候选。dedup 命中活跃候选时合并并返回 (uid, merged=True)。
+
+    2026-11-16 round2（B15/B16）：
+      - dedup_scope：批次类来源传情报集合身份（如排序后的 tweet_ids）——
+        不同情报批次同默认标题**不再自动合并**（B16；同标题仅作相似提示）；
+      - dedup 命中"不采用"：人工决定保留，**不重建**待处理记录（返回 suppressed，
+        B15）；命中"已转报告"：允许新建（新证据的新选题），留痕关联。
+    """
     title = (title or "").strip()
     if not title:
         raise ValueError("标题不能为空")
     if source_type not in ("manual", "tweet", "event", "ai", "batch"):
         source_type = "manual"
     ids = sorted({int(i) for i in (tweet_ids or []) if str(i).strip().lstrip("-").isdigit()})[:50]
-    key = hashlib.sha1((_norm(title) + "\x00" + _norm(angle)).encode("utf-8")).hexdigest()[:16]
+    scope_part = _norm(dedup_scope) if dedup_scope else ""
+    key = hashlib.sha1((_norm(title) + "\x00" + _norm(angle) + "\x00" + scope_part)
+                       .encode("utf-8")).hexdigest()[:16]
     with db._lock:
         c = db.get_conn()
         if dedup and key:
@@ -88,18 +98,27 @@ def create_candidate(title, angle="", origin="", tweet_ids=None, event_uid="",
                 _log_rev(row["cand_uid"], "dedup_merge", operator, detail)
                 c.commit()
                 return row["cand_uid"], True
+            # B15：人工"不采用"的稳定身份——重复推荐不复活、不新建
+            row_rej = c.execute(
+                "SELECT cand_uid FROM writing_candidates WHERE dedup_key=?"
+                " AND status='不采用' ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+            if row_rej:
+                _log_rev(row_rej["cand_uid"], "recommend_suppressed", operator,
+                         f"重复推荐被人工决定（不采用）抑制；推荐任务 #{rec_task_id or '-'}")
+                c.commit()
+                return row_rej["cand_uid"], False
         uid = _uid("cand_")
         c.execute(
             "INSERT INTO writing_candidates (cand_uid, source_type, title, angle, origin, tweet_ids,"
             " event_uid, recommend_reason, ai_suggestion, human_decision, decision_note, owner,"
             " priority, suggested_priority, suggested_template_id, materials_todo, status,"
-            " dedup_key, last_ai_run, created_by, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'待处理',?,?,?,?,?)",
+            " dedup_key, last_ai_run, created_by, created_at, updated_at, rec_task_id, source_key)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'待处理',?,?,?,?,?,?,?)",
             (uid, source_type, title, angle or "", origin or "", _j(ids), event_uid or "",
              recommend_reason or "", ai_suggestion or "", human_decision, decision_note or "",
              owner or "", int(priority) if priority else 3,
              suggested_priority, suggested_template_id, _j(materials or []), key,
-             ai_run or "", operator, db.now(), db.now()))
+             ai_run or "", operator, db.now(), db.now(), int(rec_task_id or 0), key))
         _log_rev(uid, "create", operator, f"来源 {source_type}")
         c.commit()
         return uid, False
@@ -237,8 +256,11 @@ def delete_candidate(uid, operator):
 # 批量 / 事件入口
 # ============================================================
 
-def candidates_from_tweets(tweet_ids, operator, title="", angle=""):
-    """批量情报合并为写作候选（单条=单候选）。返回创建/合并结果列表。"""
+def candidates_from_tweets(tweet_ids, operator, title="", angle="", dedup_scope=""):
+    """批量情报合并为写作候选（单条=单候选）。返回创建/合并结果列表。
+
+    2026-11-16 round2 B16：dedup_scope=情报集合身份——不同批次同默认标题
+    "多源合并线索"不再自动串并；同一批次的重复添加仍幂等合并。"""
     from . import reports
     ids = [int(i) for i in (tweet_ids or [])][:50]
     if not ids:
@@ -249,9 +271,11 @@ def candidates_from_tweets(tweet_ids, operator, title="", angle=""):
         title = title or (t["title_zh"] or (t["text"] or "")[:60] if t else f"情报 #{ids[0]}")
     if len(ids) > 1:
         title = title or "多源合并线索"
+    scope = dedup_scope or ("batch:" + ",".join(str(x) for x in ids) if len(ids) > 1 else "")
     uid, merged = create_candidate(title=title, angle=angle, tweet_ids=ids,
                                    source_type="batch" if len(ids) > 1 else "tweet",
-                                   origin="情报批量选择", operator=operator)
+                                   origin="情报批量选择", operator=operator,
+                                   dedup_scope=scope)
     out.append({"cand_uid": uid, "merged": merged, "tweet_ids": ids})
     return out
 
@@ -274,14 +298,31 @@ def candidate_from_event(event_uid, operator, title="", angle=""):
 # AI 推荐
 # ============================================================
 
-def trigger_recommend(scope_type="backlog", scope_ref="", operator="system"):
+def trigger_recommend(scope_type="backlog", scope_ref="", operator="system",
+                      prompt="", channel_id="", model="", filters=None):
+    """创建 AI 推荐任务（round2 需求 E1：用户提示词驱动）。
+
+    prompt 原样持久化并真正进入模型请求；通道/模型持久化到任务（开始时快照，
+    执行中改默认通道不影响本任务）；filters 为资料筛选条件 dict。"""
+    from . import ai_channels as aich
+    aich.migrate_legacy()
     if scope_type not in ("manual", "tweet", "event", "backlog"):
         raise ValueError("scope_type 非法")
+    filters = dict(filters or {})
+    if not (prompt or "").strip():
+        # 旧调用兼容：无提示词 = 旧自动推荐（固定提示词+自动建候选）
+        prompt = ("从积压的高严重度安全情报中，推荐 5 篇值得写成专题报告的选题，"
+                  "列出写作角度、依据和缺少的材料。")
+        filters.setdefault("auto_create", True)
+    eff = aich.resolve_cfg(channel_id=channel_id or None, task="writing_recommend")
     with db._lock:
         cur = db.get_conn().execute(
-            "INSERT INTO ai_recommend_tasks (scope_type, scope_ref, status, created_by, created_at, updated_at)"
-            " VALUES (?,?, 'queued', ?, ?, ?)",
-            (scope_type, scope_ref or "", operator, db.now(), db.now()))
+            "INSERT INTO ai_recommend_tasks (scope_type, scope_ref, status, prompt, channel_id,"
+            " model, filters, created_by, created_at, updated_at)"
+            " VALUES (?,?, 'queued', ?,?,?,?,?, ?, ?)",
+            (scope_type, scope_ref or "", (prompt or "").strip()[:4000],
+             eff.get("channel_id") or "", (model or "").strip() or eff.get("model") or "",
+             _j(filters or {}), operator, db.now(), db.now()))
         tid = cur.lastrowid
         db.get_conn().commit()
     _ensure_recommend_thread()
@@ -313,6 +354,74 @@ def _ensure_recommend_thread():
             _recommend_thread.start()
 
 
+def adopt_recommend_item(task_id, index, operator="system"):
+    """采纳推荐结果第 index 项 → 创建候选（幂等：dedup_key 含任务与索引；
+    已采纳直接返回现有 cand_uid；人工"不采用"的项不再复活——B15 语义复用）。"""
+    row = db.get_conn().execute("SELECT * FROM ai_recommend_tasks WHERE id=?",
+                                (int(task_id),)).fetchone()
+    if not row:
+        raise ValueError("推荐任务不存在")
+    if row["status"] != "done":
+        raise ValueError(f"任务未完成（{row['status']}）")
+    try:
+        detail = json.loads(row["result_json"] or "[]")
+    except Exception:
+        detail = []
+    if not isinstance(detail, list) or not (0 <= int(index) < len(detail)):
+        raise ValueError("结果项不存在")
+    it = detail[int(index)]
+    if it.get("adopted") and it.get("cand_uid"):
+        return {"cand_uid": it["cand_uid"], "adopted": True, "existed": True}
+    uid, merged = create_candidate(
+        title=it.get("title", ""), angle=(it.get("angle") or "")[:200],
+        tweet_ids=it.get("tweet_ids") or [], source_type="ai",
+        recommend_reason=(it.get("reason") or "")[:500],
+        ai_suggestion=_j({"suggestion": {"angle": it.get("angle") or "",
+                                         "reason": it.get("reason") or "",
+                                         "materials": it.get("materials") or [],
+                                         "basis": it.get("basis") or [],
+                                         "source_links": it.get("source_links") or []},
+                          "priority": it.get("priority"),
+                          "note": f"推荐任务 #{task_id} 采纳"}),
+        suggested_priority=it.get("priority"),
+        materials=it.get("materials") or [], operator=operator,
+        ai_run=row["updated_at"] or db.now(), rec_task_id=int(task_id),
+        dedup_scope=f"rec:{task_id}:{index}")
+    it["adopted"] = True
+    it["cand_uid"] = uid
+    with db._lock:
+        db.get_conn().execute("UPDATE ai_recommend_tasks SET result_json=?, updated_at=? WHERE id=?",
+                              (_j(detail), db.now(), int(task_id)))
+        db.get_conn().commit()
+    return {"cand_uid": uid, "adopted": True, "existed": merged}
+
+
+def recover_recommend_tasks(stale_minutes=10):
+    """启动恢复（B22）：重启后残留 running 的任务按租约回收为 queued（幂等，
+    不伪造结果）；有排队任务时拉起 worker（lifespan 调用）。"""
+    import time as _t
+    with db._lock:
+        c = db.get_conn()
+        rows = c.execute("SELECT id, updated_at FROM ai_recommend_tasks WHERE status='running'"
+                         ).fetchall()
+        n = 0
+        for r in rows:
+            try:
+                ts = _t.mktime(_t.strptime(r["updated_at"], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                ts = 0
+            if _t.time() - ts > stale_minutes * 60:
+                c.execute("UPDATE ai_recommend_tasks SET status='queued',"
+                          " error='worker 重启回收（租约过期）', updated_at=? WHERE id=?",
+                          (db.now(), r["id"]))
+                n += 1
+        c.commit()
+    if n or db.get_conn().execute(
+            "SELECT 1 FROM ai_recommend_tasks WHERE status='queued' LIMIT 1").fetchone():
+        _ensure_recommend_thread()
+    return n
+
+
 def _recommend_worker():
     while True:
         task = None
@@ -328,11 +437,12 @@ def _recommend_worker():
         if task is None:
             break
         try:
-            n = _run_recommend(task)
+            n, detail = _run_recommend(task)
             with db._lock:
                 db.get_conn().execute(
-                    "UPDATE ai_recommend_tasks SET status='done', result=?, error='', updated_at=? WHERE id=?",
-                    (_j({"items": n}), db.now(), task["id"]))
+                    "UPDATE ai_recommend_tasks SET status='done', result=?, result_json=?, error='',"
+                    " updated_at=? WHERE id=?",
+                    (_j({"items": n}), _j(detail), db.now(), task["id"]))
                 db.get_conn().commit()
         except Exception as e:
             with db._lock:
@@ -342,79 +452,161 @@ def _recommend_worker():
                 db.get_conn().commit()
 
 
-def _scope_tweets(scope_type, scope_ref):
+def _scope_tweets(scope_type, scope_ref, filters=None):
+    """素材选取（round2 需求 E2）：scope + filters（days/source/keywords）。
+
+    返回统一 dict 列表（B13：sqlite3.Row 没有 .get——一律 dict(r) 包装后进
+    _tweet_package）；每条带内部主键 id（B14：模型引用与候选关联的唯一身份）。"""
     from . import reports
+    filters = filters or {}
+    days = int(filters.get("days") or 0)
+    since = ""
+    if days > 0:
+        import datetime
+        since = (datetime.datetime.now() - datetime.timedelta(days=days)
+                 ).strftime("%Y-%m-%d %H:%M:%S")
+    kws = [str(k).strip() for k in (filters.get("keywords") or []) if str(k).strip()]
+    sources = [str(x).strip() for x in (filters.get("sources") or []) if str(x).strip()]
+
+    def _pkg(row):
+        d = dict(row)
+        pkg = reports._tweet_package(d)
+        pkg["id"] = int(d["id"])   # 内部主键：候选关联与模型引用白名单的唯一身份
+        return pkg
+
+    def _match(t):
+        if since and (t.get("created_at") or "") < since:
+            return False
+        if sources and not any(t.get("screen_name", "") == x or
+                               t.get("screen_name", "") == "RSS:" + x for x in sources):
+            return False
+        if kws:
+            text = (t.get("text") or "") + (t.get("title_zh") or "")
+            if not any(k.lower() in text.lower() for k in kws):
+                return False
+        return True
+
+    out = []
     if scope_type == "tweet":
         t = db.get_tweet(int(scope_ref)) if str(scope_ref).isdigit() else None
-        return [reports._tweet_package(t)] if t else []
-    if scope_type == "event" and scope_ref:
+        out = [_pkg(t)] if t else []
+    elif scope_type == "event" and scope_ref:
         evs = db.event_evidence(scope_ref)
-        out = []
         for e in evs[:20]:
             t = db.get_tweet(e["tweet_id"])
             if t:
-                out.append(reports._tweet_package(t))
-        return out
-    if scope_type == "backlog":
+                out.append(_pkg(t))
+    elif scope_type == "backlog":
         rows = db.get_conn().execute(
             "SELECT * FROM tweets WHERE pushed=0 AND ignored=0"
             " AND COALESCE(ai_severity,'') IN ('high','critical')"
-            " ORDER BY id DESC LIMIT 15").fetchall()
-        return [reports._tweet_package(r) for r in rows]
-    return []
+            " ORDER BY id DESC LIMIT 60").fetchall()
+        out = [_pkg(r) for r in rows]
+    else:
+        rows = db.get_conn().execute(
+            "SELECT * FROM tweets WHERE ignored=0 ORDER BY id DESC LIMIT 60").fetchall()
+        out = [_pkg(r) for r in rows]
+    return [t for t in out if _match(t)][:30]
 
 
 def _run_recommend(task):
-    """执行一次 AI 推荐任务，返回新建/合并的候选数。"""
-    from .ai import _chat, _cfg, _parse_json_loose
+    """执行一次 AI 推荐任务（round2 需求 E 重构）。
+
+    - 用户提示词**真正进入模型请求**（持久化于任务行，重试复用原始要求）；
+    - 资料范围：scope_type/scope_ref + filters（时间/来源/关键词）经服务端校验；
+    - 模型只允许引用本次提供的 tweets.id（白名单校验，越界引用剔除并标注）；
+    - 返回 (新建/合并候选数, 完整候选明细)——明细持久化到任务 result_json
+      （页面展示、刷新恢复，需求 E3/U12）。
+    """
+    from .ai import _chat, _parse_json_loose
     from . import reports
-    cfg = _cfg()
-    tweets = _scope_tweets(task["scope_type"], task["scope_ref"])
+    from . import ai_channels as aich
+    cfg = aich.resolve_cfg(channel_id=task.get("channel_id") or None,
+                           task="writing_recommend")
+    if task.get("model"):
+        cfg["model"] = task["model"]
+    tweets = _scope_tweets(task["scope_type"], task["scope_ref"],
+                           filters=_jl(task.get("filters"), {}))
+    if not tweets:
+        raise ValueError("资料范围为空：所选条件下没有可用情报（scope="
+                         f"{task['scope_type']}/{task['scope_ref']}），请调整范围后重试")
+    allowed_ids = {int(t["id"]) for t in tweets}
     ctx = json.dumps(tweets, ensure_ascii=False)[:12000]
     tpl_names = [r["name"] for r in db.get_conn().execute(
         "SELECT name FROM doc_templates WHERE status='启用'").fetchall()]
+    user_prompt = (task.get("prompt") or "").strip()
     sys_prompt = (
-        "你是威胁情报编辑助手。根据给定情报素材推荐值得写成专题报告的选题。"
+        "你是威胁情报编辑助手。根据给定情报素材与用户要求，推荐值得写成专题报告的选题。"
         "输出严格 JSON：{\"items\":[{\"title\":\"报告标题(中文,具体,含主体)\",\"angle\":\"写作角度\","
         "\"reason\":\"推荐理由(基于素材)\",\"priority\":1-5,\"template\":\"建议模板名或空\","
-        "\"materials\":[\"待补材料\"],\"basis\":[\"依据的素材要点\"],\"tweet_ids\":[素材内出现的推文id数字]}]}"
+        "\"materials\":[\"待补材料\"],\"basis\":[\"依据的素材要点\"],"
+        "\"source_links\":[\"来源链接\"],\"tweet_ids\":[依据的情报记录ID数字(只能取自素材中的 id 字段)]}]}"
         "。注意：区分写作价值与事实可信度；无依据内容标待确认；不编造事实；"
-        "如素材不足以成稿，返回空数组。")
+        "tweet_ids 只能引用素材中出现的 id；如素材不足以成稿，返回空数组。")
     raw = _chat(cfg, [{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": f"可用模板：{tpl_names}\n情报素材：\n{ctx}"}],
-                json_mode=True, action="recommend", ref=task["scope_ref"])
-    data = _parse_json_loose(raw)
+                      {"role": "user",
+                       "content": f"【用户要求】\n{user_prompt}\n\n【可用模板】{tpl_names}"
+                                  f"\n\n【情报素材】（id 为可引用的情报记录 ID）：\n{ctx}"}],
+                json_mode=True, action="recommend", ref=f"task#{task['id']}")
+    # _chat(json_mode=True) 已返回解析后的 dict——仅对字符串形态再做宽松解析
+    data = raw if isinstance(raw, dict) else _parse_json_loose(raw)
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
         raise ValueError("AI 返回缺少 items 数组")
     tpl_by_name = {r["name"]: r["id"] for r in db.get_conn().execute(
         "SELECT id, name FROM doc_templates").fetchall()}
     n = 0
+    detail = []
     for it in items[:10]:
         if not isinstance(it, dict) or not (it.get("title") or "").strip():
             continue
-        tids = [int(x) for x in (it.get("tweet_ids") or [])
-                if str(x).strip().lstrip("-").isdigit()][:50]
+        # B14：白名单校验——模型引用的必须是本次提供的 tweets.id；越界剔除并标注
+        raw_tids = [int(x) for x in (it.get("tweet_ids") or [])
+                    if str(x).strip().lstrip("-").isdigit()]
+        tids = [x for x in raw_tids if x in allowed_ids][:50]
+        rejected_refs = [x for x in raw_tids if x not in allowed_ids]
         prio = it.get("priority")
         try:
             prio = max(1, min(5, int(prio))) if prio is not None else None
         except Exception:
             prio = None
         sug = {"suggestion": {"angle": it.get("angle") or "", "reason": it.get("reason") or "",
-                              "materials": it.get("materials") or [], "basis": it.get("basis") or []},
+                              "materials": it.get("materials") or [], "basis": it.get("basis") or [],
+                              "source_links": it.get("source_links") or []},
                "priority": prio,
                "template_id": tpl_by_name.get((it.get("template") or "").strip()),
                "note": f"推荐任务 #{task['id']}"}
-        create_candidate(
-            title=it["title"].strip(), angle=(it.get("angle") or "")[:200],
-            tweet_ids=tids, source_type="ai",
-            recommend_reason=(it.get("reason") or "")[:500],
-            ai_suggestion=_j(sug["suggestion"]), suggested_priority=prio,
-            suggested_template_id=sug["template_id"],
-            materials=it.get("materials") or [], operator="ai",
-            ai_run=db.now())
+        if rejected_refs:
+            sug["rejected_refs"] = rejected_refs[:10]
+        auto_create = bool((_jl(task.get("filters"), {}) or {}).get("auto_create"))
+        if auto_create:
+            uid, merged = create_candidate(
+                title=it["title"].strip(), angle=(it.get("angle") or "")[:200],
+                tweet_ids=tids, source_type="ai",
+                recommend_reason=(it.get("reason") or "")[:500],
+                ai_suggestion=_j(sug["suggestion"]), suggested_priority=prio,
+                suggested_template_id=sug["template_id"],
+                materials=it.get("materials") or [], operator="ai",
+                ai_run=db.now(), rec_task_id=task["id"])
+            if not merged:
+                with db._lock:
+                    db.get_conn().execute(
+                        "UPDATE writing_candidates SET source_key=? WHERE cand_uid=?",
+                        (f"rec:{task['id']}", uid))
+                    db.get_conn().commit()
+        else:
+            uid, merged = None, False   # 提示词流程：用户在结果列表上显式采纳
         n += 1
-    return n
+        detail.append({
+            "cand_uid": uid, "merged": merged, "adopted": False,
+            "title": it["title"].strip(), "angle": it.get("angle") or "",
+            "reason": it.get("reason") or "", "priority": prio,
+            "materials": it.get("materials") or [], "basis": it.get("basis") or [],
+            "source_links": it.get("source_links") or [],
+            "tweet_ids": tids, "rejected_refs": rejected_refs[:10],
+            "template": (it.get("template") or "").strip(),
+        })
+    return n, detail
 
 
 # ============================================================
@@ -611,8 +803,25 @@ def convert_to_report(uid, template_id, operator, tier="速报", keywords=None, 
                       use_version=None):
     """候选 → 报告任务 + 协作文档 + 模板版本引用 + 来源快照。重复调用幂等。"""
     from . import reports
+    ppath = None
     with db._lock:
         c = db.get_conn()
+        try:
+            return _convert_locked(c, uid, template_id, operator, tier, keywords, notes,
+                                   use_version)
+        except Exception:
+            c.rollback()   # B19：任一步失败→整体回滚，无孤立任务/半成品
+            if ppath and Path(ppath).exists():
+                with suppress(Exception):
+                    Path(ppath).unlink()
+            raise
+
+
+def _convert_locked(c, uid, template_id, operator, tier="速报", keywords=None, notes="",
+                    use_version=None):
+    """convert 主体（调用方持有 db._lock，异常由包装层回滚）。"""
+    from . import reports
+    if True:
         cand = c.execute("SELECT * FROM writing_candidates WHERE cand_uid=?", (uid,)).fetchone()
         if not cand:
             raise ValueError("候选不存在")
@@ -661,7 +870,9 @@ def convert_to_report(uid, template_id, operator, tier="速报", keywords=None, 
         package["task_id"] = task_id
         pdir = reports._tasks_dir()
         ppath = Path(pdir) / f"task_{task_id}.json"
-        ppath.write_text(json.dumps(package, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp_ppath = ppath.with_suffix(".json.tmp")
+        tmp_ppath.write_text(json.dumps(package, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp_ppath.replace(ppath)   # 原子落位：半成品不暴露（B19）
         c.execute("UPDATE report_tasks SET package_path=? WHERE id=?", (str(ppath), task_id))
         # 2) 协作文档（模板发布版本固定 + 用候选信息实例化白名单变量；缺失保留占位）
         doc_uid = _uid("doc_")

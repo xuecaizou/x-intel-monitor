@@ -123,7 +123,8 @@ def _flaky_apply(tid_, fields, base):
     raise RuntimeError("模拟落库失败")
 db.apply_ai_result = _flaky_apply
 try:
-    engine.process_ai_tasks({"ai": {"enabled": True, "api_key": "stub", "model": "stub"}})
+    engine.process_ai_tasks({"ai": {"enabled": True, "api_key": "stub", "model": "stub"}},
+                            ai_cfg={"enabled": True, "api_key": "stub", "model": "stub"})
 except Exception as e:
     print("  （任务处理异常被捕获）", str(e)[:60])
 db.update_ai = orig_update

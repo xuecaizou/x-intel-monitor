@@ -6,6 +6,7 @@ media 提取 description 内首图。每源独立 fetch_minutes（0=跟随全局
 位点 rss_top_{id} 仅作追踪参考、入库完成后推进；source_id=rss:{源id}。
 """
 import hashlib
+import json
 import html as htmllib
 import re
 from datetime import datetime, timezone, timedelta
@@ -90,32 +91,53 @@ def fetch_source(src, cfg, limit=15):
     只作追踪参考不再参与跳过判断；条目携带 source_id（rss:{id}）——来源改名
     不重复入库、归属不变。"""
     name, url = src["name"], src["url"]
-    xcfg = dict(cfg.get("x", {}))
-    if not xcfg.get("proxy"):
-        xcfg["proxy"] = (cfg.get("network") or {}).get("proxy") or ""
+    sid = src["id"]
+    # 2026-11-16 round2 需求 D：RSS 独立网络选择——默认**直连**（不再继承 X 的
+    # socks5 代理）。显式配置 rss.proxy / 源级 proxy 时走代理并受 trusted_proxy 约束。
+    rcfg = dict(cfg.get("rss") or {})
+    proxy = (src.get("proxy") or "").strip() or (rcfg.get("proxy") or "").strip()
+    diag = {"attempt_at": db.now(), "ok_at": "", "http_status": 0, "parsed": 0,
+            "scanned": 0, "new": 0, "dup": 0, "error": "", "error_class": "",
+            "via_proxy": bool(proxy), "trigger": src.get("_trigger") or ""}
+    db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
     try:
         # SSRF 校验（第四批）：仅 http/https；禁止回环/私网/链路本地（可用 fetch.allow_private_urls 显式放行）
         from .safefetch import validate_url, UnsafeUrlError, check_proxy_trust, fetch_limited
+        from .ai import classify_error
         from .twitter import _proxies
         try:
             validate_url(url, purpose="rss")   # RSS 永不允许私网（无白名单用途）
-            check_proxy_trust("rss", xcfg.get("proxy") or "")
+            check_proxy_trust("rss", proxy)
         except UnsafeUrlError as ue:
-            return 0, "", f"URL 拒绝（出站策略）：{ue}"
-        # 2026-11-09 H：从裸 _http_get（默认自动重定向+整包读取）迁移到受控抓取——
-        # 重定向逐跳校验、≤8MB、显式超时在应用层实际生效
+            diag["error"] = f"URL 拒绝（出站策略）：{ue}"
+            diag["error_class"] = "outbound_policy"
+            db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
+            return 0, "", diag["error"]
+        # 2026-11-09 H：受控抓取——重定向逐跳校验、≤8MB、显式超时在应用层实际生效
         status, content, _final = fetch_limited(
             url, timeout=max(20, int((src.get("_timeout") or 20))),
-            purpose="rss", proxies=_proxies(xcfg.get("proxy") or ""))
+            purpose="rss", proxies=_proxies(proxy))
+        diag["http_status"] = int(status)
         if status != 200:
+            diag["error"] = f"HTTP {status}"
+            diag["error_class"] = "http"
+            db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
             return 0, f"HTTP {status}", f"HTTP {status}"
         if not (content.lstrip()[:5].startswith(b"<?xml") or b"<feed" in content[:600]
                 or b"<rss" in content[:600]):
+            diag["error"] = "响应非 RSS/Atom（可能被 WAF 拦截）"
+            diag["error_class"] = "content"
+            db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
             return 0, "响应非 RSS/Atom", "非 RSS 内容（可能被 WAF 拦截）"
         feed = feedparser.parse(content)
+        diag["parsed"] = len(feed.entries or [])
         if not feed.entries:
+            diag["error"] = "空 feed（解析 0 条目）"
+            diag["error_class"] = "empty"
+            db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
             return 0, "0 条目", "空 feed"
         scanned = feed.entries[:limit]
+        diag["scanned"] = len(scanned)
         new = 0
         for e in scanned:
             eid = _entry_id(e)
@@ -138,12 +160,23 @@ def fetch_source(src, cfg, limit=15):
             rid = db.insert_tweet(t)
             if rid:
                 new += 1
+            else:
+                diag["dup"] += 1
         # 位点推进：仅在全部条目入库尝试完成（无异常）后写入，仅作追踪参考
-        db.set_kv(f"rss_top_{src['id']}", _entry_id(scanned[0]))
-        trace = f"✓{new}条/{len(scanned)}扫描"
+        db.set_kv(f"rss_top_{sid}", _entry_id(scanned[0]))
+        diag["new"] = new
+        diag["ok_at"] = db.now()
+        diag["error"] = ""
+        diag["error_class"] = ""
+        db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
+        trace = f"✓{new}条/{len(scanned)}扫描（去重{diag['dup']}）"
         return new, trace, ""
     except Exception as e:
-        return 0, "", f"{type(e).__name__}: {str(e)[:120]}"
+        from .ai import classify_error
+        diag["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        diag["error_class"] = classify_error(e)
+        db.set_kv(f"rss_diag_{sid}", json.dumps(diag, ensure_ascii=False))
+        return 0, "", diag["error"]
 
 
 def _global_minutes(cfg):
@@ -155,36 +188,118 @@ def _global_minutes(cfg):
         return 15
 
 
-def run_rss_round(trigger="schedule"):
-    """一轮 RSS 抓取：到期源全部抓取，返回汇总 dict（供 engine 并入 fetch_logs）"""
+def run_rss_round(trigger="schedule", force_ids=None):
+    """一轮 RSS 抓取：到期源全部抓取，返回汇总 dict（供 engine 并入 fetch_logs）。
+
+    2026-11-16 round2 需求 D 修复：
+      - 节流位点改为 **成功时间**（rss_ok_{id}）：失败后立即可重试，
+        不再出现"失败前写位点→手动重试 due=0 永不再试"；
+      - force_ids：页面"立即抓取此源"——跳过到期判断（保留互斥）；
+      - 进行中互斥：rss_busy_{id} 防并发重复抓取；调度跳过带原因（写入诊断）。
+    """
     from .config import load
+    import time as _t
     cfg = load()
     srcs = db.list_rss_sources(enabled_only=True)
     gmin = _global_minutes(cfg)
-    due, ok, total_new, traces, errs = 0, 0, 0, [], []
     try:
-        tmo = max(20, int((cfg.get("fetch") or {}).get("timeout_seconds") or 20))
+        rmax = int((cfg.get("rss") or {}).get("max_items") or 30)
     except Exception:
-        tmo = 20
+        rmax = 30
+    force = {int(x) for x in (force_ids or []) if str(x).strip().lstrip("-").isdigit()}
+    due, ok, total_new, traces, errs, skipped = 0, 0, 0, [], [], []
+    tmo = max(20, int((cfg.get("rss") or {}).get("timeout_seconds")
+                      or (cfg.get("fetch") or {}).get("timeout_seconds") or 20))
     for s in srcs:
+        sid = s["id"]
         minutes = int(s.get("fetch_minutes") or 0) or gmin
-        k = f"rss_last_{s['id']}"
-        last = db.get_kv(k)
-        import time as _t
-        if last and _t.time() - float(last) < minutes * 60:
-            continue  # 未到期
-        db.set_kv(k, str(_t.time()))
+        forced = sid in force
+        busy = db.get_kv(f"rss_busy_{sid}")
+        if busy and str(busy).strip() and _t.time() - float(busy) < 600:
+            msg = "跳过：上一轮仍在进行中（互斥保护）"
+            if forced:
+                errs.append(f"{s['name']}: {msg}")
+                traces.append(f"[{s['name']}] ⏳ {msg}")
+            skipped.append({"id": sid, "name": s["name"], "reason": msg})
+            continue
+        last_ok = db.get_kv(f"rss_ok_{sid}")
+        if not forced and last_ok and _t.time() - float(last_ok) < minutes * 60:
+            skipped.append({"id": sid, "name": s["name"], "reason": "未到期"})
+            continue
+        db.set_kv(f"rss_busy_{sid}", str(_t.time()))
         due += 1
-        new, trace, err = fetch_source({**s, "_timeout": tmo}, cfg)
+        try:
+            new, trace, err = fetch_source({**s, "_timeout": tmo, "_trigger": trigger}, cfg,
+                                           limit=rmax)
+        finally:
+            db.set_kv(f"rss_busy_{sid}", "")   # 清除互斥（原实现写当前时间导致 600s 误锁）
         total_new += new
         if err:
             errs.append(f"{s['name']}: {err}")
             traces.append(f"[{s['name']}] ✗ {err}")
         else:
             ok += 1
+            # 节流位点=成功时间（失败后可立即重试——需求 D2 修复）
+            db.set_kv(f"rss_ok_{sid}", str(_t.time()))
             traces.append(f"[{s['name']}] {trace}")
-    return {"due": due, "ok": ok, "new": total_new,
+    return {"due": due, "ok": ok, "new": total_new, "skipped": skipped,
             "trace": " ｜ ".join(traces), "error": "；".join(errs)}
+
+
+def fetch_now(source_id, trigger="manual"):
+    """页面"立即抓取此源"：强制单源抓取（保留互斥），返回诊断（需求 D3）。"""
+    srcs = {s["id"]: s for s in db.list_rss_sources(enabled_only=True)}
+    src = srcs.get(int(source_id))
+    if not src:
+        return {"ok": False, "error": "来源不存在或未启用"}
+    from .config import load
+    import time as _t
+    cfg = load()
+    sid = src["id"]
+    busy = db.get_kv(f"rss_busy_{sid}")
+    if busy and str(busy).strip() and _t.time() - float(busy) < 600:
+        return {"ok": False, "error": "抓取进行中（互斥保护），请稍后", "busy": True}
+    db.set_kv(f"rss_busy_{sid}", str(_t.time()))
+    try:
+        rmax = int((cfg.get("rss") or {}).get("max_items") or 30)
+        tmo = max(20, int((cfg.get("rss") or {}).get("timeout_seconds")
+                          or (cfg.get("fetch") or {}).get("timeout_seconds") or 20))
+        new, trace, err = fetch_source({**src, "_timeout": tmo, "_trigger": trigger}, cfg,
+                                       limit=rmax)
+    finally:
+        db.set_kv(f"rss_busy_{sid}", "")
+    if not err:
+        db.set_kv(f"rss_ok_{sid}", str(_t.time()))
+    diag = json.loads(db.get_kv(f"rss_diag_{sid}") or "{}")
+    return {"ok": not err, "new": new, "trace": trace, "error": err, "diag": diag}
+
+
+def source_diagnostics():
+    """全部来源的诊断摘要（来源页展示：尝试/成功/原因/计数——需求 D3）。"""
+    out = []
+    import time as _t
+    for s in db.list_rss_sources():
+        sid = s["id"]
+        diag = {}
+        try:
+            diag = json.loads(db.get_kv(f"rss_diag_{sid}") or "{}")
+        except Exception:
+            diag = {}
+        ok_at = db.get_kv(f"rss_ok_{sid}")
+        out.append({
+            "id": sid, "name": s["name"], "url": s["url"], "enabled": s["enabled"],
+            "fetch_minutes": s.get("fetch_minutes") or 0,
+            "attempt_at": diag.get("attempt_at", ""),
+            "ok_at": (diag.get("ok_at") or
+                      (_t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(float(ok_at)))
+                       if ok_at else "")),
+            "http_status": diag.get("http_status", 0),
+            "parsed": diag.get("parsed", 0), "scanned": diag.get("scanned", 0),
+            "new": diag.get("new", 0), "dup": diag.get("dup", 0),
+            "error": diag.get("error", ""), "error_class": diag.get("error_class", ""),
+            "via_proxy": bool(diag.get("via_proxy")),
+        })
+    return out
 
 
 def test_source(url):

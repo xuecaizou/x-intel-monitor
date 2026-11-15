@@ -286,8 +286,9 @@ check("W6-18 emoji/中文锚点修改", r.status_code == 200 and "🌍 中文✅
 
 # ============================================================
 print("== W7 Word 导出（pandoc 可用时真实转换） ==")
-pandoc = "D:/AI-work/tools/pandoc/pandoc-3.6.3/pandoc.exe"
-if Path(pandoc).exists():
+# 2026-11-16 §11.1：不再硬编码开发者个人路径——用与生产一致的探测（配置→PATH）
+pandoc = we.pandoc_path()
+if pandoc and Path(pandoc).exists():
     from app.config import save_runtime
     save_runtime({"word": {"pandoc_path": pandoc, "timeout_seconds": 90, "max_md_bytes": 2000000}})
     r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/export/word", {})
@@ -324,7 +325,7 @@ if Path(pandoc).exists():
                    cookies=boss["cookies"])
     check("W7-8 不存在导出 404", r.status_code == 404)
 else:
-    SKIP.append("W7 pandoc 不可用（XINTEL_PANDOC 未配置）——本机验证在交付报告中记录")
+    SKIP.append("W7 pandoc 不可用（未配置且 PATH 无 pandoc）——核心 Word 验收在具备 pandoc 的环境必须运行")
     print("SKIP W7（pandoc 不存在）")
 
 # ============================================================
