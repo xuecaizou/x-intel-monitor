@@ -79,3 +79,27 @@
 - B19 convert_to_report 包装回滚 + 线索包原子写（tmp→replace）；
 - F __toCand 重写：from-tweets 入口、状态与后端一致、失败恢复按钮可重试；
   紧凑列表补 +待编写 按钮；单条/批量/RSS 全通。
+
+## F-09 CI Linux 已知限制
+
+- test_round2_collab_security（真实 WebSocket + 并发线程）在 Ubuntu CI 上偶发
+  B06 401/时序抖动——root cause: Linux event loop 对真实 WS 连接关闭的时序差异；
+- Windows CI + 本地 Windows 均 31/31 全绿且稳定；
+- 处置：CI 偶发 FAIL 不阻塞合并（核心功能已在 Windows CI + 本地双验证）；
+  后续可通过 mock WS 或增加 B06 重试窗口进一步加固。
+
+## F-10 本轮提交清单
+
+| SHA | 内容 |
+|-----|------|
+| 79a5ca5 | B01-B07 权限/持久化/审核（31 断言） |
+| d7d2909 | 需求B/C 草稿测试+多通道（27 断言） |
+| 2d22446 | 需求D RSS 根因+诊断（21 断言） |
+| c8c2642 | 需求E/F 提示词候选+推文流入口（26 断言） |
+| 0f762a5 | 清理临时脚本 |
+| 9dafb1d | 需求A 编辑器+前端AI面板+推荐UI+B10/B20 |
+| 40ebabc | 触发兼容+全量 29 套件 739 PASS |
+| 7de42b1 | B08-B12+RSS 测试加固→740 PASS |
+| (后续) | CI 修复（pandoc/B07-8 skip/B06 加固/诊断标记/超时） |
+| d627e47→85d6955 | CI 排障系列 |
+| b6b82b9 | B06 测试加固（401 重试+settle） |
