@@ -13,6 +13,7 @@
   - 单进程约束：所有房间操作必须在事件循环线程；REST 线程经 run_coroutine_threadsafe 桥接。
 """
 import asyncio
+from pathlib import Path
 import collections
 import contextvars
 import hashlib
@@ -82,6 +83,18 @@ def _hash_md(s: str) -> str:
 # ============================================================
 # DB 层：文档 / 修订 / 建议 / 工单
 # ============================================================
+
+def _assets_dir(doc_uid):
+    """受控素材目录（2026-11-16 B10：此前路由引用不存在的函数导致素材接口全 500）。
+    目录锁定在 data/doc_assets/<doc_uid>，路径由调用方经 safe 校验使用。"""
+    from .config import DATA_DIR
+    d = Path(DATA_DIR) / "doc_assets" / doc_uid
+    d = d.resolve()
+    root = (Path(DATA_DIR) / "doc_assets").resolve()
+    if root not in d.parents:
+        raise DocError("素材目录非法")
+    return d
+
 
 def get_doc(doc_uid):
     r = db.get_conn().execute("SELECT * FROM doc_documents WHERE doc_uid=?", (doc_uid,)).fetchone()
@@ -675,6 +688,41 @@ def _apply_on_text(doc: Doc, t: Text, s: str, i: int, old: str, new: str) -> str
     with doc.transaction():
         del t[b_i:b_j]
         t.insert(b_i, new)
+    return str(t)
+
+
+def restore_text(doc_uid, new_text, kind="restore", operator="system"):
+    """历史恢复专用：整体替换当前正文（含空正文场景——B20：apply_text_replace 的
+    锚点为空 422 问题）。CRDT 事务内 del+insert，修订留痕 kind=restore。"""
+    room = _room_by_uid.get(doc_uid)
+    if room is not None and _loop is not None and _loop.is_running():
+        fut = asyncio.run_coroutine_threadsafe(
+            _restore_live(room, doc_uid, new_text), _loop)
+        full = fut.result(timeout=30)
+    else:
+        with _mutex(doc_uid):
+            if _room_by_uid.get(doc_uid) is not None and _loop is not None and _loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(
+                    _restore_live(_room_by_uid[doc_uid], doc_uid, new_text), _loop)
+                full = fut.result(timeout=30)
+            else:
+                d = _replay_doc(doc_uid, (get_doc(doc_uid) or {}).get("initial_md") or "")
+                t = d.get(TEXT_FIELD, type=Text)
+                with d.transaction():
+                    t.delete(0, len(str(t).encode("utf-8")))
+                    t.insert(0, new_text.encode("utf-8") if False else new_text)
+                upd = d.get_update()
+                _store_update_sync(doc_uid, upd)
+                full = str(t)
+    rev = _save_revision_sync(doc_uid, full, kind, operator, skip_same=False)
+    return {"rev": rev, "text": full}
+
+
+async def _restore_live(room, doc_uid, new_text):
+    t = room.ydoc.get(TEXT_FIELD, type=Text)
+    with room.ydoc.transaction():
+        t.delete(0, len(str(t).encode("utf-8")))
+        t.insert(0, new_text)
     return str(t)
 
 

@@ -310,6 +310,9 @@ def trigger_recommend(scope_type="backlog", scope_ref="", operator="system",
         raise ValueError("scope_type 非法")
     if not (prompt or "").strip():
         raise ValueError("提示词不能为空（需求 E：用户主动输入提示词驱动推荐）")
+    filters = dict(filters or {})
+    filters.setdefault("auto_create", False)   # 需求 E：提示词流程默认"结果明细+用户采纳"，
+    # 不后台静默建候选；原自动推荐（旧按钮/未来定时）显式传 auto_create=True
     eff = aich.resolve_cfg(channel_id=channel_id or None, task="writing_recommend")
     with db._lock:
         cur = db.get_conn().execute(
@@ -348,6 +351,48 @@ def _ensure_recommend_thread():
             _recommend_thread = threading.Thread(
                 target=_recommend_worker, name="ai-recommend", daemon=True)
             _recommend_thread.start()
+
+
+def adopt_recommend_item(task_id, index, operator="system"):
+    """采纳推荐结果第 index 项 → 创建候选（幂等：dedup_key 含任务与索引；
+    已采纳直接返回现有 cand_uid；人工"不采用"的项不再复活——B15 语义复用）。"""
+    row = db.get_conn().execute("SELECT * FROM ai_recommend_tasks WHERE id=?",
+                                (int(task_id),)).fetchone()
+    if not row:
+        raise ValueError("推荐任务不存在")
+    if row["status"] != "done":
+        raise ValueError(f"任务未完成（{row['status']}）")
+    try:
+        detail = json.loads(row["result_json"] or "[]")
+    except Exception:
+        detail = []
+    if not isinstance(detail, list) or not (0 <= int(index) < len(detail)):
+        raise ValueError("结果项不存在")
+    it = detail[int(index)]
+    if it.get("adopted") and it.get("cand_uid"):
+        return {"cand_uid": it["cand_uid"], "adopted": True, "existed": True}
+    uid, merged = create_candidate(
+        title=it.get("title", ""), angle=(it.get("angle") or "")[:200],
+        tweet_ids=it.get("tweet_ids") or [], source_type="ai",
+        recommend_reason=(it.get("reason") or "")[:500],
+        ai_suggestion=_j({"suggestion": {"angle": it.get("angle") or "",
+                                         "reason": it.get("reason") or "",
+                                         "materials": it.get("materials") or [],
+                                         "basis": it.get("basis") or [],
+                                         "source_links": it.get("source_links") or []},
+                          "priority": it.get("priority"),
+                          "note": f"推荐任务 #{task_id} 采纳"}),
+        suggested_priority=it.get("priority"),
+        materials=it.get("materials") or [], operator=operator,
+        ai_run=row["updated_at"] or db.now(), rec_task_id=int(task_id),
+        dedup_scope=f"rec:{task_id}:{index}")
+    it["adopted"] = True
+    it["cand_uid"] = uid
+    with db._lock:
+        db.get_conn().execute("UPDATE ai_recommend_tasks SET result_json=?, updated_at=? WHERE id=?",
+                              (_j(detail), db.now(), int(task_id)))
+        db.get_conn().commit()
+    return {"cand_uid": uid, "adopted": True, "existed": merged}
 
 
 def recover_recommend_tasks(stale_minutes=10):
@@ -532,23 +577,27 @@ def _run_recommend(task):
                "note": f"推荐任务 #{task['id']}"}
         if rejected_refs:
             sug["rejected_refs"] = rejected_refs[:10]
-        uid, merged = create_candidate(
-            title=it["title"].strip(), angle=(it.get("angle") or "")[:200],
-            tweet_ids=tids, source_type="ai",
-            recommend_reason=(it.get("reason") or "")[:500],
-            ai_suggestion=_j(sug["suggestion"]), suggested_priority=prio,
-            suggested_template_id=sug["template_id"],
-            materials=it.get("materials") or [], operator="ai",
-            ai_run=db.now(), rec_task_id=task["id"])
-        if not merged:
-            with db._lock:
-                db.get_conn().execute(
-                    "UPDATE writing_candidates SET source_key=? WHERE cand_uid=?",
-                    (f"rec:{task['id']}", uid))
-                db.get_conn().commit()
+        auto_create = bool((_jl(task.get("filters"), {}) or {}).get("auto_create"))
+        if auto_create:
+            uid, merged = create_candidate(
+                title=it["title"].strip(), angle=(it.get("angle") or "")[:200],
+                tweet_ids=tids, source_type="ai",
+                recommend_reason=(it.get("reason") or "")[:500],
+                ai_suggestion=_j(sug["suggestion"]), suggested_priority=prio,
+                suggested_template_id=sug["template_id"],
+                materials=it.get("materials") or [], operator="ai",
+                ai_run=db.now(), rec_task_id=task["id"])
+            if not merged:
+                with db._lock:
+                    db.get_conn().execute(
+                        "UPDATE writing_candidates SET source_key=? WHERE cand_uid=?",
+                        (f"rec:{task['id']}", uid))
+                    db.get_conn().commit()
+        else:
+            uid, merged = None, False   # 提示词流程：用户在结果列表上显式采纳
         n += 1
         detail.append({
-            "cand_uid": uid, "merged": merged,
+            "cand_uid": uid, "merged": merged, "adopted": False,
             "title": it["title"].strip(), "angle": it.get("angle") or "",
             "reason": it.get("reason") or "", "priority": prio,
             "materials": it.get("materials") or [], "basis": it.get("basis") or [],

@@ -1232,140 +1232,165 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     ["本地 Ollama","http://127.0.0.1:11434/v1","qwen2.5:7b"],
     ["自定义（手动填写）","",""]];
   function loadAiConfig(){
-    jget('/api/ai/config').then(function(d){
-      var v=d.values||{};
-      aiMaster={enabled:!!v.enabled,has_key:!!v.has_key};
-      document.getElementById('aichip').textContent=(v.enabled?'已启用':'未启用')+(v.has_key?' · 已配 Key':' · 无 Key');
-      var matched=AI_PRESETS.findIndex(function(p){return p[1]&&p[1]===v.base_url;});
-      if(matched<0)matched=AI_PRESETS.length-1; // 未匹配任何预设 → 自定义
-      var f=document.getElementById('aiform');
-      f.innerHTML=
-        '<label>厂商预设</label><select id="ai-preset" style="width:100%">'+
-        AI_PRESETS.map(function(p,i){return '<option value="'+i+'"'+(i===matched?' selected':'')+'>'+esc(p[0])+'</option>';}).join('')+'</select>'+
-        '<label>接口地址 base_url（OpenAI 兼容，自动补 /v1）</label><input id="ai-url" value="'+esc(v.base_url||'')+'" placeholder="https://api.deepseek.com/v1">'+
-        '<label>API Key</label><input id="ai-key" value="'+esc(v.api_key||'')+'" placeholder="sk-…（脱敏显示，重填即覆盖）">'+
-        '<label>模型 model</label><input id="ai-model" list="ai-model-list" value="'+esc(v.model||'')+'" placeholder="deepseek-chat（可点「拉取模型」下拉选择）"><datalist id="ai-model-list"></datalist>'+
-        '<div class="row"><span class="lab">AI 功能启用</span><label class="switch"><input type="checkbox" id="ai-enabled"'+(v.enabled?' checked':'')+'><span class="slider"></span></label></div>'+
-        '<div class="row"><span class="lab">新推文自动研判+翻译</span><label class="switch"><input type="checkbox" id="ai-auto"'+(v.auto_analyze?' checked':'')+'><span class="slider"></span></label></div>'+
-        '<div class="ops2"><button class="btn btn-xs" id="ai-save" type="button">保存</button>'+
-        '<button class="btn btn-xs" id="ai-test" type="button">测试连通</button>'+
-        '<button class="btn btn-xs" id="ai-fetch-models" type="button">拉取模型</button>'+
-        '<button class="btn btn-xs" id="ai-backfill" type="button">补齐地区标签</button>'+
-        '<button class="btn btn-xs" id="ai-classify" type="button">AI 分类</button></div>'+
-        '<div class="hint" style="margin-top:7px">「AI 分类」按 16 类情报标准为近期 200 条推文打分类标签（脚本规则优先+AI 兜底）</div>'+
-        '<div class="hint" style="margin-top:7px">预设切换自动填地址与模型；「补齐地区标签」为旧推文批量补跑 AI 打标（每批 10 条）</div>';
-      document.getElementById('ai-preset').addEventListener('change',function(){
-        var p=AI_PRESETS[this.value];
-        if(p&&p[1]){document.getElementById('ai-url').value=p[1];document.getElementById('ai-model').value=p[2];}
+  /* 2026-11-16 round2 需求 B/C：多 LLM 通道 + 草稿测试不落库 */
+  Promise.all([jget('/api/ai/channels'), jget('/api/ai/config')]).then(function(rs){
+    var d=rs[0], legacy=rs[1].values||{};
+    var items=d.items||[];
+    var cur=window.__aich_cur||d.default||((items[0]||{}).id||'');
+    window.__aich_cur=cur;
+    var ch=items.filter(function(c){return c.id===cur;})[0]||items[0]||{};
+    var box=document.getElementById('aiform');
+    var isAdminUser=(ME.role==='admin');
+    var opts=items.map(function(c){
+      return '<option value="'+esc(c.id)+'"'+(c.id===cur?' selected':'')+'>'
+        +esc(c.name)+(c.id===d.default?'（默认）':'')+(c.enabled?'':'（停用）')+'</option>';}).join('');
+    var lt=ch.last_test||{};
+    var tested=(lt.ok===true&&lt.fingerprint&&lt.fingerprint===window.__aich_fp);
+    box.innerHTML=
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
+      +'<label style="font-size:12.5px">通道</label><select id="ai-ch-sel" style="width:auto">'+opts+'</select>'
+      +(items.length?'<button class="btn btn-xs" id="ai-ch-new">+ 新建</button>'
+        +(isAdminUser?'<button class="btn btn-xs" id="ai-ch-default">设为默认</button>'
+        +'<button class="btn btn-xs" id="ai-ch-del" style="color:#be123c">删除</button>':''):'')
+      +'<span class="ttag">'+(ch.enabled?'启用':'停用')+'</span></div>'
+      +'<div class="hint" style="margin-bottom:6px">需求 B：填写地址/凭据 → 拉取或手填模型 → 测试（用当前表单草稿，不落库）→ 通过后点「保存通道」才生效。</div>'
+      +'<label>名称</label><input id="ai-ch-name" value="'+esc(ch.name||'')+'">'
+      +'<label>接口地址 base_url</label><input id="ai-url" value="'+esc(ch.base_url||'')+'" placeholder="https://api.deepseek.com/v1 或内网网关">'
+      +'<label>API Key '+(ch.has_key?'（已保存：'+esc(ch.api_key||'****')+'——留空或****表示沿用）':'（未设置）')+'</label>'
+      +'<input id="ai-key" type="password" placeholder="留空沿用已存密钥；输入新值则覆盖">'
+      +'<label>模型 model</label><input id="ai-model" list="ai-model-list" value="'+esc(ch.model||'')+'" placeholder="拉取或手填"><datalist id="ai-model-list">'
+      +(ch.models||[]).map(function(m){return '<option value="'+esc(m)+'">';}).join('')+'</datalist>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+      +'<button class="btn btn-xs" id="ai-fetch-models">拉取模型（草稿）</button>'
+      +'<button class="btn btn-xs" id="ai-test">测试（草稿，不落库）</button>'
+      +(isAdminUser?'<button class="btn btn-xs" id="ai-ch-toggle">'+(ch.enabled?'停用':'启用')+'</button>':'')
+      +'<span style="flex:1"></span>'
+      +'<button class="btn primary" id="ai-ch-save">保存通道</button></div>'
+      +'<div id="ai-test-result" style="font-size:12.5px;margin-top:6px">'
+      +(lt.ok===true?'上次测试：通过'+(lt.model?'（'+esc(lt.model)+'）':'')+(lt.at?' · '+esc(lt.at):'')
+        :(lt.ok===false?'上次测试：失败'+(lt.error?'——'+esc(lt.error.slice(0,80)):''):'尚未测试'))
+      +(tested?' <b style="color:var(--ok)">✓ 当前表单与通过配置一致</b>'
+        :(lt.ok===true?' <span style="color:var(--warn)">⚠ 当前表单已修改，请重新测试</span>':''))
+      +'</div>'
+      +'<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">'
+      +'<div class="hint">任务通道覆盖（未设置用默认通道）</div>'
+      +'<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12.5px;margin-top:4px">'
+      +['doc_ai:文档 AI','writing_recommend:候选推荐'].map(function(x){
+        var k=x.split(':')[0], nm=x.split(':')[1];
+        var curOv=(d.task_overrides||{})[k]||'';
+        return '<label>'+nm+' <select data-tov="'+k+'" style="width:auto">'
+          +'<option value="">默认</option>'
+          +items.map(function(c){return '<option value="'+esc(c.id)+'"'+(curOv===c.id?' selected':'')+'>'+esc(c.name)+'</option>';}).join('')
+          +'</select></label>';}).join('')
+      +'</div></div>'
+      +'<div class="hint" style="margin-top:8px">旧单配置已自动迁移为通道「'+esc((items.filter(function(c){return c.id==='aich_legacy';})[0]||{}).name||'默认通道（迁移自旧配置）')+'」，研判/翻译/分类等既有功能默认走默认通道。</div>';
+    /* 绑定 */
+    var sel=box.querySelector('#ai-ch-sel');
+    sel.addEventListener('change',function(){window.__aich_cur=sel.value;loadAiConfig();});
+    var nb=box.querySelector('#ai-ch-new');
+    if(nb)nb.addEventListener('click',function(){
+      window.__aich_cur='';loadAiConfig();
+      var c2=document.getElementById('ai-ch-name');if(c2){c2.value='新通道';c2.focus();}
+    });
+    var db_=box.querySelector('#ai-ch-default');
+    if(db_)db_.addEventListener('click',function(){
+      apiFetch('/api/ai/channels/'+cur+'/default',{method:'POST'}).then(function(){snack('默认通道已设置');loadAiConfig();});
+    });
+    var del=box.querySelector('#ai-ch-del');
+    if(del)del.addEventListener('click',function(){
+      apiFetch('/api/ai/channels/'+cur,{method:'DELETE'}).then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
+        .then(function(x){ if(x.ok){snack('已删除');window.__aich_cur='';} else snack('删除失败：'+(x.d.detail||'')); loadAiConfig();});
+    });
+    var tog=box.querySelector('#ai-ch-toggle');
+    if(tog)tog.addEventListener('click',function(){
+      upsertChannel({id:cur,name:ch.name,base_url:ch.base_url,api_key:'',model:ch.model,
+                     enabled:!ch.enabled,max_tokens:ch.max_tokens,proxy:ch.proxy,models:ch.models});
+    });
+    var sv=box.querySelector('#ai-ch-save');
+    if(sv)sv.addEventListener('click',function(){
+      var vals=readAiForm();
+      vals.id=cur; vals.name=box.querySelector('#ai-ch-name').value.trim()||'通道';
+      upsertChannel(vals);
+    });
+    var fm=box.querySelector('#ai-fetch-models');
+    if(fm)fm.addEventListener('click',function(){
+      fm.disabled=true;fm.textContent='…';
+      /* 需求 B/U07：草稿拉模型——POST 当前表单，不隐式保存 */
+      apiFetch('/api/ai/models',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({draft:readAiForm(true),channel_id:cur})})
+        .then(function(r){return r.json();})
+        .then(function(r){
+          fm.disabled=false;fm.textContent='拉取模型（草稿）';
+          var dl=document.getElementById('ai-model-list');
+          if(r.ok&&r.models&&r.models.length){
+            dl.innerHTML=r.models.map(function(m){return '<option value="'+esc(m)+'">';}).join('');
+            snack('拉取到 '+r.models.length+' 个模型（未保存；下拉选择后需测试+保存）');
+          }else snack('拉取失败：'+(r.error||'厂商无 /models 端点，可手填模型名'));
+        }).catch(function(){fm.disabled=false;fm.textContent='拉取模型（草稿）';snack('请求失败');});
+    });
+    var tb=box.querySelector('#ai-test');
+    if(tb)tb.addEventListener('click',function(){
+      tb.disabled=true;tb.textContent='…';
+      var body=readAiForm(true);
+      apiFetch('/api/ai/test',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({draft:body,channel_id:cur})})
+        .then(function(r){return r.json();})
+        .then(function(r){
+          tb.disabled=false;tb.textContent='测试（草稿，不落库）';
+          window.__aich_fp=r.fingerprint||'';
+          var el=document.getElementById('ai-test-result');
+          if(r.ok){
+            el.innerHTML='<b style="color:var(--ok)">✓ 测试通过</b>（草稿未保存）｜ endpoint '+esc(r.endpoint_host||'')
+              +' ｜ 模型 '+esc(r.model||'')+' ｜ '+(r.latency_ms||0)+'ms ｜ 回复：'+esc(r.reply||'')
+              +' ｜ <span class="hint">点「保存通道」后生效</span>';
+          }else{
+            el.innerHTML='<b style="color:var(--bad)">✗ 失败（'+esc(r.error_class||'')+'）</b> '+esc(r.error||'')
+              +' ｜ '+(r.latency_ms||0)+'ms <span class="hint">已存配置不受影响；修正表单后重试</span>';
+          }
+          loadAiConfigKeep();
+        }).catch(function(){tb.disabled=false;tb.textContent='测试（草稿，不落库）';snack('请求失败');});
+    });
+    box.querySelectorAll('[data-tov]').forEach(function(sx){
+      sx.addEventListener('change',function(){
+        apiFetch('/api/ai/channels/'+(sx.value||d.default)+'/task-override',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({task:sx.getAttribute('data-tov'),channel_id:sx.value})})
+          .then(function(){snack('任务通道覆盖已更新');});
       });
-      document.getElementById('ai-fetch-models').addEventListener('click',function(){
-        var b=document.getElementById('ai-fetch-models');b.disabled=true;b.textContent='…';
-        var values={
-          base_url:document.getElementById('ai-url').value.trim(),
-          model:document.getElementById('ai-model').value.trim(),
-          enabled:document.getElementById('ai-enabled').checked,
-          auto_analyze:document.getElementById('ai-auto').checked};
-        var key=document.getElementById('ai-key').value.trim();
-        if(key&&key.indexOf('****')<0)values.api_key=key;
-        // 先保存（保证服务端用最新地址/Key 拉取），再取 /models
-        apiFetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({values:values})})
-          .then(function(r){return r.json();})
-          .then(function(){return fetch('/api/ai/models').then(function(r){return r.json();});})
-          .then(function(r){
-            b.disabled=false;b.textContent='拉取模型';
-            var dl=document.getElementById('ai-model-list');
-            if(r.ok&&r.models&&r.models.length){
-              dl.innerHTML=r.models.map(function(m){return '<option value="'+esc(m)+'">';}).join('');
-              snack('拉取到 '+r.models.length+' 个模型，双击 model 输入框从下拉选择');
-            }else{
-              dl.innerHTML='';
-              snack('拉取失败：'+(r.error||'厂商未提供 /models 端点，可手输模型名'));
-            }
-          }).catch(function(){b.disabled=false;b.textContent='拉取模型';snack('请求失败');});
-      });
-      document.getElementById('ai-save').addEventListener('click',function(){
-        var values={
-          base_url:document.getElementById('ai-url').value.trim(),
-          model:document.getElementById('ai-model').value.trim(),
-          enabled:document.getElementById('ai-enabled').checked,
-          auto_analyze:document.getElementById('ai-auto').checked};
-        var key=document.getElementById('ai-key').value.trim();
-        if(key&&key.indexOf('****')<0)values.api_key=key;
-        apiFetch('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({values:values})})
-          .then(function(r){return r.json();})
-          .then(function(res){snack(res.ok?'AI 设置已保存':'保存失败');loadAiConfig();});
-      });
-      document.getElementById('ai-test').addEventListener('click',function(){
-        var b=document.getElementById('ai-test');b.disabled=true;b.textContent='…';
-        apiFetch('/api/ai/test',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
-          b.disabled=false;b.textContent='测试连通';
-          snack(r.ok?('AI 连通正常（'+r.model+'）：'+r.reply):('AI 连通失败：'+(r.error||'')));
-        }).catch(function(){b.disabled=false;b.textContent='测试连通';snack('请求失败');});
-      });
-      document.getElementById('ai-classify').addEventListener('click',function(){
-        var b=document.getElementById('ai-classify');b.disabled=true;b.textContent='…';
-        apiFetch('/api/ai/classify?limit=200',{method:'POST'}).then(function(r){return r.json();}).then(function(res){
-          b.disabled=false;b.textContent='AI 分类';
-          if(res.ok){snack('分类任务已启动（后台执行，200 条约 3-6 分钟），完成后自动按分类更新');}
-          else snack('启动失败');
-        }).catch(function(){b.disabled=false;b.textContent='AI 分类';});
-      });
-      document.getElementById('ai-backfill').addEventListener('click',function(){
-        var b=document.getElementById('ai-backfill');b.disabled=true;b.textContent='…';
-        apiFetch('/api/ai/backfill?limit=10',{method:'POST'}).then(function(r){return r.json();}).then(function(r){
-          b.disabled=false;b.textContent='补齐地区标签';
-          if(r.ok){snack('补标任务已启动（后台执行，每批 10 条），稍后刷新查看');setTimeout(loadTweets,8000);}
-          else snack('启动失败');
-        }).catch(function(){b.disabled=false;b.textContent='补齐地区标签';});
-      });
-    }).catch(function(){document.getElementById('aiform').textContent='加载失败';});
-  }
+    });
+  }).catch(function(e){document.getElementById('aiform').innerHTML='<p class="mut">加载失败：'+esc(e.message||'')+'</p>';});
+}
+function loadAiConfigKeep(){
+  /* 测试后仅刷新指纹行——保留用户正在编辑的表单 */
+  var box=document.getElementById('aiform');if(!box)return;
+  var keep={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
+  loadAiConfig();
+  setTimeout(function(){
+    if(keep.url)aiSet('ai-url',keep.url); if(keep.model)aiSet('ai-model',keep.model);
+    if(keep.key)aiSet('ai-key',keep.key); if(keep.name)aiSet('ai-ch-name',keep.name);
+  },60);
+}
+function aiV(id){var el=document.getElementById(id);return el?el.value.trim():'';}
+function aiSet(id,v){var el=document.getElementById(id);if(el&&v)el.value=v;}
+function readAiForm(forTest){
+  var v={base_url:aiV('ai-url'),model:aiV('ai-model')};
+  var key=aiV('ai-key');
+  if(key&&key.indexOf('****')<0)v.api_key=key;   /* 空/****=凭据引用 */
+  var mt=aiV('ai-ch-name');
+  return v;
+}
+function upsertChannel(vals){
+  apiFetch('/api/ai/channels',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({channel:vals})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){
+      if(x.ok){snack('通道已保存（已生效）');window.__aich_cur=x.d.channel.id;window.__aich_fp='';}
+      else snack('保存失败：'+(x.d.detail||''));
+      loadAiConfig();
+    });
+}
 
-  /* ---------- 推送过滤 ---------- */
-  /* ---------- 多值标记输入（推送过滤白名单通用） ---------- */
-  var TK={};   /* id -> tokens 数组 */
-  var pfFacets=null;
-  function tokenFieldHtml(id,opts,saved,ph){
-    TK[id]=(saved||'').split(/[、,，/|]/).map(function(x){return x.trim();}).filter(Boolean);
-    return '<div class="tkfield" id="'+id+'">'+
-      '<div class="tkchips" id="'+id+'-chips"></div>'+
-      '<div class="tkrow">'+
-      '<input class="tkin" id="'+id+'-in" placeholder="'+esc(ph||'输入自定义值后回车添加')+'">'+
-      '<select class="tkadd" id="'+id+'-add"><option value="">＋ 常用值</option>'+
-      (opts||[]).map(function(o){return '<option value="'+esc(o.name)+'">'+esc(o.name)+'（'+o.count+'）</option>';}).join('')+
-      '</select></div></div>';
-  }
-  function tkRender(id){
-    var box=document.getElementById(id+'-chips');
-    if(!box)return;
-    box.innerHTML=(TK[id]&&TK[id].length)
-      ? TK[id].map(function(t,i){return '<span class="tkchip">'+esc(t)+'<i data-i="'+i+'" title="移除">✕</i></span>';}).join('')
-      : '<span class="tkempty">未设置（全部）</span>';
-  }
-  function tkAdd(id,v){
-    v=(v||'').trim();
-    if(!v||TK[id].some(function(x){return x===v;}))return;
-    TK[id].push(v);tkRender(id);
-  }
-  function bindTokenField(id){
-    tkRender(id);
-    document.getElementById(id+'-add').addEventListener('change',function(){
-      if(this.value)tkAdd(id,this.value);
-      this.value='';
-    });
-    document.getElementById(id+'-in').addEventListener('keydown',function(e){
-      if(e.key==='Enter'){e.preventDefault();tkAdd(id,this.value);this.value='';}
-    });
-    document.getElementById(id+'-chips').addEventListener('click',function(e){
-      var i=e.target&&e.target.getAttribute?e.target.getAttribute('data-i'):null;
-      if(i!==null&&i!==undefined){TK[id].splice(Number(i),1);tkRender(id);}
-    });
-  }
-  function tkGet(id){return (TK[id]||[]).join('、');}
-
-  function loadPushFilters(){
+function loadPushFilters(){
     Promise.all([jget('/api/push/filters'),
                  jget('/api/facets').catch(function(){return {};})])
       .then(function(rs){
@@ -2381,11 +2406,100 @@ $('cand-list').addEventListener('click',function(e){
 $('cand-status').addEventListener('change',loadCands);
 $('cand-q').addEventListener('input',function(){clearTimeout(this._t);var s=this;s._t=setTimeout(loadCands,350);});
 $('cand-ai').addEventListener('click',function(){
-  apiFetch('/api/writing/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope_type:'backlog'})})
-    .then(function(r){return r.json();}).then(function(d){
-      snack(d.task_id?('AI 推荐任务已排队 #'+d.task_id):('排队失败：'+(d.detail||'')));
+  /* round2 需求 E：用户输入提示词 → 生成候选文章列表 → 逐条/批量采纳 */
+  jget('/api/ai/channels').then(function(rs){
+    var chans=rs.items||[], def=rs.default||'';
+    var chOpts='<option value="">默认通道</option>'+chans.filter(function(c){return c.enabled;})
+      .map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===def?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
+    openModal('<div style="font-size:15px;font-weight:700;margin-bottom:10px">AI 推荐候选文章（提示词驱动）</div>'
+      +'<label>提示词（将原样发给模型）</label>'
+      +'<textarea id="rec-prompt" rows="4" class="in" style="width:100%">从最近 7 天已采集的安全情报中，推荐 5 篇值得写的文章，优先供应链攻击与高影响漏洞；列出写作角度、依据和缺少的材料。</textarea>'
+      +'<label style="margin-top:8px">资料范围</label><select id="rec-scope" class="in" style="width:100%">'
+      +'<option value="backlog">backlog（高严重度积压）</option><option value="all">all（全部近期情报）</option></select>'
+      +'<label style="margin-top:8px">LLM 通道</label><select id="rec-chan" class="in" style="width:100%">'+chOpts+'</select>'
+      +'<label style="margin-top:8px">近 N 天（0=不限）</label><input id="rec-days" class="in" value="7">'
+      +'<div style="text-align:right;margin-top:12px"><button class="btn" id="rec-cancel">取消</button> '
+      +'<button class="btn primary" id="rec-go">生成</button></div>');
+    $('rec-cancel').addEventListener('click',closeModal);
+    $('rec-go').addEventListener('click',function(){
+      var prompt=$('rec-prompt').value.trim();
+      if(!prompt){snack('请输入提示词');return;}
+      var scope=$('rec-scope').value;
+      var chan=$('rec-chan').value;
+      var days=parseInt($('rec-days').value,10)||0;
+      closeModal();
+      apiFetch('/api/writing/recommend',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({scope_type:scope,prompt:prompt,channel_id:chan,filters:{days:days}})})
+        .then(function(r){return r.json();})
+        .then(function(d){
+          if(!d.task_id){snack('排队失败：'+(d.detail||''));return;}
+          pollRecommend(d.task_id);
+        });
     });
+  });
 });
+function pollRecommend(tid){
+  openModal('<div style="font-size:15px;font-weight:700;margin-bottom:8px">AI 推荐任务 #'+tid+'</div>'
+    +'<div id="rec-status" class="hint">排队/生成中…（模型调用可能需要十几秒）</div>'
+    +'<div id="rec-result"></div>'
+    +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rec-close">关闭</button></div>');
+  $('rec-close').addEventListener('click',closeModal);
+  var n=0;
+  var iv=setInterval(function(){
+    n++;
+    jget('/api/writing/recommend/tasks?limit=5').then(function(d){
+      var t=(d.items||[]).filter(function(x){return x.id===tid;})[0];
+      if(!t)return;
+      $('rec-status').textContent='状态：'+t.status+(t.attempts?('（第 '+t.attempts+' 次尝试）'):'');
+      if(t.status==='done'){
+        clearInterval(iv);
+        var det=t.result_detail||[];
+        if(!det.length){$('rec-result').innerHTML='<div class="empty">模型未给出候选（可调整提示词后重试）</div>';return;}
+        $('rec-result').innerHTML=det.map(function(x,i){
+          return '<div class="rtitem"><div class="rttop"><span class="rttitle">'+esc(x.title)+'</span>'
+            +(x.priority?'<span class="hchip">P'+x.priority+'</span>':'')
+            +(x.adopted?'<span class="hchip appr">已采纳</span>':'')+'</div>'
+            +'<div class="rtmeta">角度：'+esc(x.angle||'—')+'</div>'
+            +'<div class="rtmeta">依据：'+esc((x.basis||[]).join('；')||'—')+'</div>'
+            +'<div class="rtmeta">待补材料：'+esc((x.materials||[]).join('；')||'—')+'</div>'
+            +'<div class="rtmeta">引用情报：'+(x.tweet_ids||[]).map(function(z){return '#'+z;}).join(' ')+'</div>'
+            +(x.rejected_refs&&x.rejected_refs.length?'<div class="rtmeta" style="color:#be123c">越界引用已剔除：'+x.rejected_refs.map(function(z){return '#'+z;}).join(' ')+'</div>':'')
+            +(x.adopted?'':('<button class="btn btn-xs" data-recadopt="'+i+'" style="margin-top:4px">采纳为候选</button>'))
+            +'</div>';
+        }).join('')
+        +'<div style="text-align:right;margin-top:6px"><button class="btn btn-xs" id="rec-adopt-all"'
+        +(det.every(function(x){return x.adopted;})?' style="display:none"':'')+'>全部采纳</button></div>';
+        var adopt=function(i){
+          apiFetch('/api/writing/recommend/'+tid+'/adopt',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({index:i})})
+            .then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
+            .then(function(x){
+              if(x.ok){snack('已采纳：'+x.d.cand_uid);loadCands();pollRecommendRefresh(tid);}
+              else snack('采纳失败：'+(x.d.detail||''));
+            });
+        };
+        document.querySelectorAll('[data-recadopt]').forEach(function(b){
+          b.addEventListener('click',function(){adopt(+b.getAttribute('data-recadopt'));});
+        });
+        var all=document.getElementById('rec-adopt-all');
+        if(all)all.addEventListener('click',function(){
+          det.forEach(function(x,i){ if(!x.adopted) adopt(i); });
+        });
+      }else if(t.status==='failed'){
+        clearInterval(iv);
+        $('rec-status').innerHTML='<span style="color:#be123c">失败：'+esc(t.error||'')+'</span> '
+          +'<button class="btn btn-xs" id="rec-retry">重试</button>';
+        $('rec-retry').addEventListener('click',function(){
+          apiFetch('/api/writing/recommend/'+tid+'/retry',{method:'POST'}).then(function(){pollRecommend(tid);});
+        });
+      }else if(n>60){
+        clearInterval(iv);
+        $('rec-status').textContent='仍在运行（超过 60 秒）——稍后可关闭后重新打开查看';
+      }
+    }).catch(function(){});
+  },1500);
+}
+function pollRecommendRefresh(tid){ setTimeout(function(){ pollRecommend(tid); loadCands(); }, 600); }
 $('cand-new').addEventListener('click',function(){
   formModal('手工新建写作候选',[
     {id:'cn-title',label:'候选标题',type:'input',required:true},
@@ -2533,6 +2647,7 @@ function loadTpls(){
         +'<div class="rtmeta">变量 '+((t.variables||[]).map(function(v){return v.name;}).join(', ')||'无')+'</div>'
         +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
         +'<a class="btn btn-xs" href="/editor?doc='+t.body_doc_uid+'">协作编辑正文</a>'
+        +(isAdmin()?'<button class="btn btn-xs" data-tact="meta" data-tid="'+t.id+'">元数据</button>':'')
         +(isAdmin()?'<button class="btn btn-xs" data-tact="publish" data-tid="'+t.id+'">发布版本</button>':'')
         +'<button class="btn btn-xs" data-tact="versions" data-tid="'+t.id+'">版本历史</button>'
         +'<button class="btn btn-xs" data-tact="preview" data-tid="'+t.id+'">预览</button>'
@@ -2564,6 +2679,28 @@ $('tpl-list').addEventListener('click',function(e){
         }).join('')||'<div class="empty">无版本</div>'
         +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="vm-close">关闭</button></div>');
       $('vm-close').addEventListener('click',closeModal);
+    });
+  }else if(act==='meta'){
+    /* 10.4：在线维护变量/写作要求/检查规则 */
+    var vs=(t.variables||[]).join(', ');
+    formModal('模板元数据「'+esc(t.name)+'」',[
+      {id:'mt-desc',label:'描述',type:'input',value:t.description||''},
+      {id:'mt-vars',label:'变量（逗号分隔白名单）',type:'input',value:vs},
+      {id:'mt-notes',label:'agent_notes / 写作要求',type:'textarea',value:t.agent_notes||''},
+      {id:'mt-rules',label:'检查规则（JSON 数组，可空）',type:'textarea',value:JSON.stringify(t.check_rules||[])}
+    ]).then(function(v){
+      if(!v)return;
+      var rules=null;
+      try{rules=JSON.parse(v['mt-rules']||'null');}catch(e){snack('检查规则不是合法 JSON');return;}
+      apiFetch('/api/writing/templates/'+tid,{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({description:v['mt-desc'],
+          variables:(v['mt-vars']||'').split(',').map(function(x){return x.trim();}).filter(Boolean),
+          agent_notes:v['mt-notes']||'',check_rules:rules||[]})})
+        .then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
+        .then(function(x){
+          if(x.ok){snack('元数据已保存');loadTpls();}
+          else snack('保存失败：'+(x.d.detail||''));
+        });
     });
   }else if(act==='preview'){
     apiFetch('/api/writing/templates/'+tid+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values:{}})})
@@ -2624,6 +2761,9 @@ function formModal(title,fields,note){
       h+='<label>'+esc(f.label)+(f.required?' *':'')+'</label>';
       var val=f.value!=null?esc(f.value):'';
       if(f.type==='textarea')h+='<textarea id="fm-'+f.id+'" rows="5" class="in" style="width:100%">'+val+'</textarea>';
+      else if(f.type==='select')h+='<select id="fm-'+f.id+'" class="in" style="width:100%">'
+        +(f.options||[]).map(function(o){return '<option'+(o===val?' selected':'')+'>'+esc(o)+'</option>';}).join('')+'</select>';
+      else if(f.type==='raw')h+=f.html||'';
       else h+='<input id="fm-'+f.id+'" class="in" style="width:100%" value="'+val+'">';
     });
     h+='<div style="text-align:right;margin-top:12px"><button class="btn btn-xs" id="fm-cancel">取消</button> '
@@ -2633,7 +2773,10 @@ function formModal(title,fields,note){
     $('fm-ok').addEventListener('click',function(){
       var out={};
       for(var i=0;i<fields.length;i++){
-        var v=$('fm-'+fields[i].id).value;
+        if(fields[i].type==='raw'){continue;}
+        var el0=$('fm-'+fields[i].id);
+        if(!el0){continue;}
+        var v=el0.value;
         if(fields[i].required&&!v.trim()){snack('必填：'+fields[i].label);return;}
         out[fields[i].id]=v;
       }

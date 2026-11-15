@@ -5,9 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>X-Intel · 协作编辑器</title>
 <style>
-:root{--bg:#0b1220;--panel:#111a2e;--panel2:#0e1626;--line:#1e2a44;--text:#dbe4f3;--mut:#7f93b5;--acc:#22d3ee;--ok:#34d399;--warn:#fbbf24;--bad:#f87171}
+:root{
+  /* 2026-11-16 A1：与主控制台同一配色体系（web/index.html :root 提取） */
+  --bg:#eef2f9;--panel:rgba(255,255,255,.9);--panel2:rgba(250,252,255,.85);
+  --line:rgba(15,23,42,.1);--line2:rgba(15,23,42,.18);
+  --text:#1a2333;--mut:#5b6b84;--mut2:#8494ab;
+  --acc:#0e7490;--acc2:#4f46e5;--ok:#059669;--warn:#ca8a04;--bad:#e11d48;
+  --crit:#e11d48;--high:#ea580c;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel2);border-bottom:1px solid var(--line);flex:none;flex-wrap:wrap}
 #doc-title{background:transparent;border:1px solid transparent;color:var(--text);font-size:16px;font-weight:600;padding:4px 8px;border-radius:6px;min-width:280px;flex:1;max-width:520px}
 #doc-title:hover{border-color:var(--line)}
@@ -17,10 +24,10 @@ header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(
 .chip.syncing{color:var(--warn);border-color:rgba(251,191,36,.4)}
 .chip.offline{color:var(--bad);border-color:rgba(248,113,113,.4)}
 .chip.ro{color:var(--mut)}
-.btn{background:rgba(34,211,238,.08);border:1px solid var(--line);color:var(--text);padding:5px 12px;border-radius:7px;cursor:pointer;font-size:12.5px}
+.btn{background:rgba(14,116,144,.06);border:1px solid var(--line);color:var(--text);padding:5px 12px;border-radius:7px;cursor:pointer;font-size:12.5px}
 .btn:hover{border-color:var(--acc);color:var(--acc)}
-.btn.primary{background:rgba(34,211,238,.16);border-color:rgba(34,211,238,.5);color:#a5f3fc}
-.btn.ok{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.4);color:var(--ok)}
+.btn.primary{background:rgba(14,116,144,.14);border-color:rgba(14,116,144,.45);color:var(--acc)}
+.btn.ok{background:rgba(5,150,105,.1);border-color:rgba(5,150,105,.4);color:var(--ok)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 #main{flex:1;display:flex;min-height:0}
 #left{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
@@ -28,9 +35,9 @@ header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(
 #toolbar button{background:none;border:1px solid var(--line);color:var(--mut);border-radius:5px;padding:2px 9px;cursor:pointer;font-size:12.5px}
 #toolbar button:hover{color:var(--text);border-color:var(--acc)}
 #cm-host{flex:1;overflow:auto}
-.CodeMirror{height:100%!important;background:var(--bg)!important;color:var(--text)!important}
-.cm-gutters{background:var(--bg)!important;border-right:1px solid var(--line)!important;color:var(--mut)!important}
-.cm-activeLine{background:rgba(34,211,238,.04)!important}
+.CodeMirror{height:100%!important;background:#fff!important;color:var(--text)!important}
+.cm-gutters{background:#f6f8fc!important;border-right:1px solid var(--line)!important;color:var(--mut)!important}
+.cm-activeLine{background:rgba(14,116,144,.05)!important}
 #right{width:360px;flex:none;display:flex;flex-direction:column;background:var(--panel2)}
 #tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
 #tabs button{flex:1;background:none;border:none;color:var(--mut);padding:8px 0;cursor:pointer;font-size:12.5px;border-bottom:2px solid transparent}
@@ -41,16 +48,25 @@ header{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(
 .mut{color:var(--mut);font-size:12px}
 .src-item{border-left:2px solid var(--line);padding:4px 8px;margin-bottom:8px;font-size:12.5px}
 .src-item .who{color:var(--acc);font-weight:600}
-.sug-old{background:rgba(248,113,113,.1);text-decoration:line-through;color:#f0a5a5;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
-.sug-new{background:rgba(52,211,153,.1);color:#a7f3d0;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
+.sug-old{background:rgba(225,29,72,.08);text-decoration:line-through;color:#9f1239;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
+.sug-new{background:rgba(5,150,105,.08);color:#065f46;border-radius:4px;padding:1px 4px;white-space:pre-wrap;word-break:break-all}
 .rev-item{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px dashed var(--line);font-size:12.5px}
 .member{display:inline-flex;align-items:center;gap:5px;font-size:12px;margin:2px 6px 2px 0}
 .dot{width:9px;height:9px;border-radius:50%}
 #preview-wrap{position:absolute;inset:0;background:var(--bg);display:none;overflow:auto;padding:16px 28px}
 #preview-frame{width:100%;height:100%;border:none;background:#fff;border-radius:8px}
-.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#132039;border:1px solid var(--acc);color:var(--text);padding:9px 18px;border-radius:8px;opacity:0;transition:.25s;pointer-events:none;z-index:99}
+#preview-bar{display:flex;justify-content:flex-end;gap:8px;margin-bottom:8px;flex:none}
+#ai-log .msg{border:1px solid var(--line);border-radius:8px;padding:6px 9px;margin-bottom:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+#ai-log .msg.user{background:rgba(79,70,229,.06);border-color:rgba(79,70,229,.25)}
+#ai-log .msg.assistant{background:rgba(14,116,144,.05)}
+#ai-log .msg .who{font-weight:600;color:var(--acc);font-size:11.5px;margin-bottom:2px}
+#ai-sel{background:var(--panel2);border:1px dashed var(--line2);border-radius:6px;padding:6px 8px;font-size:12px;max-height:88px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+#ai-status{font-size:12px;min-height:18px}
+#ai-status.err{color:var(--bad)}
+#ai-status.busy{color:var(--warn)}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#ffffff;border:1px solid var(--acc);color:var(--text);padding:9px 18px;border-radius:8px;opacity:0;transition:.25s;pointer-events:none;z-index:99}
 .toast.show{opacity:1}
-.modal{position:fixed;inset:0;background:rgba(2,6,17,.7);display:none;align-items:center;justify-content:center;z-index:50}
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50}
 .modal.on{display:flex}
 .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:min(560px,92vw);max-height:84vh;overflow:auto}
 .modal h3{margin:0 0 10px;font-size:15px;color:var(--acc)}
@@ -96,11 +112,18 @@ textarea.in,input.in{width:100%;background:var(--panel2);border:1px solid var(--
       <button data-tab="suggestions">建议<span id="sug-n"></span></button>
       <button data-tab="revisions">历史</button>
       <button data-tab="assets">素材</button>
+      <button data-tab="ai">AI 助手</button>
     </div>
     <div id="tabbody"></div>
   </div>
 </div>
-<div id="preview-wrap"><iframe id="preview-frame" sandbox=""></iframe></div>
+<div id="preview-wrap">
+  <div id="preview-bar">
+    <button class="btn" id="btn-preview-close">← 返回编辑</button>
+    <span class="mut" style="font-size:12px;align-self:center">Esc 也可返回 · 协作者修改会实时反映</span>
+  </div>
+  <iframe id="preview-frame" sandbox="" title="Markdown 预览"></iframe>
+</div>
 <div class="modal" id="modal"><div class="box" id="modal-box"></div></div>
 <div class="toast" id="toast"></div>
 <script src="/vendor/collab.bundle.js"></script>
@@ -181,10 +204,13 @@ function renderMembers(){
 var MD={h2:['## ',''],h3:['### ',''],h4:['#### ',''],bold:['**','**'],italic:['*','*'],
   ul:['- ',''],ol:['1. ',''],quote:['> ',''],code:['\n```\n','\n```\n'],
   table:['\n| 列1 | 列2 |\n| --- | --- |\n|  |  |\n',''],
-  link:['[标题](','）'],img:['![说明](attachment:','）']};
+  link:['[标题](', ')'],img:['![说明](attachment:', ')']};   /* A2：半角括号（合法 MD） */
 document.getElementById('toolbar').addEventListener('click',function(e){
   var b=e.target.closest('[data-md]');if(!b||PERM!=='write')return;
-  var p=MD[b.getAttribute('data-md')];if(!p)return;
+  var k=b.getAttribute('data-md');
+  /* A2：块级操作按行处理；行内标记保留原 insertAround */
+  if(['h2','h3','h4','quote','ul','ol','code','table'].indexOf(k)>=0 && ED.lineOp){ED.lineOp(k);return;}
+  var p=MD[k];if(!p)return;
   ED.insertAround(p[0],p[1]);
 });
 
@@ -213,6 +239,7 @@ function renderTab(){
   else if(TAB==='suggestions')el.innerHTML=renderSuggestions();
   else if(TAB==='revisions')el.innerHTML=renderRevisions();
   else if(TAB==='assets')el.innerHTML=renderAssets();
+  else if(TAB==='ai')el.innerHTML=renderAI();
   bindTab();
 }
 function renderSources(){
@@ -292,6 +319,7 @@ function bindTab(){
       });
     });
   });
+  bindAI();
   var af=el.querySelector('#asset-file');
   if(af)af.addEventListener('change',function(){
     var f=af.files[0];if(!f)return;
@@ -310,6 +338,156 @@ function bindTab(){
     rd.readAsDataURL(f);
   });
   loadAssets();
+}
+/* ---- A3：选区 AI 助手（问答不改正文；改写生成建议，接受才应用） ---- */
+var AISEL=null,AIHIST=[],AIBUSY=false,AIABORT=null;
+function captureSelection(){
+  try{
+    var sel=ED.view.state.selection.main;
+    var text=ED.view.state.sliceDoc(sel.from,sel.to);
+    if(text.trim()){
+      AISEL={text:text,from:sel.from,to:sel.to,
+             before:ED.view.state.sliceDoc(Math.max(0,sel.from-300),sel.from),
+             after:ED.view.state.sliceDoc(sel.to,Math.min(ED.view.state.doc.length,sel.to+300))};
+    }
+  }catch(e){}
+}
+function renderAI(){
+  if(!AISEL)captureSelection();
+  var selText=AISEL?AISEL.text:'';
+  var h='<div class="card"><h4>选区 AI 助手</h4>'
+    +'<div class="mut" style="margin-bottom:4px">选中文字后提问或要求修改；改写以建议形式给出，接受才写入正文。</div>'
+    +'<div id="ai-sel" title="当前捕获的选区">'+(selText?esc(selText.slice(0,400)):'（把光标放进正文选中一段文字，再切回此页）')+'</div>'
+    +'<div style="margin:8px 0">'
+    +'<label style="font-size:12px;margin-right:10px"><input type="radio" name="ai-mode" value="chat" checked> 问答（不改正文）</label>'
+    +'<label style="font-size:12px"><input type="radio" name="ai-mode" value="rewrite"> 改写（生成建议）</label></div>'
+    +'<textarea class="in" id="ai-input" rows="3" placeholder="问答：这段在讲什么？/ 改写：压缩到两句并保留 IOC"></textarea>'
+    +'<div style="margin:6px 0;text-align:right">'
+    +'<button class="btn" id="ai-resel">重新捕获选区</button> '
+    +'<button class="btn primary" id="ai-send">发送</button> '
+    +'<button class="btn" id="ai-cancel" style="display:none">取消</button> '
+    +'<button class="btn" id="ai-retry" style="display:none">重试</button></div>'
+    +'<div id="ai-status"></div>'
+    +'<div id="ai-sugbox"></div>'
+    +'<div id="ai-log">'+(AIHIST.length?'':'<p class="mut">对话记录（仅本地展示，不上传其他成员）</p>')+'</div></div>';
+  return h;
+}
+function aiSelText(){return AISEL?AISEL.text:'';}
+function bindAI(){
+  var el=$('tabbody');
+  var resel=el.querySelector('#ai-resel');
+  if(resel)resel.addEventListener('click',function(){
+    captureSelection();
+    var box=el.querySelector('#ai-sel');
+    box.textContent=AISEL?AISEL.text:'（未选中文字）';
+  });
+  var send=el.querySelector('#ai-send');
+  if(send)send.addEventListener('click',aiSend);
+  var cancel=el.querySelector('#ai-cancel');
+  if(cancel)cancel.addEventListener('click',function(){
+    if(AIABORT){AIABORT.abort();}
+  });
+  var retry=el.querySelector('#ai-retry');
+  if(retry)retry.addEventListener('click',aiSend);
+  var inp=el.querySelector('#ai-input');
+  if(inp)inp.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))aiSend();
+  });
+}
+function aiSetStatus(txt,cls){
+  var el=$('ai-status');if(!el)return;
+  el.textContent=txt||'';el.className=cls||'';
+}
+function aiSend(){
+  if(AIBUSY)return;
+  var inp=$('ai-input');
+  var q=(inp.value||'').trim();
+  var mode=(document.querySelector('input[name="ai-mode"]:checked')||{}).value||'chat';
+  if(!AISEL||!aiSelText().trim()&&mode==='rewrite'){aiSetStatus('请先在正文选中文字','err');return;}
+  if(mode==='chat'&&!q){aiSetStatus('请输入问题','err');return;}
+  AIBUSY=true;
+  var btns=[$('ai-send'),$('ai-cancel'),$('ai-retry')];
+  if($('ai-send'))$('ai-send').style.display='none';
+  if($('ai-cancel'))$('ai-cancel').style.display='';
+  if($('ai-retry'))$('ai-retry').style.display='none';
+  aiSetStatus('请求中…（通道：文档 AI）','busy');
+  AIABORT=new AbortController();
+  var body={mode:mode,selection:aiSelText(),
+            context_before:AISEL?AISEL.before:'',context_after:AISEL?AISEL.after:'',
+            question:q,instruction:q,
+            history:AIHIST.slice(-6).map(function(m){return {role:m.role,content:m.text};})};
+  var t0=Date.now();
+  api('/api/writing/docs/'+DOC+'/ai',{method:'POST',signal:AIABORT.signal,
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+  .then(function(x){
+    AIBUSY=false;
+    if($('ai-cancel'))$('ai-cancel').style.display='none';
+    if($('ai-send'))$('ai-send').style.display='';
+    if(x.s!==200){
+      aiSetStatus('失败（'+((x.d.detail||'').split(':')[0]||('HTTP '+x.s))+'）· 可重试','err');
+      if($('ai-retry'))$('ai-retry').style.display='';
+      return;
+    }
+    var reply=x.d.reply||'';
+    AIHIST.push({role:'user',text:(mode==='rewrite'?'[改写] '+q:'[问] '+q)});
+    AIHIST.push({role:'assistant',text:reply});
+    var log=$('ai-log');
+    if(log){
+      var u='<div class="msg user"><div class="who">我（'+mode+'）</div>'+esc(body.question||body.instruction||'(选区)')+'</div>';
+      var a='<div class="msg assistant"><div class="who">AI · '+esc(x.d.model||'')+' · '+((Date.now()-t0)/1000).toFixed(1)+'s</div>'+esc(reply)+'</div>';
+      if(!AIHIST.length||log.querySelector('p'))log.innerHTML='';
+      log.insertAdjacentHTML('beforeend',u+a);
+      log.scrollTop=log.scrollHeight;
+    }
+    if(mode==='rewrite'){
+      renderAISuggestion(aiSelText(),reply,q);
+      aiSetStatus('改写建议已生成——请核对后接受或拒绝','ok');
+    }else{
+      aiSetStatus('完成（问答不修改正文）','ok');
+      inp.value='';
+    }
+  }).catch(function(e){
+    AIBUSY=false;
+    if($('ai-cancel'))$('ai-cancel').style.display='none';
+    if($('ai-send'))$('ai-send').style.display='';
+    if(e&&e.name==='AbortError'){aiSetStatus('已取消','');}
+    else{aiSetStatus('失败：'+(e&&e.message||'网络错误')+' · 可重试','err');
+      if($('ai-retry'))$('ai-retry').style.display='';}
+  });
+}
+function renderAISuggestion(oldText,newText,instruction){
+  var box=$('ai-sugbox');if(!box)return;
+  box.innerHTML='<div class="card"><h4>改写建议</h4>'
+    +'<div style="margin:6px 0"><span class="sug-old">'+esc(oldText)+'</span> → '
+    +'<span class="sug-new">'+esc(newText)+'</span></div>'
+    +'<p class="mut">要求：'+esc(instruction||'润色')+' ｜ 应用时如正文已变化会提示冲突并重新生成</p>'
+    +'<div style="text-align:right">'
+    +'<button class="btn" id="ai-sug-reject">拒绝</button> '
+    +'<button class="btn ok" id="ai-sug-accept">接受（写入正文）</button></div></div>';
+  $('ai-sug-reject').addEventListener('click',function(){
+    box.innerHTML='';toast('已拒绝（正文未变）');
+  });
+  $('ai-sug-accept').addEventListener('click',function(){
+    var b=this;b.disabled=true;b.textContent='应用中…';
+    /* 统一文档建议服务：create_suggestion（锚点+版本校验）→ 立即接受（kind=suggest_apply） */
+    jsend('/api/writing/docs/'+DOC+'/suggestions',
+          {old_text:oldText,new_text:newText,rationale:'选区 AI 改写：'+(instruction||''),
+           sources:[],client_id:'ai-sel-'+Date.now()})
+      .then(function(r){
+        if(r.s!==200){toast(r.d&&r.d.detail||'建议创建失败');b.disabled=false;b.textContent='接受（写入正文）';return;}
+        return jsend('/api/writing/docs/'+DOC+'/suggestions/'+r.d.suggestion.id+'/resolve',
+                     {decision:'accepted'})
+          .then(function(rr){
+            if(rr.s===200){toast('已写入正文（v'+rr.d.rev+'）');box.innerHTML='';
+              AIHIST.push({role:'assistant',text:'[已应用改写] v'+rr.d.rev});
+              loadRevisions();}
+            else{toast(rr.d&&rr.d.detail||'应用失败（可能正文已变化，请重新生成）');
+              b.disabled=false;b.textContent='接受（写入正文）';}
+          });
+      })
+      .catch(function(){b.disabled=false;b.textContent='接受（写入正文）';toast('网络错误');});
+  });
 }
 function loadAssets(){
   var el=document.getElementById('asset-list');if(!el)return;
@@ -337,12 +515,49 @@ function loadRevisions(){
 }
 
 /* ---- 顶栏动作 ---- */
-$('btn-tog-preview').addEventListener('click',function(){
+/* A2：预览独立关闭入口 + Esc + 协作实时更新（不重建编辑器、不破坏撤销） */
+var previewOpen=false,lastFocusPos=null;
+function renderPreviewDoc(){
+  var md=ED.getText();
+  var base='/api/writing/docs/'+DOC+'/assets/';
+  /* attachment: 引用 → 有权限的实际素材地址（同源带 Cookie） */
+  md=md.replace(/(!\[[^\]]*\]\()attachment:([^)]+)\)/g,function(m,a,name){
+    return a+base+encodeURIComponent(name.trim().replace(/^\/+,''))+')';
+  });
+  var doc='<!doctype html><meta charset="utf-8"><base target="_blank"><style>'
+    +'body{font:14.5px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;color:#1a2333;margin:0 auto;max-width:860px;padding:16px 24px}'
+    +'img{max-width:100%}pre{background:#f6f8fc;padding:10px;border-radius:8px;overflow:auto}'
+    +'code{background:#f1f5f9;padding:1px 5px;border-radius:4px}'
+    +'table{border-collapse:collapse}td,th{border:1px solid #cbd5e1;padding:4px 10px}'
+    +'blockquote{border-left:3px solid #0e7490;margin:8px 0;padding:2px 12px;color:#475569}</style>'
+    +window.XCollab.renderPreview(md);
+  $('preview-frame').srcdoc=doc;
+}
+function togglePreview(force){
   var w=$('preview-wrap');
-  if(w.style.display==='block'){w.style.display='none';return;}
-  $('preview-frame').srcdoc=window.XCollab.renderPreview(ED.getText());
-  w.style.display='block';
+  previewOpen=(force!=null)?force:(w.style.display!=='block');
+  if(previewOpen){
+    try{var sel=ED.view.state.selection.main;lastFocusPos={anchor:sel.anchor,head:sel.head};}catch(e){}
+    renderPreviewDoc();
+    w.style.display='block';
+    $('btn-tog-preview').textContent='编辑';
+  }else{
+    w.style.display='none';
+    $('btn-tog-preview').textContent='预览';
+    try{
+      if(lastFocusPos){ED.view.focus();
+        ED.view.dispatch({selection:{anchor:Math.min(lastFocusPos.anchor,ED.view.state.doc.length),
+                                     head:Math.min(lastFocusPos.head,ED.view.state.doc.length)}});}
+      else ED.view.focus();
+    }catch(e){}
+  }
+}
+$('btn-tog-preview').addEventListener('click',function(){togglePreview();});
+$('btn-preview-close').addEventListener('click',function(){togglePreview(false);});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&previewOpen){togglePreview(false);}
 });
+setInterval(function(){if(previewOpen&&ED)renderPreviewDoc();},2500);   /* 协作者修改实时反映 */
 $('btn-md').addEventListener('click',function(){
   var go=function(){ location.href='/api/writing/docs/'+DOC+'/export.md'; };
   if(ED&&ED.connState()==='syncing'){uiConfirm('仍有未同步修改，下载的是服务器当前已保存内容。继续？').then(function(ok){if(ok)go();});return;}
