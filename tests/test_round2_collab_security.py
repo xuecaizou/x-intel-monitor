@@ -41,6 +41,7 @@ auth.init_auth_tables()
 auth.create_admin("boss", "BossPass12345")
 auth.create_user("writer1", "WriterPass123", "write")
 
+print("CS: imports done", flush=True)
 PASS, FAIL = 0, []
 
 
@@ -218,6 +219,8 @@ class YClient:
                 pass
         self.loop.call_soon_threadsafe(self.loop.stop)
 
+
+print("CS: server ready", flush=True)
 
 # ============================================================
 boss = login("boss", "BossPass12345")
