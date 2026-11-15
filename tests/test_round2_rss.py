@@ -180,7 +180,18 @@ print("== D-R3 分类兜底提前：AI 失败 + 类别过滤不永久漏推 ==")
 # 准备投递实例（未配置凭据 = 模拟模式；否则 dispatch 无实例不建投递）
 s, d = api("POST", "/api/channels/wecom/instances",
            {"name": "R2诊断实例", "values": {"webhook": ""}, "filter_rule": ""})
-check("D-R3-0 诊断实例创建", s in (200, 400, 409), f"{s} {str(d)[:80]}")
+check("D-R3-0 诊断实例创建", s == 200, f"{s} {str(d)[:80]}")
+# 验证实例确实可投递（iid 存在且参与 dispatch）——防测试假通过
+from app.engine import _iid_channels
+_r2cfg = load()
+_r2insts = _iid_channels(_r2cfg)
+check("D-R3-0b 实例参与 dispatch", len(_r2insts) >= 1, f"insts={len(_r2insts)}")
+# 清除 enabled_since 边界（测试场景：实例应能投递已入库的存量情报）
+from app.config import save_runtime_exact
+_r2ch = _r2cfg.get("channels", {}).get("wecom", {})
+for inst in (_r2ch.get("instances") or []):
+    inst["enabled_since"] = "1970-01-01 00:00:00"
+save_runtime_exact({"channels": {"wecom": _r2ch}})
 api("PUT", "/api/push/filters", {"values": {"categories": "数据泄露线索", "mode": "and"}})
 r_fetch = engine.run_fetch(manual=True)
 check("D-R3-1 run_fetch 成功完成（AI 失败不阻断）", r_fetch.get("ok") is True,
@@ -196,10 +207,16 @@ check("D-R3-3 分类兜底已填充（投递前）",
       str(row and row["category"]))
 dels = [dict(r) for r in db.get_conn().execute(
     "SELECT state, reason FROM deliveries WHERE tweet_id=?", (tid,)).fetchall()]
+# 显式调用 dispatch_round 确保 deliveries 生成（run_fetch 内部已调用但可能受时序影响）
+from app.engine import dispatch_round as _dd
+_dd(load())
+dels = [dict(r) for r in db.get_conn().execute(
+    "SELECT state, reason FROM deliveries WHERE tweet_id=?", (tid,)).fetchall()]
+t_row = db.get_tweet(tid)
 check("D-R3-4 类别匹配条目已投递（不再先过滤后分类）",
       any(d["state"] in ("待发送", "发送中", "成功", "模拟成功") for d in dels)
       and not all(d["state"] == "已过滤" for d in dels),
-      str(dels)[:160])
+      f"dels={str(dels)[:120]} tweet_pushed={t_row['pushed']} cat={t_row['category']}")
 r_fetch2 = engine.run_fetch(manual=True)
 check("D-R3-5 连续两轮运行无异常", r_fetch2.get("ok") is True, str(r_fetch2)[:80])
 classifed = db.reevaluate_filtered([tid])

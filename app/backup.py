@@ -66,6 +66,11 @@ def create_backup(data_dir: Path, dest_dir: Path, project_root: Path | None = No
     rtasks = data_dir / "report_tasks"
     if rtasks.exists():
         shutil.copytree(rtasks, stamp_dir / "report_tasks", dirs_exist_ok=True)
+    # B09：素材目录 + Word 导出目录（缺失导致恢复后预览/下载不可用）
+    for sub in ("doc_assets", "word_exports"):
+        src_d = data_dir / sub
+        if src_d.exists():
+            shutil.copytree(src_d, stamp_dir / sub, dirs_exist_ok=True)
 
     files = []
     for p in sorted(stamp_dir.rglob("*")):
