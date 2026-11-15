@@ -323,7 +323,7 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
 <tr><td><code>app/db.py</code></td><td>SQLite 数据层（单连接 + 线程锁）</td><td>tweets（含 AI/geo/媒体/状态列）· x_accounts（含频率）· push_logs · kv；自动 ALTER 迁移</td></tr>
     <tr><td><code>app/twitter.py</code></td><td>X 数据采集（监控源 01）</td><td>三级降级（syndication→Nitter→Cookie）· 置顶 id 增量短路 · 到期账号调度 · 媒体提取解码 · 统一经代理</td></tr>
     <tr><td><code>app/rssfetch.py</code></td><td>RSS 源采集（监控源 02）</td><td>feedparser 解析 · <b>逐条扫描去重</b>（首条 GUID 短路已废除，避免置顶/非首位新增漏采）· source_id=rss:{id} 归属稳定（改名不重复）· 位点仅入库后推进 · 受控抓取（逐跳校验/≤8MB）· test_source 同标准校验</td></tr>
-    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签/分类</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；JSON 容错解析；<b>纯计算不写库</b>（提交归调用方走权威路径）；429/额度耗尽立即停止本轮（AIQuotaError，不吞）</td></tr>
+    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签/分类</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；<b>响应解析多层容错</b>（_resp_json：恒按 UTF-8 解码字节流不信任响应头声明、剥 SSE data:[DONE] 尾巴、取首个完整 JSON——实测部分网关声明 text/event-stream 无 charset 且尾部拼 [DONE]）；JSON 容错解析；<b>纯计算不写库</b>（提交归调用方走权威路径）；429/额度耗尽立即停止本轮（AIQuotaError，不吞）；思维链空回复自动扩容重试</td></tr>
     <tr><td><code>app/engine.py</code></td><td>主管道编排</td><td>run_fetch 总控（锁防重入）· <b>六维</b>推送过滤（等级/分类/国家/行业/标签/关键词 + 且或模式）· 逐实例投递 · backfill 补标 · 单条/批量 AI</td></tr>
     <tr><td><code>app/scheduler.py</code></td><td>定时调度</td><td>APScheduler 优先，降级 threading；next_run_in 供前端倒计时</td></tr>
     <tr><td><code>app/notify/</code></td><td>推送实现</td><td>三件套 Markdown 模板（截图/原文/译文/研判/地理）；四通道 send；模拟模式判定</td></tr>

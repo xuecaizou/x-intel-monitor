@@ -175,3 +175,15 @@ XINTEL_TOKEN=<admin token> python smoke_test.py --nolive
 
 - 代码回滚到 `034bf65^`（本批之前）：`git checkout 034bf65 -- app/ api/ web/ editor/ tests/ offline_test.py`（或整体 `git reset --hard 034bf65`）。新表留在库中**不影响旧代码**（旧代码不读它们）；如需彻底清理：`DROP TABLE` 上述 13 表（先停服务，属数据删除操作需自行确认）。
 - 数据回滚≠代码回滚：协作修订/导出记录产生后，回退代码不会删除这些行。
+
+## 10. AI 网关排障（2026-11-14 实证）
+
+排查顺序（先看「AI 日志」面板/ai_logs 的真实错误，再分层定位）：
+
+1. **`Missing model` / "模型未配置"**：改了模型没点「保存」——测试连通/拉取模型只按已保存配置执行（页面输入框显示的是未保存修改，勿混淆）。直核存储值：`data/runtime.json` 的 `ai.model`。
+2. **`JSONDecodeError: Extra data`**：网关在非流式响应末尾追加 SSE 尾巴（如 `data: [DONE]`）。已修复（`_resp_json` 取首个完整 JSON），旧版本升级即愈。
+3. **回复中文乱码（é¾è·¯… 形态）**：网关声明 `text/event-stream` 无 charset，requests 按 latin-1 解码。已修复（恒按 UTF-8 解码字节流，RFC 8259）。
+4. **思维链模型空回复（finish=length）**：系统自动扩容 3 倍重试一次；仍空换 `cbcn/` 前缀模型。
+5. **网关可达性验证**（绕开系统直测）：`curl -H "Authorization: Bearer <key>" http://<网关>/v1/models` → 200 且返回模型列表 = 网关与 Key 正常，问题在请求侧配置。
+
+版本基线：以上容错均在 main@236d638+；部署旧版本遇到此类网关报错先升级。
