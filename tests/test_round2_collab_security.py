@@ -335,7 +335,7 @@ dc.set_acl(doc_a, "writer1", "read", "boss")
 time.sleep(0.3)
 import asyncio as _aio
 dc._CLEANUP_MIN_AGE = 0
-_aio.run(dc._cleanup_once())
+_aio.run(asyncio.wait_for(dc._cleanup_once(), timeout=15))
 time.sleep(1.5)
 check("B03-1 写连接降级后被服务端关闭", W.closed or W.fail_reason is not None,
       f"closed={W.closed}")
@@ -357,7 +357,7 @@ W3.pump(2.0)
 check("B03-3 恢复写权限后可连可写（前置）", str(W3.text) != "", "")
 sid3 = w3["cookie"].split("=")[1]
 auth.drop_session(sid3)
-_aio.run(dc._cleanup_once())
+_aio.run(asyncio.wait_for(dc._cleanup_once(), timeout=15))
 time.sleep(1.5)
 check("B03-4 会话删除后连接被关闭", W3.closed or W3.fail_reason is not None,
       f"closed={W3.closed}")
@@ -379,7 +379,7 @@ A3 = YClient(doc_a, bearer=atok2)
 A3.pump(2.0)
 auth.revoke_token(int(tok_id)) if tok_id else auth.revoke_token(
     db.get_conn().execute("SELECT id FROM auth_tokens WHERE name='r2-agent-revoke'").fetchone()["id"])
-_aio.run(dc._cleanup_once())
+_aio.run(asyncio.wait_for(dc._cleanup_once(), timeout=15))
 time.sleep(1.5)
 check("B03-6 Token 吊销后连接被关闭", A3.closed or A3.fail_reason is not None,
       f"closed={A3.closed}")
