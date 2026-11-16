@@ -157,6 +157,28 @@ def restore_to(backup_dir: Path, target_dir: Path, project_root: Path | None = N
     summary = {"safe_mode": bool(safe_mode), "safety_changes": [], "auth_reset": None}
     # 原件一致性：此时恢复副本与备份逐字节一致
     summary["verify_original"] = verify_backup(target_dir)
+    # R16：doc_exports.file_path 是绝对路径——恢复到另一目录后指向旧位置（下载 410）。
+    # 按新 DATA_DIR 重写：取原路径中 word_exports/ 段之后的相对部分拼新目录。
+    try:
+        import sqlite3 as _sq
+        with _sq.connect(str(target_dir / "xintel.db")) as _c:
+            _c.row_factory = None
+            rows = _c.execute("SELECT id, file_path FROM doc_exports"
+                              " WHERE file_path!='' ").fetchall()
+            n_fixed = 0
+            for rid, fp in rows:
+                norm = str(fp).replace("\\", "/")
+                if "/word_exports/" not in norm:
+                    continue
+                rel = norm.split("/word_exports/", 1)[1]
+                newp = str(target_dir / "word_exports" / rel)
+                if Path(newp).exists():
+                    _c.execute("UPDATE doc_exports SET file_path=? WHERE id=?", (newp, rid))
+                    n_fixed += 1
+            _c.commit()
+        summary["doc_exports_paths_fixed"] = n_fixed
+    except Exception as _e:
+        summary["doc_exports_paths_fixed"] = f"skip:{type(_e).__name__}"
     if safe_mode:
         rt = target_dir / "runtime.json"
         if rt.exists():

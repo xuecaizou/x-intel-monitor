@@ -116,8 +116,26 @@ def resolve_images(doc_uid: str, md: str, tmp: Path):
     return md, copied, missing
 
 
+def _ooxml_visible_text(doc_xml: str) -> str:
+    """R14：OOXML 可见文本（去标签 + XML 实体反转义）——标题含 & 等实体、
+    Markdown 强调标记时不再误判失败。"""
+    import html as _html
+    return _html.unescape(re.sub(r"<[^>]+>", "", doc_xml))
+
+
+def _probe_from(md_text: str) -> str:
+    """探针文本：正文首个非空行，剥离 Markdown 标题前缀与强调标记。"""
+    for ln in (md_text or "").splitlines():
+        ln = ln.strip()
+        ln = re.sub(r"^(#{1,6}\s+)", "", ln).strip()
+        ln = ln.replace("**", "").replace("*", "").replace("`", "").strip()
+        if ln:
+            return ln[:20]
+    return ""
+
+
 def _verify_docx(p: Path, expect_title: str) -> str:
-    """结构校验：合法 ZIP + 必备 OOXML 部件 + 标题文本存在。返回错误信息（空=通过）。"""
+    """结构校验：合法 ZIP + 必备 OOXML 部件 + 探针文本存在（R14 可见文本口径）。"""
     try:
         z = zipfile.ZipFile(p)
     except Exception as e:
@@ -131,13 +149,13 @@ def _verify_docx(p: Path, expect_title: str) -> str:
     except Exception as e:
         return f"document.xml 读取失败：{type(e).__name__}"
     probe = (expect_title or "").strip()[:20]
-    if probe and probe not in doc:
+    if probe and probe not in _ooxml_visible_text(doc):
         return "产物中未找到文档标题（转换可能截断）"
     return ""
 
 
-def create_export(doc_uid, operator, rev=None) -> int:
-    """登记导出任务并启动后台转换线程。返回 export id。"""
+def create_export(doc_uid, operator, rev=None, draft=False) -> int:
+    """登记导出任务并启动后台转换线程。返回 export id。draft=True=显式导出当前草稿。"""
     cfg = load()
     pp = pandoc_path(cfg)
     if not pp:
@@ -151,19 +169,19 @@ def create_export(doc_uid, operator, rev=None) -> int:
             " VALUES (?,?,'pending',?,?)", (doc_uid, rev if rev else -1, operator, db.now()))
         eid = cur.lastrowid
         c.commit()
-    t = threading.Thread(target=_worker, args=(eid, doc_uid, rev), name=f"wordexport-{eid}",
-                         daemon=True)
+    t = threading.Thread(target=_worker, args=(eid, doc_uid, rev, draft),
+                         name=f"wordexport-{eid}", daemon=True)
     with _threads_lock:
         _threads.add(t)
     t.start()
     return eid
 
 
-def _worker(eid: int, doc_uid: str, rev):
+def _worker(eid: int, doc_uid: str, rev, draft=False):
     from . import doccollab
     with _concurrency:
         try:
-            _run_export(eid, doc_uid, rev)
+            _run_export(eid, doc_uid, rev, draft)
         except Exception as e:
             _fail(eid, f"{type(e).__name__}: {e}")
         finally:
@@ -178,7 +196,7 @@ def _fail(eid, err):
         db.get_conn().commit()
 
 
-def _run_export(eid: int, doc_uid: str, rev):
+def _run_export(eid: int, doc_uid: str, rev, draft=False):
     from . import doccollab
     cfg = load()
     wcfg = cfg.get("word") or {}
@@ -194,11 +212,14 @@ def _run_export(eid: int, doc_uid: str, rev):
         if not r:
             return _fail(eid, f"修订 v{rev} 不存在")
         text, fixed_rev = r["body_md"], int(r["rev"])
+    elif doc.get("status") == "已通过" and doc.get("review_rev") and not draft:
+        # R12：已批准文档默认**实际读取批准修订正文**（review_rev）——此前仅赋值变量
+        # 却仍导出当前草稿；需要导出未审核草稿必须显式 draft=true（记录中标注草稿导出）。
+        r = doccollab.get_revision(doc_uid, int(doc["review_rev"]))
+        if not r:
+            return _fail(eid, f"批准修订 v{doc['review_rev']} 不存在")
+        text, fixed_rev = r["body_md"], int(r["rev"])
     else:
-        # 2026-11-16 B07：默认导出版本——文档"已通过"时导出**批准版本**（review_rev），
-        # 不再静默导出未审核的当前草稿；需要当前草稿由调用方显式传 rev=latest。
-        if doc.get("status") == "已通过" and doc.get("review_rev"):
-            rev = int(doc["review_rev"])
         text = doccollab.current_text(doc_uid)
         chash0 = doccollab._hash_md(text)
         latest = doccollab.latest_revision(doc_uid)
@@ -211,28 +232,42 @@ def _run_export(eid: int, doc_uid: str, rev):
     chash = doccollab._hash_md(text)
     if len(text.encode("utf-8")) > max_md:
         return _fail(eid, f"正文超过大小上限（{len(text.encode('utf-8'))} > {max_md} 字节）")
-    # 2) 缓存命中：同 rev+同内容哈希+成功 → 复用产物（防过期文件）
-    prev = db.get_conn().execute(
-        "SELECT * FROM doc_exports WHERE doc_uid=? AND rev=? AND content_hash=?"
-        " AND status='done' ORDER BY id DESC LIMIT 1", (doc_uid, fixed_rev, chash)).fetchone()
-    if prev and prev["file_path"] and Path(prev["file_path"]).exists():
-        with db._lock:
-            db.get_conn().execute(
-                "UPDATE doc_exports SET status='done', rev=?, content_hash=?, file_path=?,"
-                " file_name=?, sha256=?, size=?, template_id=?, template_version=?,"
-                " style_version=?, pandoc_version=?, finished_at=?, error='' WHERE id=?",
-                (fixed_rev, chash, prev["file_path"], prev["file_name"], prev["sha256"],
-                 prev["size"], doc.get("template_id"), doc.get("template_version"),
-                 prev["style_version"], prev["pandoc_version"], db.now(), eid))
-            db.get_conn().commit()
-        return
-    # 3) 临时目录 + 受控素材
+    # 3) 先解析素材（R15：素材内容参与缓存键——同名换图不再命中旧产物）
     tmp = Path(db.DATA_DIR) / "word_exports" / f"tmp_{eid}"
     if tmp.exists():
         shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
     try:
         md_final, copied, missing = resolve_images(doc_uid, text, tmp)
+        if draft:
+            missing = ["__draft_export__"] + list(missing)   # R12：产物记录标注草稿导出
+        import hashlib as _hl
+        assets_sha = ""
+        for _idx, name in enumerate(sorted(copied)):
+            ap = tmp / f"asset_{copied.index(name)}_{name}"
+            if ap.exists():
+                assets_sha += _hl.sha256(ap.read_bytes()).hexdigest()[:16]
+        if assets_sha:
+            chash = chash + ":" + assets_sha
+        if draft:
+            chash = chash + ":draft"   # 草稿导出与批准版本导出是不同产物维度
+        # 2) 缓存命中：同 rev+同内容+同素材哈希+同导出维度+成功 → 复用产物
+        prev = db.get_conn().execute(
+            "SELECT * FROM doc_exports WHERE doc_uid=? AND rev=? AND content_hash=?"
+            " AND status='done' ORDER BY id DESC LIMIT 1", (doc_uid, fixed_rev, chash)).fetchone()
+        if prev and prev["file_path"] and Path(prev["file_path"]).exists():
+            with db._lock:
+                db.get_conn().execute(
+                    "UPDATE doc_exports SET status='done', rev=?, content_hash=?, file_path=?,"
+                    " file_name=?, sha256=?, size=?, template_id=?, template_version=?,"
+                    " style_version=?, pandoc_version=?, missing_images=?, finished_at=?,"
+                    " error='' WHERE id=?",
+                    (fixed_rev, chash, prev["file_path"], prev["file_name"], prev["sha256"],
+                     prev["size"], doc.get("template_id"), doc.get("template_version"),
+                     prev["style_version"], prev["pandoc_version"],
+                     json.dumps(missing, ensure_ascii=False)[:500], db.now(), eid))
+                db.get_conn().commit()
+            return
         src_md = tmp / "document.md"
         src_md.write_text(md_final, encoding="utf-8")
         out_docx = tmp / "out.docx"
@@ -254,14 +289,8 @@ def _run_export(eid: int, doc_uid: str, rev):
             return _fail(eid, f"pandoc 超时（>{timeout}s）")
         if not out_docx.exists() or out_docx.stat().st_size < 2000:
             return _fail(eid, "pandoc 未产出有效文件")
-        # 校验探针：正文首个非空行（去除 Markdown 前缀）——模板骨架文档不含文档标题，不能拿 title 硬套
-        first_line = ""
-        for ln in text.splitlines():
-            ln = ln.strip().lstrip("#").strip()
-            if ln:
-                first_line = ln[:20]
-                break
-        err = _verify_docx(out_docx, first_line)
+        # 校验探针：正文首个非空行（R14 可见文本口径，剥离 Markdown 标记）
+        err = _verify_docx(out_docx, _probe_from(text))
         if err:
             return _fail(eid, err)
         # 4) 落位最终文件

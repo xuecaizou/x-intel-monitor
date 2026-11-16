@@ -433,6 +433,8 @@ def init_db():
             anchor TEXT DEFAULT '',
             old_text TEXT DEFAULT '',
             new_text TEXT DEFAULT '',
+            context_before TEXT DEFAULT '',
+            context_after TEXT DEFAULT '',
             client_id TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             reviewed_by TEXT DEFAULT '',
@@ -564,6 +566,12 @@ def init_db():
         for _tbl in ("events", "event_reviews"):
             try:
                 get_conn().execute(f"ALTER TABLE {_tbl} ADD COLUMN evidence_fingerprint TEXT DEFAULT ''")
+            except Exception:
+                pass
+        # R02：doc_suggestions 上下文列（幂等迁移）
+        for _col in ("context_before", "context_after"):
+            try:
+                get_conn().execute(f"ALTER TABLE doc_suggestions ADD COLUMN {_col} TEXT DEFAULT ''")
             except Exception:
                 pass
         # 迁移（可重复）：既有报告任务的推文引用回填到 report_refs（UNIQUE 幂等）

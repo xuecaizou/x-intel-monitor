@@ -878,8 +878,10 @@ def _convert_locked(c, uid, template_id, operator, tier="速报", keywords=None,
         doc_uid = _uid("doc_")
         init_md = tver["body_md"] if tver else ""
         if tver and tpl:
+            # R17：变量定义取发布版本快照（tver.variables）——模板后续未发布的
+            # 变量修改不得影响既有发布版本实例化
             filled, _missing, _unknown = apply_variables(
-                tver["body_md"], _jl(tpl["variables"], []),
+                tver["body_md"], _jl(tver["variables"], []),
                 {"title": cand["title"], "angle": cand["angle"] or "",
                  "origin": cand["origin"] or "", "owner": cand["owner"] or ""})
             init_md = filled

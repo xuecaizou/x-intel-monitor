@@ -444,6 +444,8 @@ class SuggestionBody(BaseModel):
     target: str = ""
     client_id: str = ""
     base_rev: int | None = None
+    context_before: str = ""
+    context_after: str = ""
 
 
 class ResolveBody(BaseModel):
@@ -618,7 +620,8 @@ def api_sug_create(uid: str, body: SuggestionBody, request: Request):
         row, existed = doccollab.create_suggestion(
             uid, agent=ctx["principal"].get("username", "user"), old_text=body.old_text,
             new_text=body.new_text, rationale=body.rationale, sources=body.sources,
-            target=body.target, client_id=body.client_id, base_rev=body.base_rev)
+            target=body.target, client_id=body.client_id, base_rev=body.base_rev,
+            context_before=body.context_before, context_after=body.context_after)
     except doccollab.AnchorError as e:
         raise HTTPException(422, str(e))
     except doccollab.RevisionConflict as e:
@@ -694,6 +697,7 @@ def api_asset_get(uid: str, name: str, request: Request):
 
 class ExportBody(BaseModel):
     rev: int | None = None
+    draft: bool = False
 
 
 class DocAIBody(BaseModel):
@@ -760,7 +764,8 @@ def api_export_word(uid: str, request: Request, body: ExportBody | None = None):
     ctx = _require_doc_perm(request, uid, "read")
     try:
         eid = wordexport.create_export(uid, _operator(request),
-                                       body.rev if body else None)
+                                       body.rev if body else None,
+                                       draft=bool(body.draft) if body else False)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     return {"export_id": eid, "status": "pending"}
@@ -879,7 +884,15 @@ def api_agent_doc(uid: str, request: Request):
 
 
 def _tpl_agent_notes(doc):
+    """R17：Agent 指令取文档固定模板版本的快照——模板后续未发布修改不生效。"""
     if doc.get("template_id"):
+        ver = doc.get("template_version")
+        if ver:
+            row = db.get_conn().execute(
+                "SELECT agent_notes FROM template_versions WHERE template_id=? AND version=?",
+                (doc["template_id"], int(ver))).fetchone()
+            if row is not None:
+                return row["agent_notes"] or ""
         t = writing.get_template(doc["template_id"])
         if t:
             return t.get("agent_notes") or ""
@@ -915,6 +928,8 @@ class AgentEditBody(BaseModel):
     rationale: str = ""
     client_id: str
     target: str = ""
+    context_before: str = ""
+    context_after: str = ""
 
 
 @router.post("/api/agent/docs/{uid}/apply-edit")
@@ -949,7 +964,9 @@ def api_agent_apply_edit(uid: str, body: AgentEditBody, request: Request):
     try:
         r = doccollab.apply_text_replace(uid, body.old_text, body.new_text,
                                          kind="agent_edit", operator=f"agent:{agent['name']}",
-                                         base_rev_expected=body.base_rev)
+                                         base_rev_expected=body.base_rev,
+                                         context_before=body.context_before,
+                                         context_after=body.context_after)
     except doccollab.AnchorError as e:
         _release_agent_edit_claim(uid, body.client_id)
         raise HTTPException(422, str(e))
@@ -975,6 +992,8 @@ class AgentSuggestBody(BaseModel):
     target: str = ""
     client_id: str = ""
     base_rev: int | None = None
+    context_before: str = ""
+    context_after: str = ""
 
 
 @router.post("/api/agent/docs/{uid}/suggestions")
@@ -986,7 +1005,8 @@ def api_agent_suggest(uid: str, body: AgentSuggestBody, request: Request):
         row, existed = doccollab.create_suggestion(
             uid, agent=f"agent:{agent['name']}", old_text=body.old_text,
             new_text=body.new_text, rationale=body.rationale, sources=body.sources,
-            target=body.target, client_id=body.client_id, base_rev=body.base_rev)
+            target=body.target, client_id=body.client_id, base_rev=body.base_rev,
+            context_before=body.context_before, context_after=body.context_after)
     except doccollab.AnchorError as e:
         raise HTTPException(422, str(e))
     except doccollab.RevisionConflict as e:

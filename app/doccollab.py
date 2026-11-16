@@ -723,15 +723,51 @@ async def _read_text(room) -> str:
     return str(room.ydoc.get(TEXT_FIELD, type=Text))
 
 
-def _find_unique(s: str, anchor: str) -> int:
+def _find_unique(s: str, anchor: str, before: str = "", after: str = "") -> int:
+    """唯一锚点定位；多处匹配时用前后文消歧（R02：两段相同文字选第二段）。
+    消歧规则：对每个出现位置计算"前文匹配长度+后文匹配长度"，
+    仅当存在唯一最大且严格大于其他候选时采用；否则明确失败拒绝猜测。"""
     if not anchor:
         raise AnchorError(0, "锚点为空")
-    first = s.find(anchor)
-    if first < 0:
+    idxs = []
+    i = s.find(anchor)
+    while i >= 0:
+        idxs.append(i)
+        i = s.find(anchor, i + 1)
+    if not idxs:
         raise AnchorError(0, "锚点在当前正文中零匹配")
-    if s.find(anchor, first + 1) >= 0:
-        raise AnchorError(2, "锚点在当前正文中多处匹配，拒绝猜测")
-    return first
+    if len(idxs) == 1:
+        return idxs[0]
+    if not (before or after):
+        raise AnchorError(len(idxs), "锚点在当前正文中多处匹配，拒绝猜测")
+
+    def _score(i):
+        """上下文计分：前/后文原文出现于选区邻近窗口即计分（前端传选区前/后原文切片，
+        编辑器场景两者完全一致得满分；宽松匹配容忍空白差异）。"""
+        score = 0
+        b = (before or "").rstrip()
+        a = (after or "").rstrip()
+        window_before = s[max(0, i - 400):i]
+        window_after = s[i + len(anchor): i + len(anchor) + 400]
+        if b:
+            if window_before.endswith(b):
+                score += 3
+            elif b in window_before:
+                score += 2
+        if a:
+            if window_after.startswith(a):
+                score += 3
+            elif a in window_after:
+                score += 2
+        return score
+
+    scores = [_score(i) for i in idxs]
+    best = max(scores)
+    if best > 0 and scores.count(best) == 1:
+        return idxs[scores.index(best)]
+    raise AnchorError(len(idxs),
+                      f"锚点在当前正文中多处匹配（{len(idxs)} 处），且前后文不足以唯一定位——"
+                      "请扩大选区范围或直接手动修改")
 
 
 def _apply_on_text(doc: Doc, t: Text, s: str, i: int, old: str, new: str) -> str:
@@ -780,7 +816,7 @@ async def _restore_live(room, doc_uid, new_text):
 
 
 def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator="system",
-                       base_rev_expected=None):
+                       base_rev_expected=None, context_before="", context_after=""):
     """受控局部修改：锚点唯一匹配 + base_rev 乐观锁 + 修订留痕。线程安全。
 
     R10：版本检查、锚点匹配、CRDT 变更、update 落库、修订写入在**同一临界区**
@@ -789,14 +825,16 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
     room = _room_by_uid.get(doc_uid)
     if room is not None and _loop is not None and _loop.is_running():
         fut = asyncio.run_coroutine_threadsafe(
-            _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator),
+            _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator,
+                                context_before, context_after),
             _loop)
         return fut.result(timeout=30)
     with _mutex(doc_uid):
         room = _room_by_uid.get(doc_uid)
         if room is not None and _loop is not None and _loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(
-                _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator),
+                _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator,
+                                context_before, context_after),
                 _loop)
             return fut.result(timeout=30)
         # 离线路径：先回放（_replay_doc 的 seed 分支内部会取 db._lock——必须在进入
@@ -805,7 +843,6 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
         d = _replay_doc(doc_uid, (get_doc(doc_uid) or {}).get("initial_md") or "")
         t = d.get(TEXT_FIELD, type=Text)
         s_txt = str(t)
-        i = _find_unique(s_txt, old_text)
         with db._lock:
             latest = db.get_conn().execute(
                 "SELECT rev FROM doc_revisions WHERE doc_uid=? ORDER BY rev DESC LIMIT 1",
@@ -813,6 +850,7 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
             cur = latest["rev"] if latest else 0
             if base_rev_expected is not None and int(base_rev_expected) != int(cur):
                 raise RevisionConflict(cur)
+            i = _find_unique(s_txt, old_text, context_before or "", context_after or "")
             b_i = len(s_txt[:i].encode("utf-8"))
             b_j = b_i + len(old_text.encode("utf-8"))
             with d.transaction():
@@ -833,7 +871,7 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
                 " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
                  base_rev_expected, _hash_md(full), operator, db.now()))
-            if kind in ("save", "agent_edit", "suggest_apply"):
+            if kind in ("save", "agent_edit", "suggest_apply", "restore"):
                 db.get_conn().execute(
                     "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
                     (doc_uid,))
@@ -847,7 +885,8 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
         return {"rev": rev, "text": full}
 
 
-async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator):
+async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator,
+                              context_before="", context_after=""):
     """R10：loop 协程内全程同步（无 await）——与 WS 写、修订循环天然串行；
     再持 db._lock 覆盖修订循环的跨线程写入 → 版本检查与应用真正原子。"""
     t = room.ydoc.get(TEXT_FIELD, type=Text)
@@ -859,7 +898,7 @@ async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expect
         if base_rev_expected is not None and int(base_rev_expected) != int(cur):
             raise RevisionConflict(cur)
         s_txt = str(t)
-        i = _find_unique(s_txt, old_text)
+        i = _find_unique(s_txt, old_text, context_before or "", context_after or "")
         b_i = len(s_txt[:i].encode("utf-8"))
         b_j = b_i + len(old_text.encode("utf-8"))
         sv = room.ydoc.get_state()
@@ -882,7 +921,7 @@ async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expect
             (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
              base_rev_expected, _hash_md(full), operator, db.now()))
         # B07：内容变化使既有"已通过"失效——回落编辑中（review_* 保留为历史决定）
-        if kind in ("save", "agent_edit", "suggest_apply"):
+        if kind in ("save", "agent_edit", "suggest_apply", "restore"):
             db.get_conn().execute(
                 "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
                 (doc_uid,))
@@ -946,8 +985,8 @@ def review_doc(doc_uid, decision, note, operator):
 
 def create_suggestion(doc_uid, agent, old_text, new_text, rationale="", sources=None,
                       target="", patch_kind="replace", client_id="", base_rev=None,
-                      operator=None):
-    """修改建议：创建时即校验锚点唯一匹配与版本；client_id 幂等。"""
+                      operator=None, context_before="", context_after=""):
+    """修改建议：创建时即校验锚点唯一匹配（支持前后文消歧，R02）与版本；client_id 幂等。"""
     doc = get_doc(doc_uid)
     if not doc:
         raise DocError("文档不存在")
@@ -964,17 +1003,19 @@ def create_suggestion(doc_uid, agent, old_text, new_text, rationale="", sources=
     if int(base_rev) != int(cur_rev):
         raise RevisionConflict(cur_rev)
     text = current_text(doc_uid)
-    _find_unique(text, old_text)   # 零/多匹配直接失败
+    _find_unique(text, old_text, context_before or "", context_after or "")   # 零/多匹配直接失败
     uid = _uid("sug_")
     with db._lock:
         c = db.get_conn()
         c.execute(
             "INSERT INTO doc_suggestions (doc_uid, suggestion_uid, base_rev, agent, target,"
-            " rationale, sources, patch_kind, anchor, old_text, new_text, client_id, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " rationale, sources, patch_kind, anchor, old_text, new_text, client_id,"
+            " context_before, context_after, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (doc_uid, uid, int(base_rev), agent, target or "", rationale or "",
              json.dumps(sources or [], ensure_ascii=False), patch_kind,
-             old_text, old_text, new_text, client_id, db.now()))
+             old_text, old_text, new_text, client_id,
+             context_before or "", context_after or "", db.now()))
         c.commit()
         row = c.execute("SELECT * FROM doc_suggestions WHERE suggestion_uid=?", (uid,)).fetchone()
     return dict(row), False
@@ -1007,7 +1048,9 @@ def resolve_suggestion(doc_uid, sid, decision, operator):
     try:
         r = apply_text_replace(doc_uid, row["old_text"], row["new_text"],
                                kind="suggest_apply", operator=operator,
-                               base_rev_expected=row["base_rev"])
+                               base_rev_expected=row["base_rev"],
+                               context_before=row["context_before"] or "",
+                               context_after=row["context_after"] or "")
     except AnchorError as e:
         with db._lock:
             db.get_conn().execute(

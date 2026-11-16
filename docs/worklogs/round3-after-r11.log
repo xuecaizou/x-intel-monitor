@@ -741,3 +741,43 @@ PASS E7-2 批量删除跳过事件证据
 PASS E7-3 cleanup 同样保护
 
 ==== 第六批验收：46 PASS / 0 FAIL ====
+[scheduler] 已按配置暂停（scheduler.enabled=false）——恢复/演练场景不应自动抓取与外发
+[doccollab] 协作服务已启动（/ws/docs）
+服务就绪：http://127.0.0.1:22678
+== C0 准备 ==
+PASS C0-1 初始正文=模板发布版
+== C1 连接鉴权 ==
+[ws] reject: no principal（无会话/ticket/token）
+ERROR:    ASGI callable returned without completing handshake.
+PASS C1-1 无凭据 WS 被拒
+PASS C1-2 恶意 Origin 被拒
+== C2 连接即同步初始内容（仅初始化一次） ==
+[ws] accept doc_fc12b0aeba44 write boss
+PASS C2-1 客户端收到初始正文
+[ws] accept doc_fc12b0aeba44 write boss
+PASS C2-2 第二客户端同内容（无重复初始化）
+PASS C2-3 更新日志仍为初始少量行
+== C3 两客户端并发编辑收敛（N01/N05） ==
+PASS C3-1 B 看到 A 的修改
+PASS C3-2 A 看到 B 的修改
+PASS C3-3 双端收敛一致
+PASS C3-4 服务端文本=收敛结果
+== C4 持久化确认与修订快照 ==
+PASS C4-1 服务端 awareness 含 saved_seq
+PASS C4-2 修订快照生成（save）
+== C5 只读连接：服务端丢弃其更新 ==
+[ws] accept doc_fc12b0aeba44 read reader
+PASS C5-1 只读端修改未进服务端
+PASS C5-2 其他客户端不受影响
+== C6 Agent 活动房间受控修改 → 实时广播 ==
+PASS C6-1 Agent 活动房间修改成功
+PASS C6-2 修改广播到在线客户端
+PASS C6-3 双端再次收敛
+== C7 断开重连：内容保留、不重复初始化（N02） ==
+PASS C7-1 房间清空后离线回放一致
+[ws] accept doc_fc12b0aeba44 write boss
+PASS C7-2 重连后内容完整恢复
+PASS C7-3 重连后编辑正常落库
+PASS C7-4 无重复初始化
+
+==== 实时协作验收：21 PASS / 0 FAIL ====
