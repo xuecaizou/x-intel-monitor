@@ -1239,7 +1239,7 @@ def api_instance_backfill(key: str, idx: int, body: BackfillBody):
                 "since": since, "until": until,
                 "samples": [{"id": t["id"], "title": (t.get("title_zh") or t["text"][:40]),
                              "created_at": t["created_at"]} for t in cands[:10]]}
-    from .engine import pass_filter, _effective_rule, _push_filter
+    from app.engine import pass_filter, _effective_rule, _push_filter
     rule_flt, rule_id, rule_snap = _effective_rule(load(), inst)
     created = filtered = 0
     for t in cands:

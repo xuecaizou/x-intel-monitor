@@ -78,8 +78,9 @@ function createEditor(container, opts) {
   // 2026-11-16 B05：按"本客户端广播的每个更新字节的 sha"与服务端 saved_shas 精确对账——
   // 其他成员的 ACK/全局 seq 推进不再代替本客户端确认；只有本客户端的全部待确认更新
   // 都出现在服务端已保存集合中，才清除 dirty。
+  // 2026-11-16 R09 修复：update 本身就是 Uint8Array，此前误用 TextEncoder.encode(update)
+  // 会把它转成"逗号数字字符串"再求 sha → 与服务端原始字节 sha 永不相等 → 永远"同步中"。
   const pendingShas = [];           // FIFO：本客户端待确认更新 sha（hex）
-  const textEncoder = new TextEncoder();
   async function sha256Hex(bytes) {
     const buf = await crypto.subtle.digest('SHA-256', bytes);
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -94,7 +95,7 @@ function createEditor(container, opts) {
   }
   ydoc.on('update', (update, origin, doc, tr) => {
     if (tr && tr.local) {
-      pendingShas.push(sha256Hex(textEncoder.encode(update)));
+      pendingShas.push(sha256Hex(update));
       dirty = true;
       emit('status', connState());
     }

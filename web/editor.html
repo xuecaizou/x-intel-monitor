@@ -165,10 +165,51 @@ function statusChip(){
   el.textContent=s==='saved'?'已同步':(s==='syncing'?'同步中…':'离线/重连中');
 }
 
+/* R26：连接看门狗——失败不能无限停留"连接中…"。阶段判定：
+   文档信息未加载完成 = 文档加载阶段；已创建 ED 但 WS 未连 = 连接阶段；
+   已连但未完成首次同步 = 首次同步阶段。超时显示阶段/原因/重试入口。 */
+var META_LOADED=false, INIT_DONE=false;
+function connStage(){
+  if(!META_LOADED) return '文档信息加载';
+  if(!window.__ED) return '编辑器初始化';
+  if(!window.__ED.provider.wsconnected) return 'WebSocket 连接';
+  if(!window.__ED.provider.synced) return '首次内容同步';
+  return null;   // 完成
+}
+function showConnFail(){
+  if(INIT_DONE) return;
+  var stage=connStage();
+  if(stage===null){ INIT_DONE=true; return; }
+  var el=$('st-conn');
+  el.className='chip offline';
+  el.textContent='连接失败（'+stage+'）';
+  var sb=$('subline');
+  sb.innerHTML='连接未完成，卡在阶段「'+stage+'」。常见原因：服务未运行、网络中断、'
+    +'权限变化、或页面脚本错误（按 F12 看 Console）。本地未同步修改会保留，重试不会清空正文。';
+  var b=document.createElement('button');
+  b.className='btn'; b.textContent='重试';
+  b.style.marginLeft='10px';
+  b.addEventListener('click',function(){ location.reload(); });
+  sb.appendChild(b);
+  window.__CONN_STAGE=stage;   /* 自动化/诊断读取 */
+}
+setTimeout(showConnFail, 12000);
 api('/api/writing/docs/'+DOC).then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
 .then(function(res){
-  if(res.s!==200){document.body.innerHTML='<p style="padding:30px">'+esc(res.d&&res.d.detail||('加载失败 '+res.s))+'</p>';return;}
+  if(res.s!==200){
+    META_LOADED=true;
+    var el=$('st-conn'); el.className='chip offline'; el.textContent='文档加载失败（'+res.s+'）';
+    var sb=$('subline');
+    sb.textContent='文档信息加载失败：'+(res.d&&res.d.detail||('HTTP '+res.s))+'（'+DOC+'）';
+    var b=document.createElement('button');
+    b.className='btn'; b.textContent='重试';
+    b.addEventListener('click',function(){ location.reload(); });
+    sb.appendChild(b);
+    window.__CONN_STAGE='文档信息加载';
+    return;
+  }
   META=res.d;PERM=META.my_permission||'read';
+  META_LOADED=true;
   $('doc-title').value=META.title||'';
   var ds=$('st-doc');ds.textContent=META.status||'';
   if(META.status==='已通过')ds.className='chip saved';
@@ -183,14 +224,30 @@ api('/api/writing/docs/'+DOC).then(function(r){return r.json().then(function(d){
   if(META.status!=='待审阅'||META.kind==='template'){$('btn-approve').style.display='none';$('btn-reject').style.display='none';}
   ED=window.XCollab.createEditor($('cm-host'),{docUid:DOC,username:ME.username,editable:PERM==='write'});
   window.__ED=ED;   /* 调试/自动化钩子 */
-  ED.on('status',function(){statusChip();renderMembers();});
+  ED.on('status',function(){
+    statusChip();renderMembers();
+    if(window.__ED.provider.wsconnected && window.__ED.provider.synced && !INIT_DONE){
+      INIT_DONE=true;   // 连接+首次同步完成 → 看门狗解除
+      $('subline').textContent='提示：Markdown 为协作编辑格式；「已同步」代表服务端已持久化，可直接下载。';
+    }
+  });
   ED.on('saved',function(seq){$('subline').textContent='服务器已持久化更新序号 #'+seq+'（「已同步」= 服务端落库确认）';});
   renderTab();loadSuggestions();loadRevisions();
   setInterval(function(){if(TAB==='suggestions')loadSuggestions();},5000);
   setInterval(renderMembers,4000);
-  $('subline').textContent='提示：Markdown 为协作编辑格式；「已同步」代表服务端已持久化，可直接下载。';
 })
-.catch(function(e){document.body.innerHTML='<p style="padding:30px">加载失败：'+esc(e.message)+'</p>';});
+.catch(function(e){
+  META_LOADED=true;
+  var el=$('st-conn'); el.className='chip offline'; el.textContent='初始化失败';
+  var sb=$('subline');
+  sb.textContent='页面初始化出错：'+(e&&e.message||e)+'（详情见 F12 Console）。';
+  var b=document.createElement('button');
+  b.className='btn'; b.textContent='重试';
+  b.addEventListener('click',function(){ location.reload(); });
+  sb.appendChild(b);
+  window.__CONN_STAGE='初始化异常';
+  if(window.console&&console.error)console.error(e);
+});
 
 function renderMembers(){
   if(!ED)return;
@@ -522,7 +579,7 @@ function renderPreviewDoc(){
   var base='/api/writing/docs/'+DOC+'/assets/';
   /* attachment: 引用 → 有权限的实际素材地址（同源带 Cookie） */
   md=md.replace(/(!\[[^\]]*\]\()attachment:([^)]+)\)/g,function(m,a,name){
-    return a+base+encodeURIComponent(name.trim().replace(/^\/+,''))+')';
+    return a+base+encodeURIComponent(name.trim().replace(/^\/+/, '')) + ')';
   });
   var doc='<!doctype html><meta charset="utf-8"><base target="_blank"><style>'
     +'body{font:14.5px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;color:#1a2333;margin:0 auto;max-width:860px;padding:16px 24px}'

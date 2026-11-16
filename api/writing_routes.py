@@ -713,8 +713,8 @@ def api_doc_ai(uid: str, body: DocAIBody, request: Request):
     - 上下文：选区 + 前后文片段；多轮 history 由前端截断传递；
     - 权限：read 即可问答；改写建议的"应用"走既有建议流（需 write）。
     """
-    from .ai import _chat, classify_error
-    from . import ai_channels as aich
+    from app.ai import _chat, classify_error
+    from app import ai_channels as aich
     _require_doc_perm(request, uid, "read")
     cfg = aich.resolve_cfg(channel_id=body.channel_id or None, task="doc_ai")
     if not (cfg.get("enabled") and cfg.get("base_url")):
