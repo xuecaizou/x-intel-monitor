@@ -8,3 +8,4 @@ node_modules/
 package-lock.json
 x-intel-monitor-overnight-development-prompt.md
 x-intel-monitor-round2-verification-and-round3-prompt.md
+scripts/_patch_batch3d.py
