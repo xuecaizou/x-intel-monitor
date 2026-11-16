@@ -223,8 +223,12 @@ def doc_permission(doc, principal):
         return "read"
     acl = db.get_conn().execute("SELECT permission FROM doc_acl WHERE doc_uid=? AND principal=?",
                                 (doc["doc_uid"], principal.get("username", ""))).fetchone()
+    # R08：全局角色是权限上限——全局降为 read 的成员，即使有 doc_acl=write 也立即失去写权
+    rank_write = role in ("write", "admin")
+    if acl and acl["permission"] == "write":
+        return "write" if rank_write else "read"
     if acl:
-        return acl["permission"]
+        return "read"
     return doc.get("default_permission") or "read"
 
 
@@ -389,11 +393,15 @@ class _ReadOnlyChannel:
                 await send({"type": "websocket.close", "code": 4403, "reason": "permission revoked"})
 
 
-async def _force_close_channel(ch):
-    """对任意 Channel 形态（裸 ASGIWebsocket / 只读包装）发送服务端关闭帧。
-    pycrdt Channel 协议没有 close()——裸通道只能经 ASGI _send 发 websocket.close；
-    发送后 uvicorn 结束该连接，接收侧随即收到 disconnect（2026-11-16 B03 修复）。"""
+async def _do_force_close(ch):
+    """实际关闭动作（必须已在服务事件循环上执行）。"""
     target = getattr(ch, "_inner", ch)
+    if getattr(target, "_xintel_closed", False):
+        return
+    try:
+        target._xintel_closed = True
+    except Exception:
+        pass
     send = getattr(target, "_send", None)
     if send is not None:
         with suppress(Exception):
@@ -402,6 +410,32 @@ async def _force_close_channel(ch):
     if rc is not None:
         with suppress(Exception):
             await rc()
+
+
+def _force_close_channel(ch):
+    """R11：强制关闭必须提交到连接所属事件循环（uvicorn 主 loop）执行——
+    跨线程直接对同一 IOCP socket 写 close 帧会触发 WinError 995 完成通知竞争，
+    令 asyncio selector 抛 InvalidStateError 并杀死事件循环线程（Windows 实证：
+    服务静默停摆、后续全部连接拒绝）。幂等：同一连接只调度一次。"""
+    target = getattr(ch, "_inner", ch)
+    if getattr(target, "_xintel_closed", False):
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is _loop:
+        # 已在服务事件循环：直接调度（同 loop 内串行，无跨线程竞争）
+        asyncio.ensure_future(_do_force_close(ch))
+        return
+    if _loop is not None and _loop.is_running():
+        # 其余一切情形（测试 loop / 工作线程）：一律调度回服务 loop——
+        # 跨 loop 直接操作同一 socket 是 R11 崩溃根因
+        _loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_do_force_close(ch)))
+        return
+    # 服务 loop 不在（停机中）：就地尽力关闭
+    with suppress(Exception):
+        asyncio.run(_do_force_close(ch))
 
 
 class _XServer(WebsocketServer):
@@ -488,10 +522,29 @@ def _principal_from_ws(scope, hdrs, doc_uid=None):
         t = consume_ticket(ticket, doc_uid)
         if t:
             p = t.get("principal") or {}
-            principal = {"username": p.get("username", ""), "role": p.get("role", ""),
-                         "kind": p.get("kind", "session")}
+            # R08：ticket 只作一次性身份凭证——签发后降级/注销/吊销必须即时失效：
+            # 会话票据须 sid 仍有效；Token 票据须未吊销；角色一律按 auth_users 现算，
+            # 不使用签发时的 role 快照。
+            sid = p.get("sid") or ""
+            token_id = p.get("token_id")
+            kind = p.get("kind", "session")
+            username = p.get("username", "")
+            if kind == "token" and token_id is not None:
+                row = db.get_conn().execute(
+                    "SELECT name, role FROM auth_tokens WHERE id=? AND revoked=0",
+                    (int(token_id),)).fetchone()
+                if not row:
+                    return None, None, None
+                username = row["name"]
+            elif kind == "session" and sid:
+                if not auth.get_session(sid):
+                    return None, None, None
+            role = auth.user_role(username) or ""
+            if not role:
+                return None, None, None
+            principal = {"username": username, "role": role, "kind": kind}
             return (principal,
-                    {"via": "ticket", "username": principal.get("username", "")},
+                    {"via": "ticket", "username": username},
                     None)
     # 3) Bearer（便于测试与内部工具）——2026-11-16 B02：保留完整 agent 身份与 token id，
     #    权限仍由 doc_permission 在连接时按当前 ACL/scope 计算（不再透传快照权限）。
@@ -728,42 +781,127 @@ async def _restore_live(room, doc_uid, new_text):
 
 def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator="system",
                        base_rev_expected=None):
-    """受控局部修改：锚点唯一匹配 + base_rev 乐观锁 + 修订留痕。线程安全。"""
-    if base_rev_expected is not None:
-        latest = latest_revision(doc_uid)
-        cur = latest["rev"] if latest else 0
-        if int(base_rev_expected) != int(cur):
-            raise RevisionConflict(cur)
+    """受控局部修改：锚点唯一匹配 + base_rev 乐观锁 + 修订留痕。线程安全。
+
+    R10：版本检查、锚点匹配、CRDT 变更、update 落库、修订写入在**同一临界区**
+    原子完成（loop 协程内全程同步、或离线路径持 _mutex + db._lock）——
+    两个不同 client_id 共用旧 base_rev 的并发请求，只有一个成功，另一个明确 409。"""
     room = _room_by_uid.get(doc_uid)
     if room is not None and _loop is not None and _loop.is_running():
         fut = asyncio.run_coroutine_threadsafe(
-            _apply_replace_live(room, doc_uid, old_text, new_text), _loop)
-        full, matched = fut.result(timeout=30)
-    else:
-        with _mutex(doc_uid):
-            if _room_by_uid.get(doc_uid) is not None and _loop is not None and _loop.is_running():
-                fut = asyncio.run_coroutine_threadsafe(
-                    _apply_replace_live(_room_by_uid[doc_uid], doc_uid, old_text, new_text), _loop)
-                full, matched = fut.result(timeout=30)
-            else:
-                d = _replay_doc(doc_uid, (get_doc(doc_uid) or {}).get("initial_md") or "")
-                t = d.get(TEXT_FIELD, type=Text)
-                s = str(t)
-                i = _find_unique(s, old_text)
-                full = _apply_on_text(d, t, s, i, old_text, new_text)
-                upd = d.get_update()
-                _store_update_sync(doc_uid, upd)
-                matched = True
-    rev = _save_revision_sync(doc_uid, full, kind, operator)
-    return {"rev": rev, "text": full}
+            _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator),
+            _loop)
+        return fut.result(timeout=30)
+    with _mutex(doc_uid):
+        room = _room_by_uid.get(doc_uid)
+        if room is not None and _loop is not None and _loop.is_running():
+            fut = asyncio.run_coroutine_threadsafe(
+                _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator),
+                _loop)
+            return fut.result(timeout=30)
+        # 离线路径：先回放（_replay_doc 的 seed 分支内部会取 db._lock——必须在进入
+        # 本函数的 db._lock 临界区**之前**完成，否则非重入死锁，workbench W4 实证）；
+        # 随后 冲突检查+变更+落库 在 db._lock 内原子完成。
+        d = _replay_doc(doc_uid, (get_doc(doc_uid) or {}).get("initial_md") or "")
+        t = d.get(TEXT_FIELD, type=Text)
+        s_txt = str(t)
+        i = _find_unique(s_txt, old_text)
+        with db._lock:
+            latest = db.get_conn().execute(
+                "SELECT rev FROM doc_revisions WHERE doc_uid=? ORDER BY rev DESC LIMIT 1",
+                (doc_uid,)).fetchone()
+            cur = latest["rev"] if latest else 0
+            if base_rev_expected is not None and int(base_rev_expected) != int(cur):
+                raise RevisionConflict(cur)
+            b_i = len(s_txt[:i].encode("utf-8"))
+            b_j = b_i + len(old_text.encode("utf-8"))
+            with d.transaction():
+                del t[b_i:b_j]
+                t.insert(b_i, new_text)
+            upd = d.get_update()
+            seq = db.get_conn().execute(
+                "SELECT COALESCE(MAX(seq),0)+1 s FROM doc_updates WHERE doc_uid=?",
+                (doc_uid,)).fetchone()["s"]
+            sha = hashlib.sha256(upd).hexdigest()
+            db.get_conn().execute(
+                "INSERT INTO doc_updates (doc_uid, seq, update_blob, update_sha, created_at)"
+                " VALUES (?,?,?,?,?)", (doc_uid, seq, upd, sha, db.now()))
+            rev = cur + 1
+            full = str(t)
+            db.get_conn().execute(
+                "INSERT INTO doc_revisions (doc_uid, rev, title, body_md, revision_kind,"
+                " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
+                 base_rev_expected, _hash_md(full), operator, db.now()))
+            if kind in ("save", "agent_edit", "suggest_apply"):
+                db.get_conn().execute(
+                    "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
+                    (doc_uid,))
+            db.get_conn().execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?",
+                                  (db.now(), doc_uid))
+            db.get_conn().commit()
+        if kind == "save":
+            from . import writing
+            with suppress(Exception):
+                writing.record_candidate_status_change_by_doc(doc_uid, "写作中", "system")
+        return {"rev": rev, "text": full}
 
 
-async def _apply_replace_live(room, doc_uid, old_text, new_text):
+async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expected, kind, operator):
+    """R10：loop 协程内全程同步（无 await）——与 WS 写、修订循环天然串行；
+    再持 db._lock 覆盖修订循环的跨线程写入 → 版本检查与应用真正原子。"""
     t = room.ydoc.get(TEXT_FIELD, type=Text)
-    s = str(t)
-    i = _find_unique(s, old_text)
-    full = _apply_on_text(room.ydoc, t, s, i, old_text, new_text)
-    return full, True
+    with db._lock:
+        latest = db.get_conn().execute(
+            "SELECT rev FROM doc_revisions WHERE doc_uid=? ORDER BY rev DESC LIMIT 1",
+            (doc_uid,)).fetchone()
+        cur = latest["rev"] if latest else 0
+        if base_rev_expected is not None and int(base_rev_expected) != int(cur):
+            raise RevisionConflict(cur)
+        s_txt = str(t)
+        i = _find_unique(s_txt, old_text)
+        b_i = len(s_txt[:i].encode("utf-8"))
+        b_j = b_i + len(old_text.encode("utf-8"))
+        sv = room.ydoc.get_state()
+        with room.ydoc.transaction():
+            del t[b_i:b_j]
+            t.insert(b_i, new_text)
+        upd = room.ydoc.get_update(sv)
+        full = str(t)
+        seq = db.get_conn().execute(
+            "SELECT COALESCE(MAX(seq),0)+1 s FROM doc_updates WHERE doc_uid=?",
+            (doc_uid,)).fetchone()["s"]
+        sha = hashlib.sha256(upd).hexdigest()
+        db.get_conn().execute(
+            "INSERT INTO doc_updates (doc_uid, seq, update_blob, update_sha, created_at)"
+            " VALUES (?,?,?,?,?)", (doc_uid, seq, upd, sha, db.now()))
+        rev = cur + 1
+        db.get_conn().execute(
+            "INSERT INTO doc_revisions (doc_uid, rev, title, body_md, revision_kind,"
+            " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
+             base_rev_expected, _hash_md(full), operator, db.now()))
+        # B07：内容变化使既有"已通过"失效——回落编辑中（review_* 保留为历史决定）
+        if kind in ("save", "agent_edit", "suggest_apply"):
+            db.get_conn().execute(
+                "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
+                (doc_uid,))
+        db.get_conn().execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?",
+                              (db.now(), doc_uid))
+        db.get_conn().commit()
+    if kind == "save":
+        from . import writing
+        with suppress(Exception):
+            writing.record_candidate_status_change_by_doc(doc_uid, "写作中", "system")
+    # 落库成功后推进确认游标（与 YStore 相同语义）
+    _saved_seq_cache[doc_uid] = max(seq, _saved_seq_cache.get(doc_uid, 0))
+    store = getattr(room, "ystore", None)
+    if store is not None and hasattr(store, "_saved_shas"):
+        store._saved_shas.append(sha)
+    with suppress(Exception):
+        room.awareness.set_local_state_field("saved_seq", seq)
+        room.awareness.set_local_state_field("saved_shas", list(store._saved_shas))
+    return {"rev": rev, "text": full}
 
 
 # ============================================================

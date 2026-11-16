@@ -260,7 +260,11 @@ t6 = add_tweet("ReEvalSrc", "rule change re-eval", geo="德国")   # 法国规�
 engine.dispatch_round(cfg_f6)
 check("T6-1 未命中 → 已过滤", tweet_deliv_state(t6, iid_f6) == "已过滤", "")
 db.reevaluate_filtered()   # 规则变更钩子（PUT filters/rules 时触发）
-check("T6-2 已过滤转回待重新评估", tweet_deliv_state(t6, iid_f6) == "待发送", "")
+# R25 契约演进（2026-11-17）：旧实现"已过滤→待发送"不重查规则，不匹配的旧情报被误推；
+# 新契约=删除已过滤行，dispatch 重建时逐实例现算 pass_filter/忽略/边界/完整性。
+# 原断言（状态置回"待发送"）已由"行被删除（等待现算重判）"取代，误投防护由 T6-3 前置。
+check("T6-2 重评删除已过滤行（待 dispatch 现算重判）",
+      tweet_deliv_state(t6, iid_f6) == "(无)", "")
 cfg_f6["push"]["filters"]["countries"] = "德国"
 engine.dispatch_round(cfg_f6)
 check("T6-3 新规则下命中并投递", tweet_deliv_state(t6, iid_f6) == "成功", "")

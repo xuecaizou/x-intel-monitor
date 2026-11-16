@@ -10,26 +10,55 @@ import time
 from .config import DATA_DIR
 
 _lock = threading.Lock()
-_conn = None
+_conn = None                      # 兼容别名：首个连接；测试以 db._conn=None 作全量重置信号
+_tls = threading.local()          # R11：逐线程连接——共享单连接跨线程无锁读在并发下
+                                  # 曾出现 InterfaceError/读丢失（完整套件 B06 实证）。
+                                  # WAL 多读单写是 SQLite 设计场景；写仍由 _lock 全局串行。
 
 
 def now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _new_conn():
+    DATA_DIR.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DATA_DIR / "xintel.db", check_same_thread=False, timeout=30)
+    conn.row_factory = sqlite3.Row
+    # WAL（第四批）：单写多读并发更稳；备份必须用 backup API（含 WAL 未检查点数据）
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        pass
+    return conn
+
+
 def get_conn():
     global _conn
-    if _conn is None:
-        DATA_DIR.mkdir(exist_ok=True)
-        _conn = sqlite3.connect(DATA_DIR / "xintel.db", check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        # WAL（第四批）：单写多读并发更稳；备份必须用 backup API（含 WAL 未检查点数据）
+    conn = getattr(_tls, "conn", None)
+    if conn is not None:
         try:
-            _conn.execute("PRAGMA journal_mode=WAL")
-            _conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("SELECT 1")   # 活性探测（close 后的旧引用在此重建）
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+    if conn is not None and _conn is None:
+        # 测试重置信号（db._conn=None）：全部线程缓存作废，按当前 DATA_DIR 重建
+        try:
+            conn.close()
         except Exception:
             pass
-    return _conn
+        conn = None
+    if conn is None:
+        conn = _new_conn()
+        _tls.conn = conn
+        if _conn is None:
+            _conn = conn
+    return conn
 
 
 def init_db():
@@ -1579,25 +1608,29 @@ def ai_task_items(task_id, kind, limit):
 
 
 def reevaluate_filtered(tweet_ids=None):
-    """规则/过滤变更后，已过滤投递重新进入待评估（下轮按新规则重新判定，不丢失）。
+    """规则/过滤变更后重评（R25 修复：删除已过滤行让 dispatch **重新走完整判定链**）。
 
-    2026-11-16 round2 需求 D：支持 tweet_ids 定向——分类兜底填充后仅重评估
-    **本轮刚分类**的情报（不做无差别全量重置，避免历史已过滤记录被补发）。"""
+    此前"已过滤→待发送"直接改状态会让下游不再重查规则——不匹配新规则的
+    旧情报被误推送（实测：规则只允许"高危漏洞"、条目"数据泄露线索"仍生成
+    digest+instant 两条模拟消息）。删除行后 dispatch 重建候选时逐实例现算：
+    pass_filter 新规则 / 人工忽略 / enabled_since 边界 / AI 完整性门控全部重新判定；
+    不命中则重新标记已过滤（原因=新规则），命中才进入待发送。"""
+
+    def _delete(where, args):
+        cur = get_conn().execute(f"DELETE FROM deliveries WHERE {where}", args)
+        return cur.rowcount
+
     with _lock:
         if tweet_ids:
             ids = [int(x) for x in tweet_ids if str(x).strip().lstrip("-").isdigit()][:500]
             if not ids:
                 return 0
             marks = ",".join("?" for _ in ids)
-            cur = get_conn().execute(
-                f"UPDATE deliveries SET state='待发送', reason='分类补充后重新评估', updated_at=?"
-                f" WHERE state='已过滤' AND tweet_id IN ({marks})", (now(), *ids))
+            n = _delete(f"state='已过滤' AND tweet_id IN ({marks})", ids)
         else:
-            cur = get_conn().execute(
-                "UPDATE deliveries SET state='待发送', reason='规则变更重新评估', updated_at=?"
-                " WHERE state='已过滤'", (now(),))
+            n = _delete("state='已过滤'", ())
         get_conn().commit()
-        return cur.rowcount
+        return n
 
 # ---------- 事件聚合（第六批） ----------
 

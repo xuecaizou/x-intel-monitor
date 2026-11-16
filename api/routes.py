@@ -770,7 +770,8 @@ def api_ai_analyze(body: AiTextBody):
     if not body.text.strip():
         raise HTTPException(400, "text 不能为空")
     try:
-        fields = aimod.analyze_tweet({"screen_name": body.screen_name, "text": body.text})
+        fields = aimod.analyze_tweet({"screen_name": body.screen_name, "text": body.text},
+                                     cfg=ai_channels.resolve_cfg(task="analyze"))
         return {"ok": True, "result": _normalize_ai_fields(fields)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -782,7 +783,8 @@ def api_ai_translate(body: AiTextBody):
     if not body.text.strip():
         raise HTTPException(400, "text 不能为空")
     try:
-        f = aimod.translate_tweet({"text": body.text})
+        f = aimod.translate_tweet({"text": body.text},
+                                  cfg=ai_channels.resolve_cfg(task="translate"))
         return {"ok": True, "title_zh": f.get("title_zh", ""), "text_zh": f.get("text_zh", "")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -794,7 +796,8 @@ def api_ai_tag(body: AiTextBody):
     if not body.text.strip():
         raise HTTPException(400, "text 不能为空")
     try:
-        fields = aimod.analyze_tweet({"screen_name": body.screen_name, "text": body.text})
+        fields = aimod.analyze_tweet({"screen_name": body.screen_name, "text": body.text},
+                                     cfg=ai_channels.resolve_cfg(task="classify"))
         r = _normalize_ai_fields(fields)
         return {"ok": True, "result": {k: r[k] for k in
                 ("country", "province", "city", "organizations", "industry", "model")}}

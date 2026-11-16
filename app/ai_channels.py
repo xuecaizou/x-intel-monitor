@@ -93,16 +93,32 @@ def save_channels(channels, default=None, task_overrides=None):
 
 
 def upsert_channel(ch):
-    """新增/更新单通道（页面保存入口）。返回规范化后的通道。"""
+    """新增/更新单通道（页面保存入口）。返回规范化后的通道。
+
+    R06：更新时**与既有通道逐字段合并**——页面普通保存只提交部分字段，
+    缺失字段沿用旧值（enabled/max_tokens/timeout/proxy 不被默认值悄悄重置）。
+    密钥语义：空/含**** = 凭据引用（沿用已存密钥）；"__CLEAR__" = 真实清除。"""
     st = _store()
     lst = [dict(c) for c in (st.get("list") or [])]
-    norm = _normalize(ch)
     replaced = False
+    merged = dict(ch or {})
+    for c in lst:
+        if c.get("id") and c["id"] == (ch or {}).get("id"):
+            for k, v in c.items():
+                if k == "api_key":
+                    continue
+                if merged.get(k) in (None, ""):
+                    merged[k] = v
+            replaced = True
+            break
+    norm = _normalize(merged)
+    key_in = (ch or {}).get("api_key")
     for i, c in enumerate(lst):
         if c["id"] == norm["id"]:
-            # 密钥语义：空/星号 = 保留旧密钥（凭据引用）；"__CLEAR__" = 清除
-            if norm["api_key"] in ("", "****") or "****" in norm["api_key"]:
-                norm["api_key"] = c.get("api_key") or ""
+            if key_in == "__CLEAR__":
+                norm["api_key"] = ""                       # R06：显式清除密钥
+            elif norm["api_key"] in ("", "****") or "****" in norm["api_key"]:
+                norm["api_key"] = c.get("api_key") or ""   # 凭据引用
             lst[i] = norm
             replaced = True
             break
@@ -216,10 +232,12 @@ def resolve_cfg(channel_id=None, task=None):
     legacy = dict(load().get("ai") or {})
     if ch is None:
         out = dict(legacy)
-        out["enabled"] = bool(legacy.get("enabled", False))
+        # R06：显式引用的通道不存在 → fail closed（enabled=False），
+        # 调用方给出明确状态，不得悄悄启用旧全局配置。
+        out["enabled"] = False
         out["channel_id"] = ""
         out["channel_name"] = ""
-        out["channel_missing"] = bool(cid)   # 显式引用但不存在：调用方给出明确状态
+        out["channel_missing"] = bool(cid)
         return out
     out = {
         "enabled": bool(ch.get("enabled")),
@@ -249,7 +267,13 @@ def draft_cfg(draft, channel_id=None):
     ref_key = (base.get("api_key") or "") if channel_id else ""
     key = (draft.get("api_key") or "").strip()
     if not key or "****" in key:
-        key = ref_key
+        # R05：凭据引用仅当草稿地址与引用通道一致（或草稿未填地址）——
+        # 换了 endpoint 还留空 Key 时不得把 A 通道的密钥发往 B。
+        d_url = (draft.get("base_url") or "").strip()
+        if d_url and ref_key and d_url != (base.get("base_url") or ""):
+            key = ""
+        else:
+            key = ref_key
     out = {
         "enabled": True,   # 草稿测试：显式动作即视为启用本次请求
         "base_url": (draft.get("base_url") or "").strip() or (base.get("base_url") or ""),

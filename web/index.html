@@ -1233,16 +1233,21 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     ["自定义（手动填写）","",""]];
   function loadAiConfig(){
   /* 2026-11-16 round2 需求 B/C：多 LLM 通道 + 草稿测试不落库 */
+  window.__aich_gen=(window.__aich_gen||0)+1;   /* R07b：重渲染使在途测试响应作废 */
   Promise.all([jget('/api/ai/channels'), jget('/api/ai/config')]).then(function(rs){
     var d=rs[0], legacy=rs[1].values||{};
     var items=d.items||[];
-    var cur=window.__aich_cur||d.default||((items[0]||{}).id||'');
+    /* R03：新建态（__aich_new=true）必须保持空白草稿身份——cur='' 不回退默认通道，
+       否则用户在默认表单上编辑并保存会覆盖旧通道配置 */
+    var isNew=(window.__aich_new===true);
+    var cur=isNew?'':(window.__aich_cur||d.default||((items[0]||{}).id||''));
     window.__aich_cur=cur;
-    var ch=items.filter(function(c){return c.id===cur;})[0]||items[0]||{};
+    var ch=isNew?{}:(items.filter(function(c){return c.id===cur;})[0]||items[0]||{});
     var box=document.getElementById('aiform');
     var isAdminUser=(ME.role==='admin');
-    var opts=items.map(function(c){
-      return '<option value="'+esc(c.id)+'"'+(c.id===cur?' selected':'')+'>'
+    var opts='<option value=""'+(isNew?' selected':'')+'>（新通道草稿）</option>'
+      +items.map(function(c){
+      return '<option value="'+esc(c.id)+'"'+(!isNew&&c.id===cur?' selected':'')+'>'
         +esc(c.name)+(c.id===d.default?'（默认）':'')+(c.enabled?'':'（停用）')+'</option>';}).join('');
     var lt=ch.last_test||{};
     var tested=(lt.ok===true&&lt.fingerprint&&lt.fingerprint===window.__aich_fp);
@@ -1286,10 +1291,14 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
       +'<div class="hint" style="margin-top:8px">旧单配置已自动迁移为通道「'+esc((items.filter(function(c){return c.id==='aich_legacy';})[0]||{}).name||'默认通道（迁移自旧配置）')+'」，研判/翻译/分类等既有功能默认走默认通道。</div>';
     /* 绑定 */
     var sel=box.querySelector('#ai-ch-sel');
-    sel.addEventListener('change',function(){window.__aich_cur=sel.value;loadAiConfig();});
+    sel.addEventListener('change',function(){
+      window.__aich_new=false;window.__aich_cur=sel.value;window.__aich_fp='';
+      loadAiConfig();
+    });
     var nb=box.querySelector('#ai-ch-new');
     if(nb)nb.addEventListener('click',function(){
-      window.__aich_cur='';loadAiConfig();
+      window.__aich_new=true;window.__aich_cur='';window.__aich_fp='';
+      loadAiConfig();
       var c2=document.getElementById('ai-ch-name');if(c2){c2.value='新通道';c2.focus();}
     });
     var db_=box.querySelector('#ai-ch-default');
@@ -1299,7 +1308,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var del=box.querySelector('#ai-ch-del');
     if(del)del.addEventListener('click',function(){
       apiFetch('/api/ai/channels/'+cur,{method:'DELETE'}).then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
-        .then(function(x){ if(x.ok){snack('已删除');window.__aich_cur='';} else snack('删除失败：'+(x.d.detail||'')); loadAiConfig();});
+        .then(function(x){ if(x.ok){snack('已删除');window.__aich_cur='';window.__aich_new=false;} else snack('删除失败：'+(x.d.detail||'')); loadAiConfig();});
     });
     var tog=box.querySelector('#ai-ch-toggle');
     if(tog)tog.addEventListener('click',function(){
@@ -1309,7 +1318,9 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var sv=box.querySelector('#ai-ch-save');
     if(sv)sv.addEventListener('click',function(){
       var vals=readAiForm();
-      vals.id=cur; vals.name=box.querySelector('#ai-ch-name').value.trim()||'通道';
+      /* R03：新建态 id=''（服务端生成新 id），绝不携带旧通道 id */
+      vals.id=isNew?'':cur;
+      vals.name=box.querySelector('#ai-ch-name').value.trim()||'通道';
       upsertChannel(vals);
     });
     var fm=box.querySelector('#ai-fetch-models');
@@ -1331,12 +1342,18 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     var tb=box.querySelector('#ai-test');
     if(tb)tb.addEventListener('click',function(){
       tb.disabled=true;tb.textContent='…';
+      /* R07b：请求挂当前表单代次——响应回来时若代次已变（切换/新建/重载），结果作废 */
+      var gen=(window.__aich_gen=(window.__aich_gen||0)+1);
       var body=readAiForm(true);
       apiFetch('/api/ai/test',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({draft:body,channel_id:cur})})
         .then(function(r){return r.json();})
         .then(function(r){
           tb.disabled=false;tb.textContent='测试（草稿，不落库）';
+          if(gen!==(window.__aich_gen||0)){
+            snack('配置已切换，本次测试结果作废（已存配置不受影响）');
+            return;
+          }
           window.__aich_fp=r.fingerprint||'';
           var el=document.getElementById('ai-test-result');
           if(r.ok){
@@ -1350,6 +1367,11 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           loadAiConfigKeep();
         }).catch(function(){tb.disabled=false;tb.textContent='测试（草稿，不落库）';snack('请求失败');});
     });
+    /* R07a：任何影响请求的表单字段修改 → 旧通过标志立即失效（保守：改回原值也要求重测） */
+    ['ai-url','ai-model','ai-key'].forEach(function(fid){
+      var fe=box.querySelector('#'+fid);
+      if(fe)fe.addEventListener('input',function(){ window.__aich_fp=''; });
+    });
     box.querySelectorAll('[data-tov]').forEach(function(sx){
       sx.addEventListener('change',function(){
         apiFetch('/api/ai/channels/'+(sx.value||d.default)+'/task-override',{method:'POST',
@@ -1361,13 +1383,17 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }).catch(function(e){document.getElementById('aiform').innerHTML='<p class="mut">加载失败：'+esc(e.message||'')+'</p>';});
 }
 function loadAiConfigKeep(){
-  /* 测试后仅刷新指纹行——保留用户正在编辑的表单 */
+  /* 测试后仅刷新指纹行——保留用户正在编辑的表单；
+     R07b：恢复的值以当前代次为准，60ms 后回填若期间用户又输入则不覆盖（逐字段判等+仅空位回填） */
   var box=document.getElementById('aiform');if(!box)return;
   var keep={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
   loadAiConfig();
   setTimeout(function(){
-    if(keep.url)aiSet('ai-url',keep.url); if(keep.model)aiSet('ai-model',keep.model);
-    if(keep.key)aiSet('ai-key',keep.key); if(keep.name)aiSet('ai-ch-name',keep.name);
+    var curV={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
+    ['url','model','key','name'].forEach(function(k){
+      if(curV[k]!==keep[k] && curV[k]) return;      /* 用户已改 → 不覆盖 */
+      if(keep[k])aiSet('ai-'+(k==='url'?'url':k==='model'?'model':k==='key'?'key':'ch-name'),keep[k]);
+    });
   },60);
 }
 function aiV(id){var el=document.getElementById(id);return el?el.value.trim():'';}

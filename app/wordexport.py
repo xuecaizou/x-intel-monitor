@@ -25,7 +25,11 @@ _concurrency = threading.Semaphore(2)
 _threads = set()
 _threads_lock = threading.Lock()
 
-ASSET_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+# R13：覆盖完整图片语法——行内(含可选 "title")；引用式在 sanitize 阶段统一占位；
+# HTML <img> 由 pandoc -f markdown-raw_html 禁用 + sanitize 兜底。
+ASSET_RE = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+&quot;[^&]*&quot;|\s+\"[^\"]*\"|\s+'[^']*')?\s*\)")
+REF_IMG_RE = re.compile(r"!\[([^\]]*)\]\[([^\]]*)\]")
+HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
 
 STYLE_VERSION = "xintel-ref-zh-1"   # reference.docx 版本标识（变更时同步 scripts/make_reference_docx.py）
 
@@ -62,33 +66,54 @@ def _assets_dir(doc_uid) -> Path:
     return Path(db.DATA_DIR) / "doc_assets" / doc_uid
 
 
+def _placeholder(alt, src, missing):
+    """统一缺图占位（R13：任何非受控来源一律明确提示，绝不交给转换器解析）。"""
+    missing.append(src)
+    return f"`[图片未嵌入（仅支持本工作区素材 attachment:，远程/外部地址不自动抓取）：{alt or src}]`"
+
+
 def resolve_images(doc_uid: str, md: str, tmp: Path):
-    """受控素材解析：attachment: 引用复制进临时目录；远程/缺失 → 明确占位（缺图提示）。"""
+    """受控素材解析（R13 全形态收口）：
+    1) 行内 ![alt](attachment:name "title") —— 素材白名单目录内、路径收敛校验后复制进临时目录；
+    2) 其余行内形式（http(s)/file:///绝对路径/相对路径）→ 明确占位；
+    3) 引用式 ![alt][ref] 与 HTML <img> —— 一律占位（占位后不再被 pandoc 解析/抓取）；
+    4) 最终 sanitize：残留任何图片语法 → 占位。转换器只见本临时目录内我们复制的文件。"""
     missing = []
     copied = []
+    base = _assets_dir(doc_uid).resolve()
+
+    def _try_copy(name):
+        srcp = (base / name).resolve()
+        try:
+            srcp.relative_to(base)
+        except Exception:
+            return None, f"`[图片未嵌入：非法路径 {name}]`"
+        if srcp.exists() and srcp.stat().st_size <= 20 * 1024 * 1024:
+            dst = tmp / f"asset_{len(copied)}_{srcp.name}"
+            shutil.copyfile(srcp, dst)
+            copied.append(name)
+            return dst.name, None
+        return None, f"`[图片缺失：{name}]`"
 
     def _sub(m):
         alt, src = m.group(1), m.group(2).strip()
         if src.startswith("attachment:"):
             name = src[len("attachment:"):].strip()
-            srcp = (_assets_dir(doc_uid) / name).resolve()
-            try:
-                srcp.relative_to(_assets_dir(doc_uid).resolve())
-            except Exception:
+            dst, err = _try_copy(name)
+            if err:
                 missing.append(src)
-                return f"`[图片未嵌入：非法路径 {name}]`"
-            if srcp.exists() and srcp.stat().st_size <= 20 * 1024 * 1024:
-                dst = tmp / f"asset_{len(copied)}_{srcp.name}"
-                shutil.copyfile(srcp, dst)
-                copied.append(name)
-                return f"![{alt}]({dst.name})"
-            missing.append(src)
-            return f"`[图片缺失：{name}]`"
-        # 远程 http(s)/其他协议：不抓取，明确提示（保留可读链接文本）
-        missing.append(src)
-        return f"`[图片未嵌入（远程地址不自动抓取）：{alt or src}]`（{src}）"
+                return err
+            return f"![{alt}]({dst})"
+        return _placeholder(alt, src, missing)
 
-    return ASSET_RE.sub(_sub, md), copied, missing
+    md = ASSET_RE.sub(_sub, md)
+    md = REF_IMG_RE.sub(lambda m: _placeholder(m.group(1), "[ref] " + m.group(2), missing), md)
+    md = HTML_IMG_RE.sub(lambda m: _placeholder("HTML img", m.group(0)[:80], missing), md)
+    # 最终防线：仍残留的行内图片语法 → 占位；放行我们刚刚复制的本地 asset_ 引用
+    md = re.sub(r"!\[[^\]]*\]\(([^)]*)\)",
+                lambda m: (m.group(0) if m.group(1).strip().startswith("asset_")
+                           else _placeholder("", m.group(0)[:80], missing)), md)
+    return md, copied, missing
 
 
 def _verify_docx(p: Path, expect_title: str) -> str:
@@ -212,7 +237,7 @@ def _run_export(eid: int, doc_uid: str, rev):
         src_md.write_text(md_final, encoding="utf-8")
         out_docx = tmp / "out.docx"
         ref = _reference_docx()
-        cmd = [pp, "-f", "markdown", "-t", "docx",
+        cmd = [pp, "-f", "markdown-raw_html", "-t", "docx",
                "--reference-doc", str(ref),
                "--resource-path", str(tmp),
                "--wrap=none",

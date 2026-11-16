@@ -209,6 +209,16 @@ def _cfg():
     return load().get("ai", {})
 
 
+def _routed_cfg(task):
+    """R04：未显式传 cfg 的调用一律经 ai_channels 解析（任务覆盖>默认通道>旧全局），
+    手动/批量/自动全入口同一路由——不再各自读旧全局配置。"""
+    try:
+        from . import ai_channels as _aich
+        return _aich.resolve_cfg(task=task)
+    except Exception:
+        return _cfg()
+
+
 _QUOTA_HINTS = ("429", "rate limit", "频率限制", "使用量已超出", "quota", "额度")
 
 
@@ -448,7 +458,7 @@ def analyze_tweet(tweet, cfg=None):
     ai_modified=1（人工修订过）的推文抛出跳过标记，由调用方决定保留人工有效值。"""
     if int(tweet.get("ai_modified") or 0) == 1:
         raise AIModifiedError("人工修订保护：跳过自动研判")
-    cfg = cfg or _cfg()
+    cfg = cfg or _routed_cfg("analyze")
     _require_key(cfg)
     prompt = (ANALYZE_PROMPT
               .replace("{name}", tweet.get("screen_name", "external"))
@@ -543,7 +553,7 @@ TRANSLATE_PROMPT = (
 
 
 def translate_tweet(tweet, cfg=None):
-    cfg = cfg or _cfg()
+    cfg = cfg or _routed_cfg("translate")
     _require_key(cfg)
     prompt = TRANSLATE_PROMPT.replace("{text}", tweet.get("text", "")[:1200])
     result = _chat(cfg, [{"role": "user", "content": prompt}], json_mode=True,
@@ -692,7 +702,7 @@ def batch_process(ids, action, cfg=None):
 def classify_batch(tweets, cfg=None):
     """AI 批量分类：每 10 条一次调用（省额度），结果经权威路径按版本提交。
     返回统计 {total, done, fail[, quota_stopped]}"""
-    cfg = cfg or _cfg()
+    cfg = cfg or _routed_cfg("classify")
     _require_key(cfg)
     done, fail = 0, 0
     quota_stopped = 0

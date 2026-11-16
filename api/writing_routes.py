@@ -594,10 +594,12 @@ def api_doc_acl(uid: str, body: AclBody):
 @router.post("/api/writing/docs/{uid}/ws-ticket", dependencies=[Depends(auth.require("read"))])
 def api_doc_ws_ticket(uid: str, request: Request):
     ctx = _require_doc_perm(request, uid, "read")
-    tk = doccollab.create_ticket(uid, {"username": ctx["principal"].get("username", ""),
-                                       "role": ctx["principal"].get("role", ""),
-                                       "kind": ctx["principal"].get("kind", "session")},
-                                 ctx["perm"])
+    pr = dict(ctx["principal"] or {})
+    # R08：票据随附可复核的身份锚——会话带 sid、Token 带 token_id，
+    # 消费时按当前角色/吊销状态现核（不使用签发时快照）。
+    pr.setdefault("sid", request.cookies.get(auth.COOKIE_NAME, ""))
+    pr.setdefault("token_id", pr.get("token_id"))
+    tk = doccollab.create_ticket(uid, pr, ctx["perm"])
     return {"ticket": tk, "permission": ctx["perm"], "ttl": 60}
 
 
