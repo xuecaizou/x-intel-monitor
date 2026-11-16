@@ -294,6 +294,21 @@ def api_recommend_list(limit: int = 20):
     return {"items": writing.list_recommend_tasks(min(limit, 100))}
 
 
+@router.get("/api/writing/recommend-tasks/{task_id}", dependencies=[Depends(auth.require("read"))])
+def api_recommend_get(task_id: int):
+    """R24：按 id 查任务（轮询与历史入口不依赖最新 5 条列表）。"""
+    row = db.get_conn().execute("SELECT * FROM ai_recommend_tasks WHERE id=?",
+                                (int(task_id),)).fetchone()
+    if not row:
+        raise HTTPException(404, "任务不存在")
+    d = dict(row)
+    try:
+        d["result_detail"] = json.loads(d.pop("result_json") or "[]")
+    except Exception:
+        d["result_detail"] = []
+    return d
+
+
 @router.post("/api/writing/recommend-tasks/{task_id}/retry", dependencies=[Depends(auth.require("write"))])
 def api_recommend_retry(task_id: int):
     if not writing.retry_recommend_task(task_id):

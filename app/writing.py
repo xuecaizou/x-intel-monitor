@@ -58,6 +58,19 @@ def _log_rev(cand_uid, action, operator, detail=""):
 # 候选
 # ============================================================
 
+def _zero_source_flag(item):
+    """R22：模型引用越界被剔除后零合法来源 → (materials, reason, extra)。
+    不冒充有依据：materials 首条强制提示、理由前缀标注、zero_source/rejected_refs 进建议。"""
+    zero = not (item.get("tweet_ids") or [])
+    materials = list(item.get("materials") or [])
+    reason = (item.get("reason") or "")[:500]
+    if zero:
+        materials = ["⚠ 模型引用的情报ID全部越界/无效，来源待人工补充"] + materials
+        reason = "【来源待确认——模型引用无有效情报】" + reason
+    extra = {"rejected_refs": (item.get("rejected_refs") or [])[:10], "zero_source": zero}
+    return materials, reason, extra
+
+
 def create_candidate(title, angle="", origin="", tweet_ids=None, event_uid="",
                      source_type="manual", recommend_reason="", ai_suggestion="",
                      suggested_priority=None, suggested_template_id=None,
@@ -306,8 +319,8 @@ def trigger_recommend(scope_type="backlog", scope_ref="", operator="system",
     执行中改默认通道不影响本任务）；filters 为资料筛选条件 dict。"""
     from . import ai_channels as aich
     aich.migrate_legacy()
-    if scope_type not in ("manual", "tweet", "event", "backlog"):
-        raise ValueError("scope_type 非法")
+    if scope_type not in ("manual", "tweet", "event", "backlog", "all"):
+        raise ValueError("scope_type 非法")   # R20：页面"all（全部近期情报）"范围放行
     filters = dict(filters or {})
     if not (prompt or "").strip():
         # 旧调用兼容：无提示词 = 旧自动推荐（固定提示词+自动建候选）
@@ -372,21 +385,39 @@ def adopt_recommend_item(task_id, index, operator="system"):
     it = detail[int(index)]
     if it.get("adopted") and it.get("cand_uid"):
         return {"cand_uid": it["cand_uid"], "adopted": True, "existed": True}
+    materials, reason, extra = _zero_source_flag(it)
     uid, merged = create_candidate(
         title=it.get("title", ""), angle=(it.get("angle") or "")[:200],
         tweet_ids=it.get("tweet_ids") or [], source_type="ai",
-        recommend_reason=(it.get("reason") or "")[:500],
+        recommend_reason=reason,
         ai_suggestion=_j({"suggestion": {"angle": it.get("angle") or "",
                                          "reason": it.get("reason") or "",
                                          "materials": it.get("materials") or [],
                                          "basis": it.get("basis") or [],
-                                         "source_links": it.get("source_links") or []},
+                                         "source_links": it.get("source_links") or [],
+                                         "rejected_refs": extra["rejected_refs"],
+                                         "zero_source": extra["zero_source"]},
                           "priority": it.get("priority"),
                           "note": f"推荐任务 #{task_id} 采纳"}),
         suggested_priority=it.get("priority"),
-        materials=it.get("materials") or [], operator=operator,
+        materials=materials, operator=operator,
         ai_run=row["updated_at"] or db.now(), rec_task_id=int(task_id),
-        dedup_scope=f"rec:{task_id}:{index}")
+        # R21：去重身份回归内容本身（标题+角度）——跨任务同题命中同一候选；
+        # "不采用"的旧候选抑制新推荐复活；单次结果幂等由 it["adopted"] 标记保障
+        dedup_scope="")
+    if merged and extra["zero_source"]:
+        # R22：dedup 命中 auto_create 已建的候选——补齐零来源标注（该候选可能缺提示）
+        with db._lock:
+            c0 = db.get_conn()
+            row0 = c0.execute("SELECT materials_todo FROM writing_candidates WHERE cand_uid=?",
+                              (uid,)).fetchone()
+            mt = _jl(row0["materials_todo"], []) if row0 else []
+            if not mt or "待人工补充" not in str(mt[0]):
+                mt = ["⚠ 模型引用的情报ID全部越界/无效，来源待人工补充"] + mt
+                c0.execute("UPDATE writing_candidates SET materials_todo=?, updated_at=?"
+                           " WHERE cand_uid=?", (_j(mt), db.now(), uid))
+                _log_rev(uid, "zero_source_flag", "ai", "补齐零来源标注（adopt 命中已建候选）")
+            c0.commit()
     it["adopted"] = True
     it["cand_uid"] = uid
     with db._lock:
@@ -424,6 +455,10 @@ def recover_recommend_tasks(stale_minutes=10):
 
 def _recommend_worker():
     while True:
+        try:
+            recover_recommend_tasks(10)   # R23：每轮回收超租约 running 任务（快速重启场景）
+        except Exception:
+            pass
         task = None
         with db._lock:
             row = db.get_conn().execute(
@@ -580,13 +615,17 @@ def _run_recommend(task):
             sug["rejected_refs"] = rejected_refs[:10]
         auto_create = bool((_jl(task.get("filters"), {}) or {}).get("auto_create"))
         if auto_create:
+            ac_materials, ac_reason, ac_extra = _zero_source_flag(
+                {**it, "tweet_ids": tids})
             uid, merged = create_candidate(
                 title=it["title"].strip(), angle=(it.get("angle") or "")[:200],
                 tweet_ids=tids, source_type="ai",
-                recommend_reason=(it.get("reason") or "")[:500],
-                ai_suggestion=_j(sug["suggestion"]), suggested_priority=prio,
+                recommend_reason=ac_reason,
+                ai_suggestion=_j({**sug["suggestion"], "zero_source": ac_extra["zero_source"],
+                                  "rejected_refs": ac_extra["rejected_refs"]}),
+                suggested_priority=prio,
                 suggested_template_id=sug["template_id"],
-                materials=it.get("materials") or [], operator="ai",
+                materials=ac_materials, operator="ai",
                 ai_run=db.now(), rec_task_id=task["id"])
             if not merged:
                 with db._lock:

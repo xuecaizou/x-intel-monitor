@@ -617,6 +617,7 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
             <option>已转报告</option><option>暂缓</option><option>不采用</option></select>
           <input id="cand-q" placeholder="搜索标题/角度/负责人" style="width:170px">
           <button class="btn btn-xs" id="cand-ai" type="button" title="用当前 AI 配置从积压高严重度情报推荐选题">AI 推荐</button>
+          <button class="btn btn-xs" id="cand-rechist" type="button" title="历史推荐任务与结果（刷新后可恢复查看）">推荐历史</button>
           <button class="btn btn-xs" id="cand-new" type="button">+ 手工新建</button>
         </span>
       </div>
@@ -2423,7 +2424,14 @@ $('cand-list').addEventListener('click',function(e){
   if(act==='del'){formConfirm('删除候选','确认删除「'+esc(c.title)+'」？此操作不可撤销。').then(function(ok){
       if(!ok)return;
       apiFetch('/api/writing/candidates/'+uid,{method:'DELETE'}).then(function(){snack('已删除');loadCands();});});return;}
-  var map={adopt:['采纳','采纳','待处理'],hold:['暂缓','暂缓','暂缓'],reject:['不采用','不采用','不采用'],restore:['采纳','','待处理']};
+  if(act==='restore'){
+    /* R19：恢复待处理走状态更新（空 decision 后端 400） */
+    apiFetch('/api/writing/candidates/'+uid,{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({fields:{status:'待处理'}})}).then(function(r){return r.json();})
+      .then(function(d){snack(d.ok?'已恢复待处理':('操作失败：'+(d.detail||'')));loadCands();});
+    return;
+  }
+  var map={adopt:['采纳','采纳','待处理'],hold:['暂缓','暂缓','暂缓'],reject:['不采用','不采用','不采用']};
   var m=map[act];
   apiFetch('/api/writing/candidates/'+uid+'/decision',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({decision:m[1],note:''})}).then(function(r){return r.json();})
@@ -2431,6 +2439,33 @@ $('cand-list').addEventListener('click',function(e){
 });
 $('cand-status').addEventListener('change',loadCands);
 $('cand-q').addEventListener('input',function(){clearTimeout(this._t);var s=this;s._t=setTimeout(loadCands,350);});
+$('cand-rechist').addEventListener('click',function(){
+  apiFetch('/api/writing/recommend-tasks?limit=50').then(function(r){return r.json();}).then(function(d){
+    var items=d.items||[];
+    var hh='<div style="font-size:15px;font-weight:700;margin-bottom:10px">AI 推荐任务历史</div>'
+      +(!(items.length)?'<div class="empty">暂无任务</div>':
+        items.map(function(x){
+          var n=0; try{ n=(JSON.parse(x.result_json||'[]')||[]).length; }catch(e){}
+          return '<div class="rtitem"><div class="rttop"><span class="rttitle">#'+x.id+' '+esc(x.scope_type||'')+'</span>'
+            +'<span class="hchip '+(x.status==='done'?'appr':x.status==='failed'?'':'pend')+'">'+esc(x.status)+'</span></div>'
+            +'<div class="rtmeta">候选 '+n+' 项 · '+esc(x.updated_at||'')+(x.error?' · <span style="color:#be123c">'+esc(x.error.slice(0,50))+'</span>':'')+'</div>'
+            +'<div style="margin-top:6px"><button class="btn btn-xs" data-recview="'+x.id+'">查看结果</button>'
+            +(x.status==='failed'?' <button class="btn btn-xs" data-recretry="'+x.id+'">重试</button>':'')+'</div></div>';
+        }).join(''))
+      +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rh-close">关闭</button></div>';
+    openModal(hh);
+    var rh=$('rh-close');if(rh)rh.addEventListener('click',closeModal);
+    h.querySelectorAll('[data-recview]').forEach(function(b){
+      b.addEventListener('click',function(){ pollRecommend(+b.getAttribute('data-recview')); });
+    });
+    h.querySelectorAll('[data-recretry]').forEach(function(b){
+      b.addEventListener('click',function(){
+        apiFetch('/api/writing/recommend/'+b.getAttribute('data-recretry')+'/retry',{method:'POST'})
+          .then(function(){snack('已重排队');closeModal();});
+      });
+    });
+  }).catch(function(){});
+});
 $('cand-ai').addEventListener('click',function(){
   /* round2 需求 E：用户输入提示词 → 生成候选文章列表 → 逐条/批量采纳 */
   jget('/api/ai/channels').then(function(rs){
@@ -2473,9 +2508,8 @@ function pollRecommend(tid){
   var n=0;
   var iv=setInterval(function(){
     n++;
-    jget('/api/writing/recommend/tasks?limit=5').then(function(d){
-      var t=(d.items||[]).filter(function(x){return x.id===tid;})[0];
-      if(!t)return;
+    jget('/api/writing/recommend-tasks/'+tid).then(function(d){
+      var t=d;
       $('rec-status').textContent='状态：'+t.status+(t.attempts?('（第 '+t.attempts+' 次尝试）'):'');
       if(t.status==='done'){
         clearInterval(iv);
@@ -2718,10 +2752,9 @@ $('tpl-list').addEventListener('click',function(e){
       if(!v)return;
       var rules=null;
       try{rules=JSON.parse(v['mt-rules']||'null');}catch(e){snack('检查规则不是合法 JSON');return;}
-      apiFetch('/api/writing/templates/'+tid,{method:'PUT',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({description:v['mt-desc'],
-          variables:(v['mt-vars']||'').split(',').map(function(x){return x.trim();}).filter(Boolean),
-          agent_notes:v['mt-notes']||'',check_rules:rules||[]})})
+      apiFetch('/api/writing/templates/'+tid,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:{description:v['mt-desc'],
+          variables:(v['mt-vars']||'').split(',').map(function(x){return x.trim();}).filter(Boolean).map(function(x){return {name:x,label:x,required:false};}),
+          agent_notes:v['mt-notes']||'',check_rules:rules||[]}})})
         .then(function(r){return r.json().then(function(d2){return {ok:r.ok,d:d2};});})
         .then(function(x){
           if(x.ok){snack('元数据已保存');loadTpls();}
