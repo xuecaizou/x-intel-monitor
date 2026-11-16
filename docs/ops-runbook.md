@@ -187,3 +187,12 @@ XINTEL_TOKEN=<admin token> python smoke_test.py --nolive
 5. **网关可达性验证**（绕开系统直测）：`curl -H "Authorization: Bearer <key>" http://<网关>/v1/models` → 200 且返回模型列表 = 网关与 Key 正常，问题在请求侧配置。
 
 版本基线：以上容错均在 main@236d638+；部署旧版本遇到此类网关报错先升级。
+
+## 11. Round3 修复轮部署注意（2026-11-17）
+
+- **前端产物必须随代码一起交付**：web/vendor/collab.bundle.js 由 editor/ npm build 生成——
+  升级后浏览器需强刷（Ctrl+F5），否则旧 bundle 的 ACK 哈希 bug 导致永远"同步中"。
+- **数据库无 schema 变更**：round3 仅新增 doc_suggestions 两列（context_before/after，幂等 ALTER）。
+- **备份恢复**：doc_exports.file_path 在恢复后自动按新 DATA_DIR 重写（R16）。
+- **SQLite 连接模型变更（R11）**：db.get_conn() 改为逐线程连接（WAL 多读单写）——
+  写仍由全局 db._lock 串行；第三方脚本若直接操作 db._conn 需改用 get_conn()。

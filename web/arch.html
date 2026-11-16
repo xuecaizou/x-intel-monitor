@@ -323,7 +323,9 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
 <tr><td><code>app/db.py</code></td><td>SQLite 数据层（单连接 + 线程锁）</td><td>tweets（含 AI/geo/媒体/状态列）· x_accounts（含频率）· push_logs · kv；自动 ALTER 迁移</td></tr>
     <tr><td><code>app/twitter.py</code></td><td>X 数据采集（监控源 01）</td><td>三级降级（syndication→Nitter→Cookie）· 置顶 id 增量短路 · 到期账号调度 · 媒体提取解码 · 统一经代理</td></tr>
     <tr><td><code>app/rssfetch.py</code></td><td>RSS 源采集（监控源 02）</td><td>feedparser 解析 · <b>逐条扫描去重</b>（首条 GUID 短路已废除，避免置顶/非首位新增漏采）· source_id=rss:{id} 归属稳定（改名不重复）· 位点仅入库后推进 · 受控抓取（逐跳校验/≤8MB）· test_source 同标准校验</td></tr>
-    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签/分类</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；<b>响应解析多层容错</b>（_resp_json：恒按 UTF-8 解码字节流不信任响应头声明、剥 SSE data:[DONE] 尾巴、取首个完整 JSON——实测部分网关声明 text/event-stream 无 charset 且尾部拼 [DONE]）；JSON 容错解析；<b>纯计算不写库</b>（提交归调用方走权威路径）；429/额度耗尽立即停止本轮（AIQuotaError，不吞）；思维链空回复自动扩容重试</td></tr>
+    <tr><td><code>app/ai.py</code></td><td>AI 研判/翻译/标签/分类</td><td>OpenAI 兼容 /chat/completions（自动补 /v1）；<b>响应解析多层容错</b>（_resp_json：恒按 UTF-8 解码字节流不信任响应头声明、剥 SSE data:[DONE] 尾巴、取首个完整 JSON——实测部分网关声明 text/event-stream 无 charset 且尾部拼 [DONE]）；JSON 容错解析；<b>纯计算不写库</b>（提交归调用方走权威路径）；429/额度耗尽立即停止本轮（AIQuotaError，不吞）；思维链空回复自动扩容重试；
+      <b>响应解析多层容错</b>（_resp_json：恒 UTF-8 解码/SSE 尾巴/多段 JSON）；<b>多 LLM 通道</b>
+      统一经 ai_channels.resolve_cfg 路由（手动/批量/自动/文档 AI 全入口，任务覆盖&gt;默认）</td></tr>
     <tr><td><code>app/engine.py</code></td><td>主管道编排</td><td>run_fetch 总控（锁防重入）· <b>六维</b>推送过滤（等级/分类/国家/行业/标签/关键词 + 且或模式）· 逐实例投递 · backfill 补标 · 单条/批量 AI</td></tr>
     <tr><td><code>app/scheduler.py</code></td><td>定时调度</td><td>APScheduler 优先，降级 threading；next_run_in 供前端倒计时</td></tr>
     <tr><td><code>app/notify/</code></td><td>推送实现</td><td>三件套 Markdown 模板（截图/原文/译文/研判/地理）；四通道 send；模拟模式判定</td></tr>
@@ -355,7 +357,8 @@ footer{text-align:center;color:var(--mut2);font-size:12.5px;margin-top:18px}
     <tr><td><code>events</code> / <code>event_evidence</code></td><td>事件聚合：稳定 <code>evt_</code> ID · version · status（候选/已确认/已归档）· <b>evidence_fingerprint</b>；关联表 <b>evidence_id（行 id，仅审计）与 tweet_id（业务身份）严格分离</b> · basis · source_kind（original 才计独立证据）</td></tr>
     <tr><td><code>event_revisions</code> / <code>event_reviews</code></td><td>版本留痕（create/update/split/unlink/merge/evidence_changed/review）· 审核绑定 (event_version, evidence_fingerprint)，三态 valid/stale/none</td></tr>
     <tr><td><code>auth_users</code> / <code>auth_tokens</code> / <code>auth_sessions</code></td><td>管理员（PBKDF2 哈希）· API Token（read/write/admin，吊销即失效）· 会话（12h，CSRF 绑定）</td></tr>
-    <tr><td><code>deliveries</code> / <code>delivery_msgs</code> / <code>delivery_attempts</code></td><td>逐实例可靠投递（替代全局 pushed 调度职责）· 尝试记录 · 租约与 owner token 防双领</td></tr>
+    <tr><td><code>deliveries</code> / <code>delivery_msgs</code> / <code>delivery_attempts</code></td><td>逐实例可靠投递（替代全局 pushed 调度职责）· 尝试记录 · 租约与 owner token 防双领；<b>R25 重评语义</b>：规则变更删除已过滤行由 dispatch 逐实例现算（不直接置待发送）</td></tr>
+    <tr><td><code>ai_channels</code>（runtime.json）</td><td>多 LLM 通道：list/default/task_overrides（doc_ai/writing_recommend/analyze/translate/classify）；密钥仅服务端；草稿测试不落库（凭据引用仅同 endpoint 生效）</td></tr>
     <tr><td><code>writing_candidates</code> / <code>candidate_revisions</code> / <code>ai_recommend_tasks</code></td><td>写作候选：cand_ 稳定 ID · dedup_key（标题+角度规范化去重合并）· 状态机（待处理/写作中/已转报告/暂缓/不采用）· version 乐观锁 · AI 建议与人工决定分列（重评不覆盖人工）· 推荐任务链（queued/running/done/failed + retry）</td></tr>
     <tr><td><code>doc_templates</code> / <code>template_versions</code></td><td>模板元信息（variables 白名单/agent_notes/check_rules）与<b>不可变发布版本</b>（version 单调，body_md 快照）分离；正文是 kind=template 的协作文档；报告固定发布版本，模板后续变化不回写</td></tr>
     <tr><td><code>doc_documents</code> / <code>doc_acl</code> / <code>doc_updates</code></td><td>协作文档（doc_ 稳定 ID，kind=report/template，status 编辑中/待审阅/已通过）· ACL（每用户 read/write + default_permission，只读由 WS 层强制）· <b>CRDT 增量日志 = 协作正文权威存储</b>（update_blob 按 seq 回放重建，单文件备份即完整）</td></tr>
