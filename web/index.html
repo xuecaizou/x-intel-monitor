@@ -1232,10 +1232,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     ["OpenAI","https://api.openai.com/v1","gpt-4o-mini"],
     ["本地 Ollama","http://127.0.0.1:11434/v1","qwen2.5:7b"],
     ["自定义（手动填写）","",""]];
-  function loadAiConfig(){
+  function loadAiConfig(preserve){
   /* 2026-11-16 round2 需求 B/C：多 LLM 通道 + 草稿测试不落库 */
   window.__aich_gen=(window.__aich_gen||0)+1;   /* R07b：重渲染使在途测试响应作废 */
+  if(!preserve)window.__aich_draft=null;         /* A-fix：非保留重载（切通道/新建/保存/删除）= 明确放弃草稿 */
+  var gen=window.__aich_gen;
   Promise.all([jget('/api/ai/channels'), jget('/api/ai/config')]).then(function(rs){
+    if(gen!==window.__aich_gen)return;           /* A-fix：已有更新的重载在途，过期渲染直接放弃（防乱序覆盖） */
     var d=rs[0], legacy=rs[1].values||{};
     var items=d.items||[];
     /* R03：新建态（__aich_new=true）必须保持空白草稿身份——cur='' 不回退默认通道，
@@ -1290,6 +1293,15 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           +'</select></label>';}).join('')
       +'</div></div>'
       +'<div class="hint" style="margin-top:8px">旧单配置已自动迁移为通道「'+esc((items.filter(function(c){return c.id==='aich_legacy';})[0]||{}).name||'默认通道（迁移自旧配置）')+'」，研判/翻译/分类等既有功能默认走默认通道。</div>';
+    /* A-fix：渲染完成后按草稿状态回填——显式归属，无定时器猜测；
+       草稿由 input 事件实时维护（含用户清空），渲染覆盖不再丢用户输入 */
+    if(preserve&&window.__aich_draft){
+      var dr=window.__aich_draft;
+      [['ai-url','url'],['ai-model','model'],['ai-key','key'],['ai-ch-name','name']].forEach(function(kv){
+        var el=box.querySelector('#'+kv[0]);
+        if(el&&Object.prototype.hasOwnProperty.call(dr,kv[1]))el.value=dr[kv[1]];
+      });
+    }
     /* 绑定 */
     var sel=box.querySelector('#ai-ch-sel');
     sel.addEventListener('change',function(){
@@ -1369,9 +1381,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         }).catch(function(){tb.disabled=false;tb.textContent='测试（草稿，不落库）';snack('请求失败');});
     });
     /* R07a：任何影响请求的表单字段修改 → 旧通过标志立即失效（保守：改回原值也要求重测） */
-    ['ai-url','ai-model','ai-key'].forEach(function(fid){
+    ['ai-url','ai-model','ai-key','ai-ch-name'].forEach(function(fid){
       var fe=box.querySelector('#'+fid);
-      if(fe)fe.addEventListener('input',function(){ window.__aich_fp=''; });
+      if(fe)fe.addEventListener('input',function(){
+        if(fid!=='ai-ch-name')window.__aich_fp='';
+        /* A-fix：用户编辑（含清空）实时归属草稿状态——恢复时不再需要区分"用户改的"和"渲染覆盖的" */
+        if(window.__aich_draft)window.__aich_draft[fid==='ai-ch-name'?'name':fid.slice(3)]=fe.value;
+      });
     });
     box.querySelectorAll('[data-tov]').forEach(function(sx){
       sx.addEventListener('change',function(){
@@ -1384,18 +1400,12 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }).catch(function(e){document.getElementById('aiform').innerHTML='<p class="mut">加载失败：'+esc(e.message||'')+'</p>';});
 }
 function loadAiConfigKeep(){
-  /* 测试后仅刷新指纹行——保留用户正在编辑的表单；
-     R07b：恢复的值以当前代次为准，60ms 后回填若期间用户又输入则不覆盖（逐字段判等+仅空位回填） */
+  /* A-fix：测试后仅刷新指纹行——保留用户正在编辑的表单。
+     显式草稿状态 + 渲染归属：捕获快照 → 异步渲染完成后按草稿回填（用户在途编辑经
+     input 事件实时并入草稿状态），零定时器、无 60ms 竞态猜测 */
   var box=document.getElementById('aiform');if(!box)return;
-  var keep={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
-  loadAiConfig();
-  setTimeout(function(){
-    var curV={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
-    ['url','model','key','name'].forEach(function(k){
-      if(curV[k]!==keep[k] && curV[k]) return;      /* 用户已改 → 不覆盖 */
-      if(keep[k])aiSet('ai-'+(k==='url'?'url':k==='model'?'model':k==='key'?'key':'ch-name'),keep[k]);
-    });
-  },60);
+  window.__aich_draft={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
+  loadAiConfig({preserve:true});
 }
 function aiV(id){var el=document.getElementById(id);return el?el.value.trim():'';}
 function aiSet(id,v){var el=document.getElementById(id);if(el&&v)el.value=v;}
