@@ -44,4 +44,6 @@
   * 新发现并修复：index.html 缺失 ME 定义（AI 面板对所有人 ReferenceError）→ 681fe8a；ME 加错 IIFE 作用域 → c0c3a44 修正至 block0
 - [2026-11-18 01:05] 最终本地回归：30/30 全绿（logs/final_round4.log，含 W7 真跑 PASS）。分支推送：fix/round4-stability=fced1fd（远端一致）。PR #1 已建（https://github.com/xuecaizou/x-intel-monitor/pull/1）触发 CI。
 - [2026-11-18 01:10] CI：word-render job PASS（1m18s，Windows runner 全链路渲染验证，run 44126903643）；offline-tests 双矩阵运行中。
-- 剩余：offline-tests 矩阵完成 → 合并 PR（如无保护规则冲突）→ 最终报告。
+- [2026-11-18 01:20] 合并 PR #1 → main（merge commit b15683b）。合并后 CI 三 job 全 SUCCESS（run 44128645579：ubuntu/windows 离线矩阵 + word-render）。本地 main 已同步。
+- [2026-11-18 01:22] 收尾：logs/ 入 gitignore 并推送。生产实例（8083, PID 3848）仍运行 43e596a 旧版本——升级需用户自行重启生产（本轮边界外）。
+- 结论：本轮目标达成（见下方总结）。
