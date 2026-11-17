@@ -2464,17 +2464,23 @@ $('cand-rechist').addEventListener('click',function(){
         }).join(''))
       +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rh-close">关闭</button></div>';
     openModal(hh);
+    /* B-fix：弹窗内容容器是 wmodal-box——原代码引用未定义变量 h，ReferenceError 被
+       外层空 catch 静默吞掉，"查看结果/重试"按钮全部没有事件绑定（点了没反应） */
+    var mbox=$('wmodal-box');
     var rh=$('rh-close');if(rh)rh.addEventListener('click',closeModal);
-    h.querySelectorAll('[data-recview]').forEach(function(b){
+    mbox.querySelectorAll('[data-recview]').forEach(function(b){
       b.addEventListener('click',function(){ pollRecommend(+b.getAttribute('data-recview')); });
     });
-    h.querySelectorAll('[data-recretry]').forEach(function(b){
+    mbox.querySelectorAll('[data-recretry]').forEach(function(b){
       b.addEventListener('click',function(){
         apiFetch('/api/writing/recommend/'+b.getAttribute('data-recretry')+'/retry',{method:'POST'})
-          .then(function(){snack('已重排队');closeModal();});
+          .then(function(){snack('已重排队');closeModal();})
+          .catch(function(){snack('重试失败（网络/服务错误）');});
       });
     });
-  }).catch(function(){});
+  }).catch(function(){ /* B-fix：失败必须反馈，不再静默吞掉 */
+    snack('加载推荐历史失败（网络/服务错误，请稍后重试）');
+  });
 });
 $('cand-ai').addEventListener('click',function(){
   /* round2 需求 E：用户输入提示词 → 生成候选文章列表 → 逐条/批量采纳 */
@@ -2515,6 +2521,7 @@ function pollRecommend(tid){
     +'<div id="rec-result"></div>'
     +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rec-close">关闭</button></div>');
   $('rec-close').addEventListener('click',closeModal);
+  if(recPollIv)clearInterval(recPollIv);   /* B-fix：重复打开先清旧轮询，防堆叠 */
   var n=0;
   var iv=setInterval(function(){
     n++;
@@ -2522,7 +2529,7 @@ function pollRecommend(tid){
       var t=d;
       $('rec-status').textContent='状态：'+t.status+(t.attempts?('（第 '+t.attempts+' 次尝试）'):'');
       if(t.status==='done'){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         var det=t.result_detail||[];
         if(!det.length){$('rec-result').innerHTML='<div class="empty">模型未给出候选（可调整提示词后重试）</div>';return;}
         $('rec-result').innerHTML=det.map(function(x,i){
@@ -2556,14 +2563,14 @@ function pollRecommend(tid){
           det.forEach(function(x,i){ if(!x.adopted) adopt(i); });
         });
       }else if(t.status==='failed'){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         $('rec-status').innerHTML='<span style="color:#be123c">失败：'+esc(t.error||'')+'</span> '
           +'<button class="btn btn-xs" id="rec-retry">重试</button>';
         $('rec-retry').addEventListener('click',function(){
           apiFetch('/api/writing/recommend/'+tid+'/retry',{method:'POST'}).then(function(){pollRecommend(tid);});
         });
       }else if(n>60){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         $('rec-status').textContent='仍在运行（超过 60 秒）——稍后可关闭后重新打开查看';
       }
     }).catch(function(){});
@@ -2818,7 +2825,11 @@ $('tpl-new').addEventListener('click',function(){
 
 /* ---------- 模态 ---------- */
 function openModal(html){var m=$('wmodal');$('wmodal-box').innerHTML=html;m.style.display='flex';}
-function closeModal(){$('wmodal').style.display='none';}
+var recPollIv=null;   /* B-fix：推荐任务轮询句柄——模态关闭/重开时清理，防僵尸轮询写入新弹窗 */
+function closeModal(){
+  if(recPollIv){clearInterval(recPollIv);recPollIv=null;}
+  $('wmodal').style.display='none';
+}
 var modalEl=$('wmodal');
 if(modalEl)modalEl.addEventListener('click',function(e){if(e.target.id==='wmodal')closeModal();});
 /* 通用表单模态：fields=[{id,label,type:'input'|'textarea',value,required}] → resolve(values|null) */
