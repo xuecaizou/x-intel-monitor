@@ -658,29 +658,58 @@ def invalidate_room(doc_uid):
 def _save_revision_sync(doc_uid, body, kind="save", created_by="system", base_rev=None,
                         skip_same=True):
     with db._lock:
-        c = db.get_conn()
-        last = c.execute("SELECT rev, content_hash FROM doc_revisions WHERE doc_uid=?"
-                         " ORDER BY rev DESC LIMIT 1", (doc_uid,)).fetchone()
-        h = _hash_md(body)
-        if skip_same and last is not None and last["content_hash"] == h and kind == "save":
-            rev = last["rev"]
-        else:
-            rev = (last["rev"] if last else 0) + 1
-            c.execute("INSERT INTO doc_revisions (doc_uid, rev, title, body_md, revision_kind,"
-                      " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                      (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), body, kind,
-                       base_rev, h, created_by, db.now()))
-            # 2026-11-16 B07：内容变化使既有"已通过"失效——回落编辑中（可重新提交审阅）；
-            # review_* 字段保留为历史决定。submit_review/export 等非内容类修订不触发。
-            if kind in ("save", "agent_edit", "suggest_apply"):
-                c.execute("UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
-                          (doc_uid,))
-        c.execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?", (db.now(), doc_uid))
-        c.commit()
+        rev = _save_revision_locked(doc_uid, body, kind, created_by, base_rev, skip_same)
     if kind == "save":
         from . import writing
         with suppress(Exception):
             writing.record_candidate_status_change_by_doc(doc_uid, "写作中", "system")
+    return rev
+
+
+def _demote_doc_status_locked(c, doc_uid, new_hash):
+    """round4 C-fix：内容修订使既有审核/批准结论失效的统一入口（所有修订写入点必须调用）。
+    '已通过'：任何内容修订回落编辑中（B07 语义）。
+    '待审阅'：内容与审阅快照不一致 → 回落编辑中（作者需重新提交，杜绝旧快照通过
+    显示为当前草稿通过）；与快照同哈希视为自动保存重复修订，保持待审。"""
+    strow = c.execute("SELECT status, review_rev FROM doc_documents WHERE doc_uid=?",
+                      (doc_uid,)).fetchone()
+    st = strow["status"] if strow else None
+    if st not in ("已通过", "待审阅"):
+        return
+    if st == "待审阅":
+        rr = strow["review_rev"]
+        rr_row = c.execute("SELECT content_hash FROM doc_revisions WHERE doc_uid=? AND rev=?",
+                           (doc_uid, int(rr))).fetchone() if rr else None
+        if rr_row is not None and rr_row["content_hash"] == new_hash:
+            return
+    c.execute("UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status=?", (doc_uid, st))
+
+
+def _save_revision_locked(doc_uid, body, kind="save", created_by="system", base_rev=None,
+                          skip_same=True):
+    """C-fix：修订写入核心（假定调用方已持有 db._lock）。
+    供 submit_review 等"读正文→写修订→改状态"必须同临界区完成的入口复用。"""
+    c = db.get_conn()
+    last = c.execute("SELECT rev, content_hash FROM doc_revisions WHERE doc_uid=?"
+                     " ORDER BY rev DESC LIMIT 1", (doc_uid,)).fetchone()
+    h = _hash_md(body)
+    if skip_same and last is not None and last["content_hash"] == h and kind == "save":
+        rev = last["rev"]
+    else:
+        rev = (last["rev"] if last else 0) + 1
+        c.execute("INSERT INTO doc_revisions (doc_uid, rev, title, body_md, revision_kind,"
+                  " base_rev, content_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), body, kind,
+                   base_rev, h, created_by, db.now()))
+        # 2026-11-16 B07：内容变化使既有"已通过"失效——回落编辑中（可重新提交审阅）；
+        # review_* 字段保留为历史决定。submit_review/export 等非内容类修订不触发。
+        # round4 C-fix：'待审阅'同语义——待审期间正文变化自动退回编辑中（作者需重新提交），
+        # 杜绝"旧快照通过显示为当前草稿通过"。与审阅/批准快照内容一致（同哈希）视为
+        # 自动保存重复修订，不回落。
+        if kind in ("save", "agent_edit", "suggest_apply"):
+            _demote_doc_status_locked(c, doc_uid, h)
+        c.execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?", (db.now(), doc_uid))
+        c.commit()
     return rev
 
 
@@ -872,9 +901,7 @@ def apply_text_replace(doc_uid, old_text, new_text, kind="agent_edit", operator=
                 (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
                  base_rev_expected, _hash_md(full), operator, db.now()))
             if kind in ("save", "agent_edit", "suggest_apply", "restore"):
-                db.get_conn().execute(
-                    "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
-                    (doc_uid,))
+                _demote_doc_status_locked(db.get_conn(), doc_uid, _hash_md(full))
             db.get_conn().execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?",
                                   (db.now(), doc_uid))
             db.get_conn().commit()
@@ -921,10 +948,9 @@ async def _apply_replace_live(room, doc_uid, old_text, new_text, base_rev_expect
             (doc_uid, rev, (get_doc(doc_uid) or {}).get("title", ""), full, kind,
              base_rev_expected, _hash_md(full), operator, db.now()))
         # B07：内容变化使既有"已通过"失效——回落编辑中（review_* 保留为历史决定）
+        # round4 C-fix：统一走 _demote_doc_status_locked（'待审阅'同语义 + 快照同哈希豁免）
         if kind in ("save", "agent_edit", "suggest_apply", "restore"):
-            db.get_conn().execute(
-                "UPDATE doc_documents SET status='编辑中' WHERE doc_uid=? AND status='已通过'",
-                (doc_uid,))
+            _demote_doc_status_locked(db.get_conn(), doc_uid, _hash_md(full))
         db.get_conn().execute("UPDATE doc_documents SET updated_at=? WHERE doc_uid=?",
                               (db.now(), doc_uid))
         db.get_conn().commit()
@@ -955,17 +981,28 @@ def submit_review(doc_uid, operator):
         raise DocError("模板正文无审阅流程")
     if doc["status"] not in ("编辑中",):
         raise ValueError(f"当前状态 {doc['status']} 不可提交审阅")
+    # round4 C-fix：正文快照→修订→状态 CAS 收敛到同一临界区。
+    # 竞态1（自动保存插入新修订）：锁内重新核状态 + 条件更新防错位；
+    # 竞态2（并发双提交）：第二个提交 status 已变 → 明确 409。
     text = current_text(doc_uid)
-    rev = _save_revision_sync(doc_uid, text, "submit_review", operator, skip_same=False)
     with db._lock:
-        db.get_conn().execute(
-            "UPDATE doc_documents SET status='待审阅', review_rev=?, updated_at=? WHERE doc_uid=?",
-            (rev, db.now(), doc_uid))
-        db.get_conn().commit()
+        cur = db.get_conn().execute(
+            "SELECT status FROM doc_documents WHERE doc_uid=?", (doc_uid,)).fetchone()
+        if not cur or cur["status"] != "编辑中":
+            raise ValueError("文档状态已变化（非编辑中），请刷新后重试")
+        rev = _save_revision_locked(doc_uid, text, "submit_review", operator, skip_same=False)
+        c = db.get_conn()
+        upd = c.execute(
+            "UPDATE doc_documents SET status='待审阅', review_rev=?, updated_at=? "
+            "WHERE doc_uid=? AND status='编辑中'", (rev, db.now(), doc_uid))
+        if upd.rowcount != 1:
+            c.rollback()
+            raise ValueError("提交审阅失败：文档状态已被并发修改，请刷新后重试")
+        c.commit()
     return rev
 
 
-def review_doc(doc_uid, decision, note, operator):
+def review_doc(doc_uid, decision, note, operator, review_rev=None):
     doc = get_doc(doc_uid)
     if not doc:
         raise DocError("文档不存在")
@@ -973,13 +1010,36 @@ def review_doc(doc_uid, decision, note, operator):
         raise ValueError("文档不在待审阅状态")
     if decision not in ("approved", "rejected"):
         raise ValueError("decision 须为 approved/rejected")
+    # round4 C-fix：审核快照契约（UI/DB/导出同一契约——批准导出读 review_rev，R12）：
+    #   1) 审阅者携带其查看的 review_rev，与当前待审快照不一致 → 409；
+    #   2) approved 时要求最新修订内容哈希 == 快照哈希（待审期间正文变化已由
+    #      _save_revision_locked 自动退回编辑中，此处为兜底校验）；
+    #   3) CAS 条件更新防两人同时审阅后写覆盖。
     with db._lock:
-        db.get_conn().execute(
+        c = db.get_conn()
+        cur = c.execute("SELECT status, review_rev FROM doc_documents WHERE doc_uid=?",
+                        (doc_uid,)).fetchone()
+        if not cur or cur["status"] != "待审阅":
+            raise ValueError("文档不在待审阅状态（状态已被其他操作改变）")
+        snap = int(cur["review_rev"] or 0)
+        if review_rev is not None and int(review_rev) != snap:
+            raise ValueError(f"审阅快照已过期：你查看的是 v{int(review_rev)}，"
+                             f"当前待审快照为 v{snap}（提交后正文曾被修改）")
+        if decision == "approved":
+            latest = c.execute("SELECT content_hash FROM doc_revisions WHERE doc_uid=?"
+                               " ORDER BY rev DESC LIMIT 1", (doc_uid,)).fetchone()
+            snap_row = c.execute("SELECT content_hash FROM doc_revisions WHERE doc_uid=? AND rev=?",
+                                 (doc_uid, snap)).fetchone()
+            if latest and snap_row and latest["content_hash"] != snap_row["content_hash"]:
+                raise ValueError("待审阅期间正文已变化（产生新修订），请让作者重新提交审阅后再批准")
+        upd = c.execute(
             "UPDATE doc_documents SET status=?, review_decision=?, review_note=?, review_by=?,"
-            " review_at=?, updated_at=? WHERE doc_uid=?",
+            " review_at=?, updated_at=? WHERE doc_uid=? AND status='待审阅'",
             ("已通过" if decision == "approved" else "编辑中", decision, note or "",
              operator, db.now(), db.now(), doc_uid))
-        db.get_conn().commit()
+        if upd.rowcount != 1:
+            raise ValueError("文档不在待审阅状态（已被其他审阅者处理）")
+        c.commit()
     return True
 
 

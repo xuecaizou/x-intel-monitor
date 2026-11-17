@@ -659,6 +659,7 @@ $('btn-review-submit').addEventListener('click',function(){
     if(!ok)return;
     jsend('/api/writing/docs/'+DOC+'/submit-review').then(function(r){
       if(r.s===200){toast('已提交审阅（固定 v'+r.d.review_rev+'）');$('st-doc').textContent='待审阅';$('st-doc').className='chip pend';
+        if(META)META.review_rev=r.d.review_rev;   /* C-fix：记录审阅快照，approve/reject 时回传校验 */
         if(ME.role==='admin'){$('btn-approve').style.display='';$('btn-reject').style.display='';}}
       else toast(r.d&&r.d.detail||'提交失败');
     });
@@ -674,7 +675,7 @@ $('btn-approve').addEventListener('click',function(){
 $('btn-reject').addEventListener('click',function(){
   uiPrompt('驳回原因（将进入审核记录）','').then(function(note){
     if(note===null)return;
-    jsend('/api/writing/docs/'+DOC+'/review',{decision:'rejected',note:note||''}).then(function(r){
+    jsend('/api/writing/docs/'+DOC+'/review',{decision:'rejected',note:note||'',review_rev:(META&&META.review_rev)||null}).then(function(r){
       if(r.s===200){toast('已驳回，回到编辑中');$('st-doc').textContent='编辑中';$('st-doc').className='chip';
         $('btn-approve').style.display='none';$('btn-reject').style.display='none';}
       else toast(r.d&&r.d.detail||'操作失败');

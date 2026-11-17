@@ -183,15 +183,22 @@ check("W4-2 受控修改成修订", out["rev"] == rev1 + 1)
 r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/submit-review")
 rv = r.json().get("review_rev")
 check("W4-3 提交审阅固定修订", r.status_code == 200 and rv == out["rev"] + 0 + (1 if False else 0) or rv, r.text[:100])
-# 内容继续变化 → 旧批准不适用
+# 内容继续变化 → round4 C-fix：待审期间内容变化自动回落编辑中，旧快照批准被拒
 dc.apply_text_replace(doc_uid, "投递链与时间线（已实例化）", "投递链与时间线", kind="agent_edit", operator="boss")
-r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/review", {"decision": "approved", "note": ""})
-check("W4-4 待审阅可审核", r.status_code == 200)
-latest = dc.latest_revision(doc_uid)["rev"]
 doc = dc.get_doc(doc_uid)
-check("W4-5 审核绑定提交时修订", doc["review_rev"] == rv and doc["review_decision"] == "approved")
-check("W4-6 新内容不继承旧批准（review_rev 不随内容推进）", dc.latest_revision(doc_uid)["rev"] > doc["review_rev"])
+check("W4-4 待审期间内容变化自动回落编辑中", doc["status"] == "编辑中", doc["status"])
+r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/review", {"decision": "approved", "note": ""})
+check("W4-5 旧快照批准被拒（409）", r.status_code == 409, f"{r.status_code} {r.text[:80]}")
+# 正向路径：重新提交审阅 → 携带快照版本批准
+rv2 = dc.submit_review(doc_uid, "boss")
+r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/review",
+         {"decision": "approved", "note": "", "review_rev": rv2})
+check("W4-5b 携带快照版本批准成功", r.status_code == 200, r.text[:80])
+doc = dc.get_doc(doc_uid)
+check("W4-6 新批准绑定新快照", doc["review_rev"] == rv2 and doc["review_decision"] == "approved"
+      and dc.latest_revision(doc_uid)["rev"] >= doc["review_rev"], f"{doc['review_rev']} vs {rv2}")
 # 恢复历史
+latest = dc.latest_revision(doc_uid)["rev"]
 revs = dc.list_revisions(doc_uid)
 target = [x for x in revs if x["revision_kind"] == "init"][0]["rev"]
 r = sreq(boss, "POST", f"/api/writing/docs/{doc_uid}/restore", {"rev": target})
