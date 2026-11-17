@@ -727,6 +727,14 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
 <script>
 (function(){
   document.getElementById('apihost').textContent='API · '+location.host;
+  /* round4 A-fix 相邻缺陷：loadAiConfig 引用 ME.role，但 ME 此前从未在本作用域
+     定义（它是 editor.html 的变量）——AI 设置面板对所有用户必然 ReferenceError。
+     与 ensureCsrf 同源初始化（/api/auth/me）。 */
+  var ME={username:'',role:''};
+  fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){
+    ME.username=d.username||'';
+    ME.role=d.role||'';
+  }).catch(function(){});
   var SEV={critical:{c:'#fb7185',n:'严重'},high:{c:'#fdba74',n:'高危'},medium:{c:'#fde047',n:'中危'},
            low:{c:'#38bdf8',n:'低危'},info:{c:'#94a3b8',n:'通报'}};
   var CH_META={wecom:{badge:'企',color:'rgba(37,99,235,.1);color:#1d4ed8',sub:'群机器人 · Markdown',real:'真实 Webhook'},
@@ -1232,10 +1240,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
     ["OpenAI","https://api.openai.com/v1","gpt-4o-mini"],
     ["本地 Ollama","http://127.0.0.1:11434/v1","qwen2.5:7b"],
     ["自定义（手动填写）","",""]];
-  function loadAiConfig(){
+  function loadAiConfig(preserve){
   /* 2026-11-16 round2 需求 B/C：多 LLM 通道 + 草稿测试不落库 */
   window.__aich_gen=(window.__aich_gen||0)+1;   /* R07b：重渲染使在途测试响应作废 */
+  if(!preserve)window.__aich_draft=null;         /* A-fix：非保留重载（切通道/新建/保存/删除）= 明确放弃草稿 */
+  var gen=window.__aich_gen;
   Promise.all([jget('/api/ai/channels'), jget('/api/ai/config')]).then(function(rs){
+    if(gen!==window.__aich_gen)return;           /* A-fix：已有更新的重载在途，过期渲染直接放弃（防乱序覆盖） */
     var d=rs[0], legacy=rs[1].values||{};
     var items=d.items||[];
     /* R03：新建态（__aich_new=true）必须保持空白草稿身份——cur='' 不回退默认通道，
@@ -1290,6 +1301,15 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
           +'</select></label>';}).join('')
       +'</div></div>'
       +'<div class="hint" style="margin-top:8px">旧单配置已自动迁移为通道「'+esc((items.filter(function(c){return c.id==='aich_legacy';})[0]||{}).name||'默认通道（迁移自旧配置）')+'」，研判/翻译/分类等既有功能默认走默认通道。</div>';
+    /* A-fix：渲染完成后按草稿状态回填——显式归属，无定时器猜测；
+       草稿由 input 事件实时维护（含用户清空），渲染覆盖不再丢用户输入 */
+    if(preserve&&window.__aich_draft){
+      var dr=window.__aich_draft;
+      [['ai-url','url'],['ai-model','model'],['ai-key','key'],['ai-ch-name','name']].forEach(function(kv){
+        var el=box.querySelector('#'+kv[0]);
+        if(el&&Object.prototype.hasOwnProperty.call(dr,kv[1]))el.value=dr[kv[1]];
+      });
+    }
     /* 绑定 */
     var sel=box.querySelector('#ai-ch-sel');
     sel.addEventListener('change',function(){
@@ -1369,9 +1389,13 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
         }).catch(function(){tb.disabled=false;tb.textContent='测试（草稿，不落库）';snack('请求失败');});
     });
     /* R07a：任何影响请求的表单字段修改 → 旧通过标志立即失效（保守：改回原值也要求重测） */
-    ['ai-url','ai-model','ai-key'].forEach(function(fid){
+    ['ai-url','ai-model','ai-key','ai-ch-name'].forEach(function(fid){
       var fe=box.querySelector('#'+fid);
-      if(fe)fe.addEventListener('input',function(){ window.__aich_fp=''; });
+      if(fe)fe.addEventListener('input',function(){
+        if(fid!=='ai-ch-name')window.__aich_fp='';
+        /* A-fix：用户编辑（含清空）实时归属草稿状态——恢复时不再需要区分"用户改的"和"渲染覆盖的" */
+        if(window.__aich_draft)window.__aich_draft[fid==='ai-ch-name'?'name':fid.slice(3)]=fe.value;
+      });
     });
     box.querySelectorAll('[data-tov]').forEach(function(sx){
       sx.addEventListener('change',function(){
@@ -1384,18 +1408,12 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
   }).catch(function(e){document.getElementById('aiform').innerHTML='<p class="mut">加载失败：'+esc(e.message||'')+'</p>';});
 }
 function loadAiConfigKeep(){
-  /* 测试后仅刷新指纹行——保留用户正在编辑的表单；
-     R07b：恢复的值以当前代次为准，60ms 后回填若期间用户又输入则不覆盖（逐字段判等+仅空位回填） */
+  /* A-fix：测试后仅刷新指纹行——保留用户正在编辑的表单。
+     显式草稿状态 + 渲染归属：捕获快照 → 异步渲染完成后按草稿回填（用户在途编辑经
+     input 事件实时并入草稿状态），零定时器、无 60ms 竞态猜测 */
   var box=document.getElementById('aiform');if(!box)return;
-  var keep={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
-  loadAiConfig();
-  setTimeout(function(){
-    var curV={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
-    ['url','model','key','name'].forEach(function(k){
-      if(curV[k]!==keep[k] && curV[k]) return;      /* 用户已改 → 不覆盖 */
-      if(keep[k])aiSet('ai-'+(k==='url'?'url':k==='model'?'model':k==='key'?'key':'ch-name'),keep[k]);
-    });
-  },60);
+  window.__aich_draft={url:aiV('ai-url'),model:aiV('ai-model'),key:aiV('ai-key'),name:aiV('ai-ch-name')};
+  loadAiConfig({preserve:true});
 }
 function aiV(id){var el=document.getElementById(id);return el?el.value.trim():'';}
 function aiSet(id,v){var el=document.getElementById(id);if(el&&v)el.value=v;}
@@ -2454,17 +2472,23 @@ $('cand-rechist').addEventListener('click',function(){
         }).join(''))
       +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rh-close">关闭</button></div>';
     openModal(hh);
+    /* B-fix：弹窗内容容器是 wmodal-box——原代码引用未定义变量 h，ReferenceError 被
+       外层空 catch 静默吞掉，"查看结果/重试"按钮全部没有事件绑定（点了没反应） */
+    var mbox=$('wmodal-box');
     var rh=$('rh-close');if(rh)rh.addEventListener('click',closeModal);
-    h.querySelectorAll('[data-recview]').forEach(function(b){
+    mbox.querySelectorAll('[data-recview]').forEach(function(b){
       b.addEventListener('click',function(){ pollRecommend(+b.getAttribute('data-recview')); });
     });
-    h.querySelectorAll('[data-recretry]').forEach(function(b){
+    mbox.querySelectorAll('[data-recretry]').forEach(function(b){
       b.addEventListener('click',function(){
         apiFetch('/api/writing/recommend/'+b.getAttribute('data-recretry')+'/retry',{method:'POST'})
-          .then(function(){snack('已重排队');closeModal();});
+          .then(function(){snack('已重排队');closeModal();})
+          .catch(function(){snack('重试失败（网络/服务错误）');});
       });
     });
-  }).catch(function(){});
+  }).catch(function(){ /* B-fix：失败必须反馈，不再静默吞掉 */
+    snack('加载推荐历史失败（网络/服务错误，请稍后重试）');
+  });
 });
 $('cand-ai').addEventListener('click',function(){
   /* round2 需求 E：用户输入提示词 → 生成候选文章列表 → 逐条/批量采纳 */
@@ -2505,6 +2529,7 @@ function pollRecommend(tid){
     +'<div id="rec-result"></div>'
     +'<div style="text-align:right;margin-top:8px"><button class="btn btn-xs" id="rec-close">关闭</button></div>');
   $('rec-close').addEventListener('click',closeModal);
+  if(recPollIv)clearInterval(recPollIv);   /* B-fix：重复打开先清旧轮询，防堆叠 */
   var n=0;
   var iv=setInterval(function(){
     n++;
@@ -2512,7 +2537,7 @@ function pollRecommend(tid){
       var t=d;
       $('rec-status').textContent='状态：'+t.status+(t.attempts?('（第 '+t.attempts+' 次尝试）'):'');
       if(t.status==='done'){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         var det=t.result_detail||[];
         if(!det.length){$('rec-result').innerHTML='<div class="empty">模型未给出候选（可调整提示词后重试）</div>';return;}
         $('rec-result').innerHTML=det.map(function(x,i){
@@ -2546,14 +2571,14 @@ function pollRecommend(tid){
           det.forEach(function(x,i){ if(!x.adopted) adopt(i); });
         });
       }else if(t.status==='failed'){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         $('rec-status').innerHTML='<span style="color:#be123c">失败：'+esc(t.error||'')+'</span> '
           +'<button class="btn btn-xs" id="rec-retry">重试</button>';
         $('rec-retry').addEventListener('click',function(){
           apiFetch('/api/writing/recommend/'+tid+'/retry',{method:'POST'}).then(function(){pollRecommend(tid);});
         });
       }else if(n>60){
-        clearInterval(iv);
+        clearInterval(iv);recPollIv=null;
         $('rec-status').textContent='仍在运行（超过 60 秒）——稍后可关闭后重新打开查看';
       }
     }).catch(function(){});
@@ -2808,7 +2833,11 @@ $('tpl-new').addEventListener('click',function(){
 
 /* ---------- 模态 ---------- */
 function openModal(html){var m=$('wmodal');$('wmodal-box').innerHTML=html;m.style.display='flex';}
-function closeModal(){$('wmodal').style.display='none';}
+var recPollIv=null;   /* B-fix：推荐任务轮询句柄——模态关闭/重开时清理，防僵尸轮询写入新弹窗 */
+function closeModal(){
+  if(recPollIv){clearInterval(recPollIv);recPollIv=null;}
+  $('wmodal').style.display='none';
+}
 var modalEl=$('wmodal');
 if(modalEl)modalEl.addEventListener('click',function(e){if(e.target.id==='wmodal')closeModal();});
 /* 通用表单模态：fields=[{id,label,type:'input'|'textarea',value,required}] → resolve(values|null) */

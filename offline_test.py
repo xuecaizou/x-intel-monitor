@@ -45,6 +45,7 @@ SUITES = [
     "tests/test_round2_ai_channels.py",
     "tests/test_round2_rss.py",
     "tests/test_round2_candidates.py",
+    "tests/test_round4_review.py",
 ]
 
 

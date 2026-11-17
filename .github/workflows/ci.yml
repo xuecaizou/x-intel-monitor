@@ -30,6 +30,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install httpx httpx2
+      - name: Install pandoc (W7/B07-8 Word 验收必需——缺失不得静默跳过)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            choco install pandoc -y --no-progress
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq pandoc
+          fi
+          pandoc --version | head -1
       - name: Verify no secrets in repo
         run: |
           python scripts/check_no_secrets.py || { echo "SECRET CHECK FAILED"; python -c "import subprocess;print(subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout[:2000])"; exit 1; }
@@ -37,3 +46,29 @@ jobs:
         run: python offline_test.py
       - name: Compile check
         run: python -m compileall -q app api tests *.py
+
+  word-render:
+    name: Word deliverable render acceptance (round4 E)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install httpx httpx2 python-docx pywin32 pillow
+      - name: Install pandoc
+        run: choco install pandoc -y --no-progress
+      - name: Word render acceptance (isolated instance + OOXML/python-docx/pandoc/COM)
+        run: python scripts/word_render_check.py
+      - name: Upload render artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: word-render-evidence
+          path: logs/round4-artifacts/
+          retention-days: 14

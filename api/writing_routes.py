@@ -444,6 +444,7 @@ class RestoreBody(BaseModel):
 class ReviewBody(BaseModel):
     decision: str
     note: str = ""
+    review_rev: int | None = None   # round4 C-fix：审阅者所见快照版本（快照契约）
 
 
 class AclBody(BaseModel):
@@ -572,7 +573,8 @@ def api_doc_submit_review(uid: str, request: Request):
 def api_doc_review(uid: str, body: ReviewBody, request: Request):
     _require_doc_perm(request, uid, "read")
     try:
-        doccollab.review_doc(uid, body.decision, body.note, _operator(request))
+        doccollab.review_doc(uid, body.decision, body.note, _operator(request),
+                             review_rev=body.review_rev)
     except (doccollab.DocError, ValueError) as e:
         raise HTTPException(409, str(e))
     return {"ok": True}
