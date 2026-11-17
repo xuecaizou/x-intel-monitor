@@ -38,4 +38,8 @@
 - [2026-11-18 00:10] 线索 E 验收缺口补齐：Pandoc 3.14 安装（用户级 AppData\Local\Pandoc）→ W7 真跑 7/7（OOXML/中文/中文名/缓存）、B07-8 真跑通过（默认导出=批准快照 rev，端到端验证 C 契约）；offline_test.py 纳入 test_round4_review（30 套件，b538bda）。全量 30/30 全绿（logs/baseline_round4_pandoc.log）。
 - [2026-11-18 00:25] Word 渲染级验收 18/18 全过（scripts/word_render_check.py，提交见下）：三层独立验证（OOXML/python-docx/pandoc DOCX→HTML）+ Word COM 实际打开渲染成功（round3 三次被模态阻塞项，DispatchEx+DisplayAlerts=0 组合通过）。产物 logs/round4-artifacts/render_check.docx + render_evidence.json。
 - 过程修复：render 脚本初版误用 /restore 的 body_md 参数（RestoreBody 只有 rev——该端点语义是恢复到指定历史修订）；改走真实业务入口 dc.restore_text。非产品缺陷，已如实记录。
-- 下一步：浏览器实测 A（慢响应草稿保留/切换放弃）与 B（历史弹窗按钮绑定/轮询清理）→ 全量回归 → 推送。
+- [2026-11-18 00:50] 浏览器实测（隔离实例 8990 + 真实页面交互）全部通过：
+  * A：注入 300ms /api/ai/* 延迟 → 点测试 → 草稿 model/url/key 全保留（修复前必丢）；切换通道草稿正确放弃
+  * B：推荐历史弹窗按钮绑定恢复（查看结果→轮询弹窗打开）；关闭弹窗后 5s 轮询请求=0（修复前僵尸轮询）；重开/关闭两轮均正常
+  * 新发现并修复：index.html 缺失 ME 定义（AI 面板对所有人 ReferenceError）→ 681fe8a；ME 加错 IIFE 作用域 → c0c3a44 修正至 block0
+- 下一步：全量回归（30 套件）→ 推送分支 → 报告。
