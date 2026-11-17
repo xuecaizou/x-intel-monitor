@@ -727,6 +727,14 @@ select:focus,input:focus,textarea:focus{border-color:rgba(34,211,238,.55)}
 <script>
 (function(){
   document.getElementById('apihost').textContent='API · '+location.host;
+  /* round4 A-fix 相邻缺陷：loadAiConfig 引用 ME.role，但 ME 此前从未在本作用域
+     定义（它是 editor.html 的变量）——AI 设置面板对所有用户必然 ReferenceError。
+     与 ensureCsrf 同源初始化（/api/auth/me）。 */
+  var ME={username:'',role:''};
+  fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){
+    ME.username=d.username||'';
+    ME.role=d.role||'';
+  }).catch(function(){});
   var SEV={critical:{c:'#fb7185',n:'严重'},high:{c:'#fdba74',n:'高危'},medium:{c:'#fde047',n:'中危'},
            low:{c:'#38bdf8',n:'低危'},info:{c:'#94a3b8',n:'通报'}};
   var CH_META={wecom:{badge:'企',color:'rgba(37,99,235,.1);color:#1d4ed8',sub:'群机器人 · Markdown',real:'真实 Webhook'},
@@ -2388,15 +2396,7 @@ function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function snack(m){var el=document.getElementById('snackbar');el.textContent=m;el.classList.add('show');clearTimeout(window.__snT);window.__snT=setTimeout(function(){el.classList.remove('show');},3800);}
 var ROLE='';
-/* round4 A-fix 相邻缺陷：loadAiConfig 引用 ME.role 但 ME 从未定义——AI 设置面板
-   对所有用户必然 ReferenceError（"加载失败：ME is not defined"）。与 ROLE 同源初始化。 */
-var ME={username:'',role:''};
-fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){
-  ROLE=d.role||'';
-  ME.username=d.username||'';
-  ME.role=d.role||'';
-  refreshAll();
-}).catch(function(){});
+fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){ROLE=d.role||'';refreshAll();}).catch(function(){});
 function isAdmin(){return ROLE==='admin';}
 
 /* ---------- 候选 ---------- */
