@@ -42,4 +42,6 @@
   * A：注入 300ms /api/ai/* 延迟 → 点测试 → 草稿 model/url/key 全保留（修复前必丢）；切换通道草稿正确放弃
   * B：推荐历史弹窗按钮绑定恢复（查看结果→轮询弹窗打开）；关闭弹窗后 5s 轮询请求=0（修复前僵尸轮询）；重开/关闭两轮均正常
   * 新发现并修复：index.html 缺失 ME 定义（AI 面板对所有人 ReferenceError）→ 681fe8a；ME 加错 IIFE 作用域 → c0c3a44 修正至 block0
-- 下一步：全量回归（30 套件）→ 推送分支 → 报告。
+- [2026-11-18 01:05] 最终本地回归：30/30 全绿（logs/final_round4.log，含 W7 真跑 PASS）。分支推送：fix/round4-stability=fced1fd（远端一致）。PR #1 已建（https://github.com/xuecaizou/x-intel-monitor/pull/1）触发 CI。
+- [2026-11-18 01:10] CI：word-render job PASS（1m18s，Windows runner 全链路渲染验证，run 44126903643）；offline-tests 双矩阵运行中。
+- 剩余：offline-tests 矩阵完成 → 合并 PR（如无保护规则冲突）→ 最终报告。
