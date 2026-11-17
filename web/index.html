@@ -2388,7 +2388,15 @@ function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function snack(m){var el=document.getElementById('snackbar');el.textContent=m;el.classList.add('show');clearTimeout(window.__snT);window.__snT=setTimeout(function(){el.classList.remove('show');},3800);}
 var ROLE='';
-fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){ROLE=d.role||'';refreshAll();}).catch(function(){});
+/* round4 A-fix 相邻缺陷：loadAiConfig 引用 ME.role 但 ME 从未定义——AI 设置面板
+   对所有用户必然 ReferenceError（"加载失败：ME is not defined"）。与 ROLE 同源初始化。 */
+var ME={username:'',role:''};
+fetch('/api/auth/me').then(function(r){return r.json();}).then(function(d){
+  ROLE=d.role||'';
+  ME.username=d.username||'';
+  ME.role=d.role||'';
+  refreshAll();
+}).catch(function(){});
 function isAdmin(){return ROLE==='admin';}
 
 /* ---------- 候选 ---------- */
