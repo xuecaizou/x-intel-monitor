@@ -196,3 +196,16 @@ XINTEL_TOKEN=<admin token> python smoke_test.py --nolive
 - **备份恢复**：doc_exports.file_path 在恢复后自动按新 DATA_DIR 重写（R16）。
 - **SQLite 连接模型变更（R11）**：db.get_conn() 改为逐线程连接（WAL 多读单写）——
   写仍由全局 db._lock 串行；第三方脚本若直接操作 db._conn 需改用 get_conn()。
+
+
+## 12. Round4 修复轮部署注意（2026-11-18）
+
+- **Pandoc 成为必需依赖**：W7/B07-8 与 CI word-render job 不再静默跳过。
+  Windows：`winget install JohnMacFarlane.Pandoc`（或 choco install pandoc）；
+  Linux：`apt-get install pandoc`。也可在 runtime.json `word.pandoc_path` 显式指定。
+- **数据库无 schema 变更**：round4 纯逻辑修复 + 前端 + 测试，升级即用。
+- **升级步骤**：停服务 → `git pull`（main=17dfd3b 起）→ 重启 `python run.py`。
+  首次访问无需重新初始化（data/auth.json 等既有状态保留）。
+- **浏览器强刷**：round4 改了 web/index.html 与 editor.html——升级后 Ctrl+F5。
+- **CI 变更**：新增 word-render job（Windows runner，隔离实例真实协议导出 +
+  OOXML/python-docx/pandoc 三层渲染验证 + Word COM 打开），产物保留 14 天。

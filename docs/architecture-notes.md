@@ -178,3 +178,19 @@ invalid 来源指标进 invalid 桶（审计保留，不进可使用结论）；
 逐源四态 `ok/error/unknown/disabled`（启用但无抓取记录=unknown，不假正常）；聚合
 `health.state`（normal/partial_error/error/unknown/idle）由 X 与 RSS 共同决定；
 推送统计真实/模拟分列——`real_rate` 分母=真实尝试，仅模拟时为 None（前端显示"无真实样本"）。
+
+
+## 11. 协作审核快照契约（round4，2026-11-18）
+
+**契约：审核固定快照**（UI / 数据库 / 导出三方同一契约——批准导出读 review_rev，R12）：
+
+- `submit_review`：正文快照 → 修订（skip_same=False）→ 状态 CAS（`WHERE status='编辑中'`）
+  收敛到同一临界区（复用 `_save_revision_locked`，假定调用方持 `db._lock`）。
+- `review_doc`：快照版本校验（审阅者回传 review_rev，不匹配 409）+ 批准时
+  最新修订哈希 == 快照哈希兜底 + `WHERE status='待审阅'` 条件更新（双审阅者后写覆盖被拒）。
+- **状态回落统一入口** `_demote_doc_status_locked`：内容修订（save/agent_edit/suggest_apply/restore）
+  使 '已通过' 与 '待审阅' 失效回落编辑中；'待审阅' 与快照同哈希视为自动保存重复，豁免不回落。
+  三个修订写入点（_save_revision_locked / apply_text_replace 离线 / _apply_replace_live）全部收口。
+- 前端草稿归属：AI 通道表单的草稿由 input 事件实时维护（`__aich_draft`），
+  `loadAiConfig(preserve)` 渲染完成后按草稿回填——渲染覆盖不再吞用户输入；
+  非保留重载（切通道/新建/保存/删除）明确放弃草稿。
