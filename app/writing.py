@@ -420,9 +420,18 @@ def adopt_recommend_item(task_id, index, operator="system"):
             c0.commit()
     it["adopted"] = True
     it["cand_uid"] = uid
+    # N09：原子回写——CAS 校验 adopted 仍为 false，并发已先采纳则返回现有结果
     with db._lock:
+        r2 = db.get_conn().execute("SELECT result_json FROM ai_recommend_tasks WHERE id=?",
+                                    (int(task_id),)).fetchone()
+        cur_detail = json.loads(r2["result_json"] or "[]")
+        cur_item = cur_detail[int(index)] if int(index) < len(cur_detail) else {}
+        if cur_item.get("adopted") and cur_item.get("cand_uid"):
+            return {"cand_uid": cur_item["cand_uid"], "adopted": True, "existed": True}
+        cur_item["adopted"] = True
+        cur_item["cand_uid"] = uid
         db.get_conn().execute("UPDATE ai_recommend_tasks SET result_json=?, updated_at=? WHERE id=?",
-                              (_j(detail), db.now(), int(task_id)))
+                              (_j(cur_detail), db.now(), int(task_id)))
         db.get_conn().commit()
     return {"cand_uid": uid, "adopted": True, "existed": merged}
 
@@ -544,6 +553,15 @@ def _scope_tweets(scope_type, scope_ref, filters=None):
     return [t for t in out if _match(t)][:30]
 
 
+def _as_list(v):
+    """N07：推荐结果字段规范化——字符串→单元素列表，None→空，列表→去 None。"""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [str(x) for x in v if x is not None]
+    return [str(v)]
+
+
 def _run_recommend(task):
     """执行一次 AI 推荐任务（round2 需求 E 重构）。
 
@@ -640,8 +658,8 @@ def _run_recommend(task):
             "cand_uid": uid, "merged": merged, "adopted": False,
             "title": it["title"].strip(), "angle": it.get("angle") or "",
             "reason": it.get("reason") or "", "priority": prio,
-            "materials": it.get("materials") or [], "basis": it.get("basis") or [],
-            "source_links": it.get("source_links") or [],
+            "materials": _as_list(it.get("materials")), "basis": _as_list(it.get("basis")),
+            "source_links": _as_list(it.get("source_links")),
             "tweet_ids": tids, "rejected_refs": rejected_refs[:10],
             "template": (it.get("template") or "").strip(),
         })

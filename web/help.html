@@ -87,7 +87,7 @@ python run.py
 # 控制台 http://本机IP:8083（默认监听 0.0.0.0，局域网可访问）
 # 帮助文档 /help · 架构说明 /arch · README /readme · Swagger /docs</code></pre>
   <ul>
-    <li><b>配置 AI</b>：左侧菜单「AI 设置」→ 选厂商预设（DeepSeek/GLM/Kimi/Qwen/OpenAI/Ollama/自定义）→ 填 API Key 与模型 → 打开「AI 功能启用」→ 点<b>「保存」</b>→ 再点「测试连通」<b>（按钮只按已保存配置执行：改配置后必须先保存）</b>；「拉取模型」可从厂商 /models 拉取模型列表下拉选择。网关兼容性见 §12 常见问题。</li>
+    <li><b>配置 AI</b>：左侧菜单「AI 设置」→ 选厂商预设（DeepSeek/GLM/Kimi/Qwen/OpenAI/Ollama/自定义）→ 填 API Key 与模型 → 打开「AI 功能启用」→ 点<b>「测试（草稿，不落库）」</b>验证连通 → 测试通过后点<b>「保存通道」</b>生效（测试使用当前表单草稿，不修改已保存配置）；「拉取模型」可从厂商 /models 拉取模型列表下拉选择。网关兼容性见 §12 常见问题。</li>
     <li><b>添加监控账号</b>：左侧菜单「监控账号」输入 @用户名 → 选首抓条数 → 添加。</li>
     <li><b>配置代理</b>：X 域名被 DNS 污染，<code>network.proxy</code> 必须指向可用本地代理（默认 socks5://127.0.0.1:10808）。</li>
     <li><b>抓取</b>：默认每 15 分钟一轮（含 AI 处理与推送），也可点「立即抓取」。</li>
