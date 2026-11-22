@@ -185,11 +185,20 @@ function showConnFail(){
   el.textContent='连接失败（'+stage+'）';
   var sb=$('subline');
   sb.innerHTML='连接未完成，卡在阶段「'+stage+'」。常见原因：服务未运行、网络中断、'
-    +'权限变化、或页面脚本错误（按 F12 看 Console）。本地未同步修改会保留，重试不会清空正文。';
+    +'权限变化、或页面脚本错误（按 F12 看 Console）。编辑器已创建时本地未同步修改保留在内存中，点重试会重连 WebSocket（不刷新页面）。';
   var b=document.createElement('button');
   b.className='btn'; b.textContent='重试';
   b.style.marginLeft='10px';
-  b.addEventListener('click',function(){ location.reload(); });
+  b.addEventListener('click',function(){
+    /* N18：编辑器存在时不 reload（会丢内存 Y.Doc）——改为重连 WS provider */
+    if(window.__ED&&window.__ED.provider){
+      window.__ED.provider.connect();
+      b.textContent='重连中…';b.disabled=true;
+      setTimeout(function(){b.textContent='重试';b.disabled=false;},5000);
+      return;
+    }
+    location.reload();   /* 编辑器未创建（API 层失败）——安全 reload */
+  });
   sb.appendChild(b);
   window.__CONN_STAGE=stage;   /* 自动化/诊断读取 */
 }
